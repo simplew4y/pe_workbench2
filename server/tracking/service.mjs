@@ -151,13 +151,13 @@ async function settleTrackingRun({
         });
       }
       let notification = null;
-      if (monitorMode) {
+      {
         try {
           notification = store.createNotification({
             trackingId,
             runId,
             severity: "action",
-            title: "监测检查失败",
+            title: monitorMode ? "监测检查失败" : "跟踪运行失败",
             body: String(error?.message || "运行失败").slice(0, 800),
             changes: [],
             actions: [{ action: "open", label: "查看运行" }],
@@ -320,7 +320,14 @@ async function settleTrackingRun({
           result,
           items: syncedItems,
         })
-      : null;
+      : store.createNotification({
+          trackingId, runId,
+          severity: status === "needs_review" ? "needs_review" : "info",
+          title: result.conclusion || message,
+          body: [result.summary, ...(result.reasons || []).map((item) => typeof item === "string" ? item : JSON.stringify(item)), result.judgment?.text, result.writeback?.note, ...(result.sources || []).map((item) => item.label)].filter(Boolean).join("\n"),
+          changes: [...(result.deltas || []), ...(result.invalidations || []), ...(result.theses || [])],
+          actions: result.actions || [{ action: "open", label: "查看运行" }],
+        });
     const dto = store.finishTrackingRun(trackingId, runId, {
       status,
       message,

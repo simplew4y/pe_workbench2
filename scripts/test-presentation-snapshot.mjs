@@ -23,3 +23,18 @@ const timedSession={messages:[
   {role:'assistant',timestamp:'2026-11-03T02:10:00Z',content:'回答'},
 ]};
 assert.equal(snapshotMessages(timedSession,ctx)[1].turnStartedAt,'2026-11-03T02:05:00Z');
+
+{
+  const base = {presentation:{verdict:{id:'verdict',text:'旧判断',status:'条件判断',value_identity:'自建情景'}}};
+  const editsSession = {messages:[
+    user,
+    {role:'assistant',content:[{type:'toolCall',id:'ra',name:'read',arguments:{path:'exports/analysis-state.json'}}]},
+    {role:'toolResult',toolCallId:'ra',content:[{type:'text',text:JSON.stringify(base)}]},
+    {role:'assistant',content:[{type:'toolCall',id:'ea',name:'edit',arguments:{path:'exports/analysis-state.json',edits:[{oldText:'"text":"旧判断"',newText:'"text":"批量编辑判断"'}]}}]},
+    result('ea'),
+    {role:'assistant',content:[{type:'text',text:'交付'}]},
+  ]};
+  const msg = snapshotMessages(editsSession,ctx).filter(x=>x.role==='assistant').at(-1);
+  assert.equal(msg.analysisState?.presentation.verdict.text,'批量编辑判断');
+  console.log('edits array snapshot passed');
+}

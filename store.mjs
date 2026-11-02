@@ -1,3 +1,4 @@
+import { enqueueMail, startMailNotifier } from "./lib/mail-notify.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -68,6 +69,7 @@ export class Store {
     this.db = db;
     this.workspace = workspace;
     this.dataDir = dataDir;
+    startMailNotifier(dataDir);
     this.blobsDir = path.join(dataDir, "blobs");
     this.projectId = projectId;
     this.projectName = projectName;
@@ -2188,9 +2190,16 @@ export class Store {
       id, this.projectId, trackingId, runId, severity, title, body,
       JSON.stringify(changes || []), JSON.stringify(actions || []), nowIso(),
     );
-    return this.notificationDto(
+    const notification = this.notificationDto(
       this.db.prepare(`select * from notifications where id = ?`).get(id),
     );
+    // Enrichment and delivery must never change the outcome of message creation.
+    try {
+      const tracking = trackingId ? this.getTrackingRow(trackingId) : null;
+      enqueueMail({ ...notification, type: "tracking", project: this.projectName,
+        target: tracking?.name || tracking?.target_id || "" }, this.dataDir);
+    } catch { console.warn("[mail] notification enrichment failed"); }
+    return notification;
   }
 
   listNotifications({ limit = 30, unreadOnly = false, trackingId = null } = {}) {
@@ -2553,7 +2562,16 @@ export class Store {
       JSON.stringify(citations || []), JSON.stringify(related || {}), createdAt || nowIso(),
     );
     const row = this.db.prepare(`select * from watch_messages where id = ?`).get(id);
-    return this.watchMessageDto(row);
+    const message = this.watchMessageDto(row);
+    if (role === "watcher" && kind === "finding" && severity !== "silent") {
+      try {
+        const watch = this.getWatch(watchId);
+        const target = watch?.brief?.target;
+        enqueueMail({ ...message, type: "watch", project: this.projectName,
+          target: [target?.company || watch?.name, target?.symbol || target?.ticker || target?.code].filter(Boolean).join(" · ") }, this.dataDir);
+      } catch { console.warn("[mail] watch enrichment failed"); }
+    }
+    return message;
   }
 
   watchMessageDto(row) {

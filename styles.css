@@ -922,8 +922,8 @@ body.is-col-resizing{cursor:col-resize;user-select:none}
 .approvals-shelf-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted, #8a8579); }
 
 /* Investment summary: semantic color always has a visible text label. */
-.hl-decision { color: #a52a32; font-weight: 600; }
-.hl-review { color: #a52a32; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.hl-decision { color: #b91c1c; font-weight: 700; }
+.hl-review { color: #b91c1c; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .framework-presentation { max-width: 100%; font-size: 14px; line-height: 1.55; }
 .framework-section { padding: 12px 0; border-bottom: 1px solid var(--border, #dededb); }
 .framework-section h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }

@@ -196,8 +196,24 @@ export function snapshotMessages(session, ctx, entry = null) {
         let content = stateContents.get(statePath);
         if (block.name === "write" && typeof args.content === "string") content = args.content;
         else if (block.name === "edit") {
-          if (typeof content === "string" && typeof args.oldText === "string" && content.split(args.oldText).length === 2) {
-            content = content.replace(args.oldText, () => args.newText ?? "");
+          if (typeof content === "string") {
+            const patches = Array.isArray(args.edits)
+              ? args.edits
+              : (typeof args.oldText === "string"
+                ? [{ oldText: args.oldText, newText: args.newText ?? "" }]
+                : null);
+            if (patches?.length) {
+              let next = content;
+              let ok = true;
+              for (const patch of patches) {
+                if (!patch || typeof patch.oldText !== "string" || next.split(patch.oldText).length !== 2) {
+                  ok = false;
+                  break;
+                }
+                next = next.replace(patch.oldText, () => patch.newText ?? "");
+              }
+              content = ok ? next : undefined;
+            } else content = undefined;
           } else content = undefined;
         }
         if (["write", "edit"].includes(block.name)) {
