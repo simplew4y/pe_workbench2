@@ -35,7 +35,7 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   const storageRoot = path.resolve(env.WORKBENCH_STORAGE_ROOT || root);
   const projectsDir = path.resolve(env.WORKBENCH_PROJECTS_DIR || path.join(storageRoot, "projects"));
   const defaultProjectRoot = path.join(projectsDir, DEFAULT_PROJECT_ID);
-  const modelId = env.PI_MODEL || "deepseek-v4-pro";
+  const modelId = env.PI_MODEL || "deepseek-flash";
   const allowedModels = new Set(["deepseek-v4-pro", "deepseek-flash"]);
   const workbookQuery = env.WORKBOOK_QUERY !== "0";
   const pdfRead = env.PDF_READ !== "0";

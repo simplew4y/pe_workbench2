@@ -17,7 +17,7 @@ npm start            # node server.mjs
 
 ```
 DEEPSEEK_API_KEY=...   # 只放在环境文件里，不写进代码
-PI_MODEL=deepseek-v4-pro
+PI_MODEL=deepseek-flash
 ```
 
 服务默认只监听 `127.0.0.1`，不对外网开放。
@@ -38,7 +38,7 @@ AgentSession  ──  pi-agent-core  ──  pi-ai  ──  https://api.deepseek
 ```
 
 - 每个会话一个 `AgentSession`；事件订阅后转成 SSE 广播。
-- 模型：`deepseek-v4-pro`（可在界面里切到 `deepseek-flash`）。
+- 模型：`deepseek-flash`（默认；可在界面里切到 `deepseek-v4-pro`）。
 - 工具：`read / write / edit / grep / find / ls`，加上自定义 `workbook_query / pdf_read / asr_read / westock_query / anysearch_search / web_fetch / create_tracking`；**没有启用 bash**。
 - 系统提示：Workbench 人设 + 工作空间约定 + 中文/简洁/Markdown（无表格）。
 
@@ -53,7 +53,7 @@ AgentSession  ──  pi-agent-core  ──  pi-ai  ──  https://api.deepseek
 | GET | `/api/sessions/:id/events` | SSE：snapshot / delta / tool / settled |
 | POST | `/api/sessions/:id/messages` | 发送文本 + 附件路径 |
 | POST | `/api/sessions/:id/abort` | 停止当前运行 |
-| POST | `/api/sessions/:id/model` | 切换 `deepseek-v4-pro` / `deepseek-flash` |
+| POST | `/api/sessions/:id/model` | 切换模型；默认 `deepseek-flash`，可选 `deepseek-v4-pro` |
 | GET | `/api/materials` | 工作空间里的真实文件 |
 | POST | `/api/upload` | 上传到 `agent-workspace/uploads/` |
 | GET | `/api/file?path=` | 预览/下载工作空间文件 |
@@ -95,5 +95,5 @@ SSE 事件：`snapshot`、`run.started`、`assistant.delta`、`tool.started`、`
 3. **计划编辑**：目前只能在种子数据/DB 里改 cron 与 prompt。
 4. **模型切换不跨重启**：`setModel` 默认只改当前会话运行时。
 5. **无鉴权**：本地单人使用；对外部署前加登录、CSRF、限流。
-6. **deepseek-v4-pro 只接受文本**：图片上传可以存文件，但当前模型不能直接看图。
+6. **当前模型只接受文本**：图片上传可以存文件，但当前模型不能直接看图。
 7. **标题是截断的第一条消息**：后续可让模型生成会话标题。

@@ -30,7 +30,7 @@ const target = {
   live: { text: "", tools: [], startedAt: 0 },
   es: null,
   globalEs: null,
-  modelId: "deepseek-v4-pro",
+  modelId: "deepseek-flash",
   uploading: false,
   uploadTotal: 0,
   uploadIndex: 0,
