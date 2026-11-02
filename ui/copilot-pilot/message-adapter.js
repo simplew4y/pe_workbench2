@@ -21,6 +21,13 @@ export function toolDetail(name, args = {}) {
       return String(value.command || "");
     case "workbook_query":
       return `${String(value.path || "")} · ${String(value.query || "")}`.trim();
+    case "workbook_trace":
+      return [
+        String(value.path || ""),
+        value.cell || (value.sheet ? `${value.sheet}${value.rows ? ` 行 ${value.rows}` : ""}` : ""),
+      ].filter(Boolean).join(" · ").slice(0, 160);
+    case "validate_state":
+      return String(value.path || "");
     case "asr_read":
       return String(value.path || "");
     case "westock_query":

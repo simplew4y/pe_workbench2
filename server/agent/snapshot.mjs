@@ -37,6 +37,13 @@ export function toolDetail(ctx, name, args = {}) {
       return args.command || "";
     case "workbook_query":
       return `${shortPath(ctx, args.path || "")} · ${args.query || ""}`.trim();
+    case "workbook_trace":
+      return [
+        shortPath(ctx, args.path || ""),
+        args.cell || (args.sheet ? `${args.sheet}${args.rows ? ` 行 ${args.rows}` : ""}` : ""),
+      ].filter(Boolean).join(" · ").slice(0, 160);
+    case "validate_state":
+      return shortPath(ctx, args.path || "");
     case "asr_read":
       return shortPath(ctx, args.path || "");
     case "westock_query":

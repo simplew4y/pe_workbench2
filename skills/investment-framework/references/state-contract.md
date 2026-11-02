@@ -316,13 +316,19 @@ affects, evidence_ids, fixed_conditions, limitations
 
 ## 校验
 
-有 bash 时：
+优先使用 `validate_state` 工具（无 bash 也可用，与脚本同一套规则）：
+
+```
+validate_state({ "path": "exports/.../analysis-state.json" })
+```
+
+没有该工具、但有 bash 时：
 
 ```bash
 node scripts/validate_state.mjs analysis-state.json
 ```
 
-没有 bash 时，按下面清单自查（与脚本检查项一致）：
+两者都没有时，才按下面清单自查（与脚本检查项一致）：
 
 - [ ] `schema_version` 是 `2.1`（历史文件可为 `2.0`），`revision` ≥ 1，`stage` 合法。
 - [ ] `subject.company` / `currency` / `units` 非空，`data_cutoff` 是 `YYYY-MM-DD`。

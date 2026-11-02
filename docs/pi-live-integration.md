@@ -39,8 +39,17 @@ AgentSession  ──  pi-agent-core  ──  pi-ai  ──  https://api.deepseek
 
 - 每个会话一个 `AgentSession`；事件订阅后转成 SSE 广播。
 - 模型：`deepseek-flash`（默认；可在界面里切到 `deepseek-v4-pro`）。
-- 工具：`read / write / edit / grep / find / ls`，加上自定义 `workbook_query / pdf_read / asr_read / westock_query / anysearch_search / web_fetch / create_tracking`；**没有启用 bash**。
+- 工具：`read / write / edit / grep / find / ls`，加上自定义 `workbook_query / workbook_trace / validate_state / pdf_read / asr_read / westock_query / anysearch_search / web_fetch / create_tracking`；**没有启用 bash**。
 - 系统提示：Workbench 人设 + 工作空间约定 + 中文/简洁/Markdown（无表格）。
+
+### 非 bash 专用工具
+
+| 工具 | 能力 | 边界 |
+|---|---|---|
+| `workbook_trace` | 按 `Sheet!A1` 或区域返回公式、缓存值、直接依赖；从输出格向上游走 depth 层（默认 5，最大 15）；按 `sheet` + `rows` 枚举行范围（单次最多 1000 行 / 500 格） | 只读；路径必须在当前项目内；不写工作模型。数值是工作簿缓存值，可能不是最新，以 Excel/LibreOffice 重算为准。`workbook_query` 按关键词捞不到合成目标价格/折价/股本/汇率链路时用它按格复现。 |
+| `validate_state` | 在 Node 进程内校验 `analysis-state.json`，返回结构化 `errors` / `warnings`；无 error 即通过，warning 不阻断 | 只接受当前项目内名为 `analysis-state.json` 的文件；与 `skills/investment-framework/scripts/validate_state.mjs` 共用 `lib/validate-state.mjs`，不调用 bash / child_process / Python。 |
+
+工具白名单只增加这两个名称（`workbook_trace` 随 `WORKBOOK_QUERY=0` 一起关闭；`validate_state` 始终可用）。
 
 ## API
 
@@ -74,7 +83,7 @@ SSE 事件：`snapshot`、`run.started`、`assistant.delta`、`tool.started`、`
 
 - API key 只在 `.env.local` / 进程环境里，代码和日志都不打印。
 - `beforeToolCall` 拦截工作空间外的路径：`read /etc/passwd` 会返回“只能访问工作空间内的路径”。
-- 工具没有 bash，写入限制在 `agent-workspace` 内（约定 + 路径守卫）。
+- 工具没有 bash，写入限制在 `agent-workspace` 内（约定 + 路径守卫）；`validate_state` 与 `workbook_trace` 也各自做项目内路径校验，前者只读状态结构，后者只读工作簿。
 - 上传文件名做了清洗，单文件上限 30 MB。
 - 服务只绑定本机回环地址。
 

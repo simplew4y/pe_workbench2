@@ -112,12 +112,20 @@ curl -X POST localhost:8080/api/materials/<id>/versions/1/restore
 上传 `.xlsx/.xlsm` 后，`WorkbookStore` 会把工作簿解析成公式依赖图，按 blob sha256 缓存到 `data/doc-cache/<sha>.json.gz`，元数据写 `document_parses`。
 
 - Agent 工具：`workbook_query(path, query, maxCells?)`，只返回相关子图（单元格、公式、缓存值、上下游）。
+- Agent 工具：`workbook_trace(path, cell?, sheet?, rows?, depth?, maxCells?)`，按格/区域读公式与直接依赖，或从输出格向上游走 depth 层（默认 5，最大 15）；只读，缓存值可能非最新。`workbook_query` 捞不到合成目标价格链路时用它按格复现。
 - API：`GET /api/materials/:id/workbook`、`POST /api/materials/:id/query`。
 - 解析在后台队列串行执行，不阻塞上传；同一内容只解析一次；重启后缓存仍可用。
 - 关闭：`WORKBOOK_QUERY=0`；Python 路径：`PYTHON_BIN`；解析器升级：`PARSER_VERSION` +1。
 - 目前只支持 xlsx/xlsm；`.xls` 需另存。
 
 详见 [workbook-query.md](workbook-query.md) 与 [workbook-query-plan.md](workbook-query-plan.md)。
+
+## 状态校验（validate_state）
+
+`analysis-state.json` 的结构规则抽到 `lib/validate-state.mjs`，CLI（技能里的 `scripts/validate_state.mjs`）和 Pi 工具共用同一份实现。
+
+- Agent 工具：`validate_state(path)`，只接受项目内名为 `analysis-state.json` 的文件；返回结构化 `errors` / `warnings`，无 error 即通过。
+- 不启用 bash、不调用 child_process/Python；写入路径仍由工作台路径守卫限制在项目内。
 
 ## PDF 读取（pdf_read）
 

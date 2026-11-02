@@ -135,9 +135,10 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 ### 7. 组装、校验、交付
 
 1. 把状态映射成七节报告，正文引用 ID（`T1`、`S2`、`F3`），不复制整段 JSON。
-2. 校验：
-   - 会话有 bash 时：`node <本 skill 目录>/scripts/validate_state.mjs <analysis-state.json>`（技能加载时会给出目录）；
-   - 没有 bash 时：按 [状态契约](references/state-contract.md) 的自查清单逐项核对，并在第 7 节写“脚本校验未执行”。
+2. 校验（优先专用工具，不要因为“没有 bash”跳过）：
+   - **有 `validate_state` 工具时（必须调用）**：`validate_state({ "path": "<analysis-state.json 项目内相对路径>" })`，读取返回的 `errors` / `warnings`；它与本 skill 的 `scripts/validate_state.mjs` 共用同一套规则，不需要 bash 或 child_process。
+   - 没有该工具、但会话有 bash 时：`node <本 skill 目录>/scripts/validate_state.mjs <analysis-state.json>`（技能加载时会给出目录）。
+   - 两者都没有时：才按 [状态契约](references/state-contract.md) 的自查清单逐项核对，并在第 7 节写“脚本校验未执行（当前会话无 validate_state / bash）”。
 3. 修掉所有 error；warning 可以保留但要理解。校验器会检查方法身份、驱动引用、归因闭合、可比性、证据类型和同日反向修正的稳定性，具体规则见 [状态契约](references/state-contract.md)。
 4. 人工再查三件事：**最大驱动是否在 `attribution` 里？有没有把不进入公式的 A 写成目标价变化原因？报告有没有把不同方法写成一条目标价序列？**
 5. `stage` 设为 `draft` 或 `reviewed`。`reviewed` 要求每个 active 观点都有失效条件和反证。

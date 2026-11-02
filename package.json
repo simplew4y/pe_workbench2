@@ -26,6 +26,7 @@
     "test:trace": "node scripts/test-trace.mjs && node scripts/test-trace-hook.mjs",
     "test:trace:e2e": "python3 scripts/test-trace-e2e.py",
     "test:framework": "node scripts/test-framework-state.mjs",
+    "test:agent-tools": "node scripts/test-agent-tools.mjs",
     "test:monitoring": "node scripts/test-monitoring.mjs",
     "test:watch": "node scripts/test-watch.mjs",
     "test:monitoring:store": "node scripts/test-monitoring-store.mjs",

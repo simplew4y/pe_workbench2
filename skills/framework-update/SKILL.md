@@ -105,13 +105,11 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
    ```
 8. `revision`：只有上述 1–6 有实质变化时才 +1；无变化保持原值。
 
-写完若有 bash，跑一次结构校验：
+写完先做结构校验：
 
-```bash
-node <investment-framework skill 目录>/scripts/validate_state.mjs analysis-state.json
-```
-
-没有 bash 时按状态契约自查 ID、引用和状态配对，并在结果 `writeback.note` 里写“未执行脚本校验”。
+- **有 `validate_state` 工具时（必须调用）**：`validate_state({ "path": "<analysis-state.json 项目内相对路径>" })`，先修完 `errors`；`warnings` 可以保留。
+- 没有该工具、但有 bash 时：`node <investment-framework skill 目录>/scripts/validate_state.mjs analysis-state.json`。
+- 两者都没有时：按状态契约自查 ID、引用和状态配对，并在结果 `writeback.note` 里写“未执行脚本校验（当前会话无 validate_state / bash）”。
 
 ### 7. 回写报告（最小补丁）
 
