@@ -15,6 +15,19 @@
 > 信息截止：<data_cutoff> ｜ 币种/单位：<currency> / <units>
 > 状态版本：revision <n> ｜ stage <draft|reviewed|tracked> ｜ schema 2.1
 
+## 执行摘要（由 presentation 生成，七节正文前）
+
+<verdict.text：第一句直接回答问题> ｜ <verdict.status> ｜ <verdict.value_identity>
+
+**需人工复核**：<review_items，≤3：核什么 / 为什么 / 影响>
+**核心驱动**：<key_drivers 引用的记录及权重，≤3>
+**敏感性**：<sensitivities 的基线 / 扰动 / 结果，保留条件和局限>
+**进入跟踪的失效条件**：<falsifiers：已确认触发 / 单期预警 / 接近阈值 / 数据不足，不能把预警写成触发>
+**估值依据**：<valuations 方法、公式、值身份与局限>
+**报告链接**：<报告路径>
+
+高亮仅来自 presentation.highlights 引用，≤4，带“关键判断 / 需复核”标签；不另造摘要数字。
+
 ## 一、研究设定
 
 - 研究对象 / 证券：
@@ -163,3 +176,6 @@
 - 图表只在有真实数据时生成；没有就写缺口，不画假图。
 - 跟踪记录只追加，不覆盖历史；跨方法不写“目标价 A → B”，只写“方法 X 为 A；方法 Y 为 B，不可比”。
 - 同一数据截止日内反向修正，必须写新增的非推断证据和 `stability_note`；只凭“人工判断偏高/偏低”或现价距离调整，标 `needs_review`。
+
+
+判词只写判断，直接表达增长逻辑和估值结论，不写“仅供参考”“不能作为当前可执行目标价”等防御或免责声明。风险与限制只以事实写入“需人工复核”（如“分部乘数未记录依据”）。交付前调用 westock_query 获取最新行情；先去除 ticker 中文后缀、括号和空白并转换市场格式（02513.HK（港股）→hk02513）。market.price/currency/price_date/source/fetched_at 分别记录真实现价、币种、行情日期、来源和 ISO 获取时间，可用 quote_at 记录行情时间；失败时 price=null，记录获取时间和 fetch_error，显示“未获取”，不得沿用缓存价冒充实时价。verdict.valuation_id 引用原 valuations 中的模型价；结论卡同时展示模型价、现价、获取时间及空间=(模型价/现价-1)×100%；行情缺失或币种不一致则空间“未获取”。

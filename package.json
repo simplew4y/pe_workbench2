@@ -42,7 +42,10 @@
     "test:dashboard": "node scripts/test-dashboard.mjs && python3 scripts/test-dashboard-e2e.py",
     "test:dashboard:node": "node scripts/test-dashboard.mjs",
     "test:dashboard:e2e": "python3 scripts/test-dashboard-e2e.py",
-    "test:cli": "node scripts/test-cli.mjs"
+    "test:cli": "node scripts/test-cli.mjs",
+    "test:presentation": "node scripts/test-presentation.mjs && node scripts/test-presentation-render.mjs && node scripts/test-presentation-snapshot.mjs",
+    "test:presentation:browser": "python3 scripts/test-presentation-browser.py",
+    "test:westock": "node scripts/test-westock-ticker.mjs"
   },
   "keywords": [],
   "author": "",

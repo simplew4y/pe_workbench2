@@ -360,3 +360,17 @@ node scripts/validate_state.mjs analysis-state.json
 | `11x` 写成 `PE` 或“目标价 +10%” | 倍数是输入，目标价是输出，口径未定义 | 写 `11x 2026E ARR`，列 ARR/倍数/汇率/股数贡献 |
 | DCF 解析失败写成“未披露” | 工具失败被误判成来源缺失 | `tool_failure` + `gap_ids`，修复后回 DCF |
 | 同日两次反向修正，只写“人工判断” | 没有新增硬数据，容易锚定现价 | 补非推断证据 + `stability_note`，否则标 `needs_review` |
+
+## presentation：首屏视图（历史状态可省略）
+
+新建/实质更新须填写 presentation；不另建估值/敏感性副本。
+
+- verdict：id（全局唯一）、text、status（可采信/条件判断/暂不能判断）、value_identity（复现值/自建情景/当前判断）。
+- review_items：≤3，id/question/reason/impact 全部非空。
+- key_drivers：≤3，reference_id 引用现有状态 ID，weight 为 0–1 相对重要性。
+- highlights：≤4，不重复，仅 ID 字符串；允许引用状态记录、verdict、review_items，不能提供自由文本或 HTML。
+- 多期 F：required_periods 为正整数且不低于 threshold 中的期数；observations 为 period/value 对象数组；重复期间不重复计数。单期或不足期数证据不得将多期条件置为 triggered。连续性、口径和复合条件仍需研究者核实。
+- warnings 保持字符串数组兼容接口，每项前缀稳定原因码，如 [OBSERVED_MISSING]、[INSUFFICIENT_PERIODS]、[LEGACY_SCHEMA]。数值 observed（包括 0）是有效观察值，不能误报为空。
+
+
+判词只写判断，直接表达增长逻辑和估值结论，不写“仅供参考”“不能作为当前可执行目标价”等防御或免责声明。风险与限制只以事实写入“需人工复核”（如“分部乘数未记录依据”）。交付前调用 westock_query 获取最新行情；先去除 ticker 中文后缀、括号和空白并转换市场格式（02513.HK（港股）→hk02513）。market.price/currency/price_date/source/fetched_at 分别记录真实现价、币种、行情日期、来源和 ISO 获取时间，可用 quote_at 记录行情时间；失败时 price=null，记录获取时间和 fetch_error，显示“未获取”，不得沿用缓存价冒充实时价。verdict.valuation_id 引用原 valuations 中的模型价；结论卡同时展示模型价、现价、获取时间及空间=(模型价/现价-1)×100%；行情缺失或币种不一致则空间“未获取”。

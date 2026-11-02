@@ -633,5 +633,24 @@
       "模型理解抽查 CHK1/CHK2；CHK2 差异已保留",
       "T2 证据覆盖不足，置信度 low"
     ]
+  },
+  "presentation": {
+    "verdict": {
+      "id": "verdict",
+      "text": "模型基准价 92，增长假设支持基准情景。",
+      "status": "条件判断",
+      "value_identity": "复现值",
+      "valuation_id": "V1"
+    },
+    "review_items": [],
+    "key_drivers": [
+      {
+        "reference_id": "A1",
+        "weight": 1
+      }
+    ],
+    "highlights": [
+      "verdict"
+    ]
   }
 }

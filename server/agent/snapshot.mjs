@@ -108,8 +108,10 @@ export function snapshotMessages(session, ctx, entry = null) {
     }
   }
 
+  const stateContents = new Map(); // reconstructed successful writes/edits, never current disk state
   const out = [];
   let current = null;
+  let turnStartedAt;
   const flush = () => {
     if (!current) return;
     const segments = current.segments || [];
@@ -141,7 +143,9 @@ export function snapshotMessages(session, ctx, entry = null) {
         text,
         processText,
         tools: current.tools,
+        ...(current.analysisState ? { analysisState: current.analysisState } : {}),
         time: current.time,
+        turnStartedAt: current.turnStartedAt,
       });
     }
     current = null;
@@ -150,13 +154,14 @@ export function snapshotMessages(session, ctx, entry = null) {
   for (const message of session.messages) {
     if (message.role === "user") {
       flush();
+      turnStartedAt = message.timestamp;
       const userText = textOfContent(message.content).replace(/\n\n\[已上传资料\][\s\S]*$/, "");
       out.push({ role: "user", text: userText, time: hm(message.timestamp) });
       continue;
     }
     if (message.role !== "assistant") continue;
 
-    if (!current) current = { role: "assistant", segments: [], tools: [], time: hm(message.timestamp) };
+    if (!current) current = { role: "assistant", segments: [], tools: [], time: hm(message.timestamp), turnStartedAt: turnStartedAt ?? message.timestamp };
     const text = textOfContent(message.content);
     if (text) current.segments.push({ type: "text", text });
 
@@ -176,6 +181,37 @@ export function snapshotMessages(session, ctx, entry = null) {
         : record?.schemaName === "presentation.error"
           ? String(record.payload?.error || "工具结果展示数据不可用")
           : "";
+      const args = block.arguments || {};
+      const statePath = shortPath(ctx, args.path || "");
+      if (result && !result.isError && /(?:^|\/)analysis-state\.json$/.test(statePath)) {
+        if (block.name === "read") {
+          // Successful full reads provide an immutable baseline in a new session.
+          // Partial/truncated reads must not be mistaken for a complete state.
+          const readContent = resultText(result);
+          try {
+            const parsed = JSON.parse(readContent);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) stateContents.set(statePath, readContent);
+          } catch { /* no usable baseline */ }
+        }
+        let content = stateContents.get(statePath);
+        if (block.name === "write" && typeof args.content === "string") content = args.content;
+        else if (block.name === "edit") {
+          if (typeof content === "string" && typeof args.oldText === "string" && content.split(args.oldText).length === 2) {
+            content = content.replace(args.oldText, () => args.newText ?? "");
+          } else content = undefined;
+        }
+        if (["write", "edit"].includes(block.name)) {
+          stateContents.delete(statePath);
+          delete current.analysisState;
+          if (typeof content === "string") {
+            stateContents.set(statePath, content);
+            try {
+              const parsed = JSON.parse(content);
+              if (parsed?.presentation) current.analysisState = parsed;
+            } catch { /* malformed writes fall back to the assistant's text */ }
+          }
+        }
+      }
       current.segments.push({ type: "tool" });
       current.tools.push({
         id: block.id,

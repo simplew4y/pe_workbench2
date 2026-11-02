@@ -55,5 +55,16 @@
     "status": "draft",
     "mode": "self",
     "notes": []
+  },
+  "presentation": {
+    "verdict": {
+      "id": "verdict",
+      "text": "",
+      "status": "条件判断",
+      "value_identity": "复现值"
+    },
+    "review_items": [],
+    "key_drivers": [],
+    "highlights": []
   }
 }

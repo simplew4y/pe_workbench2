@@ -510,14 +510,15 @@ kbd{font-family:"SF Mono",ui-monospace,"JetBrains Mono",monospace;font-size:11px
 .live-dot{width:6px;height:6px;border-radius:50%;background:var(--yellow-fg);animation:live-pulse 1.2s ease-in-out infinite;flex:none}
 @keyframes live-pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
 .msg-report{margin-top:12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
-.report-summary{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2);cursor:pointer;list-style:none;user-select:none}
-.report-summary::-webkit-details-marker{display:none}
-.report-summary:hover{background:#F7F4EE}
+.report-summary{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface-2);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--ink-2);user-select:none}
 .report-title{font-weight:500}
 .report-name{margin-left:auto;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:"SF Mono",ui-monospace,monospace;font-size:11px;color:var(--faint)}
-.report-summary > svg:last-child{flex:none;color:var(--faint);transition:transform .15s ease}
-.msg-report[open] .report-summary > svg:last-child{transform:rotate(90deg)}
-.report-body{padding:14px 18px 18px}
+.report-body{position:relative;padding:14px 18px 18px;font-size:14.5px;line-height:1.7;max-height:calc(10.2em + 14px);overflow:hidden}
+.msg-report:not(.is-expanded) > .report-body::after{content:"";position:absolute;inset:auto 0 0;height:2.5em;background:linear-gradient(transparent,var(--surface));pointer-events:none}
+.msg-report.is-expanded > .report-body{max-height:none;overflow:visible}
+.report-toggle{display:block;margin:6px 18px 10px;padding:4px 0;border:0;background:transparent;color:var(--ink-2);font:inherit;font-size:12px;cursor:pointer}
+.report-toggle:hover{text-decoration:underline}
+.report-toggle:focus-visible{outline:2px solid var(--ink-2);outline-offset:3px}
 .report-body .md-preview{max-width:none;margin:0;padding:0;font-size:14.5px;line-height:1.7}
 .report-loading,.report-error{padding:16px;font-size:12px;color:var(--muted)}
 .report-error{color:var(--red-fg)}
@@ -919,3 +920,25 @@ body.is-col-resizing{cursor:col-resize;user-select:none}
 .approvals-shelf { display: grid; gap: 8px; margin: 0 0 14px; }
 .approvals-shelf:empty { display: none; }
 .approvals-shelf-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted, #8a8579); }
+
+/* Investment summary: semantic color always has a visible text label. */
+.hl-decision { color: #a52a32; font-weight: 600; }
+.hl-review { color: #a52a32; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.framework-presentation { max-width: 100%; font-size: 14px; line-height: 1.55; }
+.framework-section { padding: 12px 0; border-bottom: 1px solid var(--border, #dededb); }
+.framework-section h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+.framework-section p, .framework-section ul { margin: 4px 0; }
+.framework-section ul { padding-left: 20px; }
+.framework-section li { margin: 6px 0; }
+.framework-verdict { font-size: 17px; font-weight: 600; }
+.framework-meta { color: var(--muted, #6d6d68); font-size: 12px; }
+.framework-reviews li > span { display: block; }
+.framework-reviews button { font: inherit; font-size: 11px; margin-top: 4px; padding: 2px 6px; border: 1px solid #ccc; border-radius: 3px; background: transparent; color: #777; }
+.framework-table { overflow-x: auto; }
+.framework-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.framework-table th, .framework-table td { text-align: left; padding: 6px; vertical-align: top; border-bottom: 1px solid #e4e4df; min-width: 65px; }
+.falsifier-status { font-weight: 600; }
+.falsifier-status.is-red { color: #a52a32; }
+.falsifier-status.is-amber { color: #916000; }
+.falsifier-status.is-green { color: #276346; }
+.falsifier-status.is-neutral { color: #666; }

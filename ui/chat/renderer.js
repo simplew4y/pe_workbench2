@@ -10,6 +10,7 @@ import { toast } from "../shared/toast.js";
 import { approvalsShelfHTML } from "../approvals/approvals.js";
 import { renderToolPresentation } from "../tool-renderers/registry.js";
 import { sanitizeMarkdown } from "../previews/previews.js";
+import { renderFrameworkPresentation } from "./presentation.js";
 import { runtime } from "../runtime.js";
 
 const fileById = (id) => selectors.fileById(id);
@@ -154,24 +155,25 @@ function syncLiveTicker() {
 }
 
 const mdCache = new Map();
-function renderMarkdownHTML(text, relPath = '') {
+function renderMarkdownHTML(text, relPath = '', highlightBudget = { remaining: 4 }) {
   const src = String(text || '');
   if (!src) return '';
   const key = `${window.marked ? 'm' : 'f'}\u0000${relPath}\u0000${src}`;
-  if (mdCache.has(key)) return mdCache.get(key);
-  let html;
   if (window.marked) {
     try {
-      html = sanitizeMarkdown(window.marked.parse(src, { gfm: true, breaks: false }), { relPath });
+      // Cache parsing only: sanitization must consume this reply's current budget.
+      let parsed = mdCache.get(key);
+      if (parsed == null) {
+        parsed = window.marked.parse(src, { gfm: true, breaks: false });
+        if (mdCache.size > 160) mdCache.clear();
+        mdCache.set(key, parsed);
+      }
+      return sanitizeMarkdown(parsed, { relPath }, highlightBudget);
     } catch {
-      html = mdToHtml(src);
+      return mdToHtml(src);
     }
-  } else {
-    html = mdToHtml(src);
   }
-  if (mdCache.size > 160) mdCache.clear();
-  mdCache.set(key, html);
-  return html;
+  return mdToHtml(src);
 }
 
 function toolRowHTML(tool) {
@@ -186,7 +188,7 @@ function toolRowHTML(tool) {
     </div>${card ? `<div class="tool-card-slot">${card}</div>` : ''}`;
 }
 
-function toolGroupHTML(tools = [], { live = false, processText = '' } = {}) {
+function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 } } = {}) {
   if (!tools.length && !processText) return '';
   const errors = tools.filter(tool => tool.status === 'error').length;
   const label = live ? liveStatusText() : (tools.length ? `过程 · ${tools.length} 个工具调用` : '过程');
@@ -198,7 +200,7 @@ function toolGroupHTML(tools = [], { live = false, processText = '' } = {}) {
         <span class="tool-summary-label"${status}>${esc(label)}</span>
         ${meta ? `<span class="tool-summary-meta">${esc(meta)}</span>` : ''}
       </summary>
-      ${processText ? `<div class="process-text">${renderMarkdownHTML(processText, '')}</div>` : ''}
+      ${processText ? `<div class="process-text">${renderMarkdownHTML(processText, '', highlightBudget)}</div>` : ''}
       ${tools.length ? `<div class="tool-list">${tools.map(toolRowHTML).join('')}</div>` : ''}
     </details>`;
 }
@@ -221,28 +223,35 @@ function reportKey(path) {
   return `${state.project.id}|${path}#${version || ''}`;
 }
 
-function reportCardHTML(path) {
+function reportCardHTML(path, highlightBudget = { remaining: 4 }) {
   const name = path.split('/').pop();
   const key = reportKey(path);
   const cached = reportCache.get(key);
   const body = cached != null
-    ? `<div class="md-preview report-md">${renderMarkdownHTML(cached, path)}</div>`
+    ? `<div class="md-preview report-md">${renderMarkdownHTML(cached, path, highlightBudget)}</div>`
     : `<div class="report-loading">正在加载报告…</div>`;
-  return `<details class="msg-report" open data-report-path="${esc(path)}">
-      <summary class="report-summary">
+  return `<section class="msg-report" data-report-path="${esc(path)}">
+      <div class="report-summary">
         ${icon('file-text', 13)}
         <span class="report-title">完整报告</span>
         <span class="report-name">${esc(name)}</span>
-        ${icon('chevron-right', 12)}
-      </summary>
+      </div>
       <div class="report-body" data-report-body${cached != null ? ` data-report-key="${esc(key)}"` : ''}>${body}</div>
-    </details>`;
+      <button type="button" class="report-toggle" data-report-toggle aria-expanded="false">展开全文</button>
+    </section>`;
 }
 
 const reportCache = new Map();
 async function hydrateReports(root = threadEl) {
   const nodes = $$('[data-report-path]', root);
   for (const node of nodes) {
+    const toggle = $('[data-report-toggle]', node);
+    if (toggle) toggle.onclick = () => {
+      const expanded = toggle.getAttribute('aria-expanded') !== 'true';
+      node.classList.toggle('is-expanded', expanded);
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.textContent = expanded ? '收起' : '展开全文';
+    };
     const path = node.dataset.reportPath;
     const body = $('[data-report-body]', node);
     if (!path || !body) continue;
@@ -257,7 +266,11 @@ async function hydrateReports(root = threadEl) {
         text = await res.text();
         reportCache.set(key, text);
       }
-      body.innerHTML = `<div class="md-preview report-md">${renderMarkdownHTML(text, path)}</div>`;
+      // Count highlights already allocated anywhere in this reply, including cached reports.
+      const article = node.closest?.('article.msg');
+      const allocated = article ? [...article.querySelectorAll('.hl-decision, .hl-review')].filter(el => !body.contains(el)).length : 0;
+      const highlightBudget = { remaining: Math.max(0, 4 - allocated) };
+      body.innerHTML = `<div class="md-preview report-md">${renderMarkdownHTML(text, path, highlightBudget)}</div>`;
       body.dataset.reportKey = key;
       body.querySelectorAll('a[href]').forEach(link => {
         if (/^https?:/i.test(link.getAttribute('href') || '')) {
@@ -272,12 +285,13 @@ async function hydrateReports(root = threadEl) {
 }
 
 function messageHTML(m) {
+  const highlightBudget = { remaining: 4 };
   const isUser = m.role === 'user';
   const body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
-    : renderMarkdownHTML(m.text || '', '');
-  const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '' });
-  const reports = isUser ? '' : reportPathsFor(m).map(reportCardHTML).join('');
+    : (renderFrameworkPresentation(m.analysisState, { highlightBudget, turnStartedAt: m.turnStartedAt }) || renderMarkdownHTML(m.text || '', '', highlightBudget));
+  const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '', highlightBudget });
+  const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}">
       <span class="msg-avatar">${isUser ? '林' : icon('spark', 15)}</span>
       <div>

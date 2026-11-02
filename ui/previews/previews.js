@@ -789,7 +789,7 @@ const MD_DROP = new Set([
   'button', 'video', 'audio', 'source', 'link', 'meta', 'base',
 ]);
 
-function sanitizeMarkdown(html, f) {
+function sanitizeMarkdown(html, f, highlightBudget = { remaining: 4 }) {
   const template = document.createElement('template');
   template.innerHTML = html;
 
@@ -805,6 +805,7 @@ function sanitizeMarkdown(html, f) {
       return;
     }
     if (!MD_TAGS.has(tag)) {
+      for (const child of [...node.childNodes]) clean(child);
       const fragment = document.createDocumentFragment();
       while (node.firstChild) fragment.appendChild(node.firstChild);
       node.replaceWith(fragment);
@@ -845,7 +846,21 @@ function sanitizeMarkdown(html, f) {
       }
       if ((tag === 'td' || tag === 'th') && ['colspan', 'rowspan', 'align'].includes(name)) continue;
       if (tag === 'ol' && ['start', 'type'].includes(name)) continue;
-      if (name === 'class' && /^[a-z0-9 _-]+$/i.test(attr.value)) continue;
+      if (name === 'class') {
+        // Semantic emphasis only; arbitrary CSS and arbitrary classes cannot style reports.
+        const semantic = tag === 'span' && attr.value.split(/\s+/).find(c => ['hl-decision', 'hl-review'].includes(c));
+        const allowed = [];
+        if (semantic && highlightBudget.remaining > 0) {
+          allowed.push(semantic);
+          highlightBudget.remaining -= 1;
+          const label = semantic === 'hl-review' ? '需复核：' : '关键判断：';
+          if (!node.textContent.startsWith(label)) node.prepend(document.createTextNode(label));
+        }
+        if (tag === 'code') allowed.push(...attr.value.split(/\s+/).filter(c => /^language-[a-z0-9_-]+$/i.test(c)));
+        if (allowed.length) node.setAttribute('class', [...new Set(allowed)].join(' '));
+        else node.removeAttribute('class');
+        continue;
+      }
       if (name === 'title' || name === 'alt') continue;
       node.removeAttribute(attr.name);
     }
