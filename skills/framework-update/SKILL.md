@@ -119,7 +119,7 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
 - 第 4 节：观点状态、证据、置信度变了才改；
 - 第 5 节：估值/敏感性重算、或方法切换后才改；方法切换要并列新旧 + bridge，不写成目标价箭头；
 - 第 6 节：失效条件的观察值、状态、触发情况；
-- 第 7 节：证据、缺口、版本变化。
+- 第 7 节：证据、实质缺口、版本变化；可选字段或小节无内容时省略，不补“暂无”或空值解释。反面证据有有效引用才展示；跟踪记录有首次运行记录才创建标题，已有历史仍只追加。
 
 末尾 `## 跟踪记录` **只追加**一行：
 
@@ -173,4 +173,4 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
 
 每次状态、观点、估值或预警变化都同步 `presentation` 与报告执行摘要，沿用 investment-framework 的字段契约。结论→需人工复核→核心驱动→敏感性→进入跟踪的失效条件→估值依据→报告链接；review_items≤3，key_drivers≤3（含 0–1 权重），highlights 优先 1–2 处（通常 verdict + 一条 R*）、最多 4 个且只引用已有 ID；最后一次交付必须 write 完整 analysis-state.json，禁止只用 edit/edits。删除失效引用，保留复现值/自建情景/当前判断身份，模型时点未核不得凭 Spot 推断日期。
 
-多期条件维护 required_periods 和 observations（期间+数值）；单期预警、接近阈值和数据不足不能写成已确认触发，也不能进入 triggered_falsifier_ids。校验 warning 的原因码应落实到复核项，不用“校验通过”替代投资判断。监测模式不改报告规则仍适用，但状态内 presentation 必须同步。完成后 write 写完整状态以捕获同轮展示，并调用 validate_state。
+多期条件维护 required_periods 和 observations（期间+数值）；单期预警、接近阈值和数据不足不能写成已确认触发，也不能进入 triggered_falsifier_ids。校验 warning 保留在工具结果中，仅将影响结论、估值或监测执行的具体问题写入复核项，不因 warning 自动新增复核项，不展示原因码、校验统计或空字段解释。回答与报告直接给判断及依据，同一限制只说明一次，不新增自查验收或泛化免责段落。监测模式不改报告规则仍适用，但状态内 presentation 必须同步。完成后 write 写完整状态以捕获同轮展示，并调用 validate_state。
