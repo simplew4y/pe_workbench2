@@ -6,6 +6,7 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -120,6 +121,7 @@ export function createSessionService({
   async function createEntry({ id, file, ctx, writeRoots = null }) {
     if (!ctx) throw Object.assign(new Error("project not found"), { status: 404 });
 
+    const researchReview = createResearchReview({ctx});
     let session;
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
@@ -136,8 +138,8 @@ export function createSessionService({
         thinkingLevel: "off",
         sessionManager,
         resourceLoader: loader,
-        tools: config.toolNames,
-        customTools: ctx.tools,
+        tools: [...config.toolNames, "review_research"],
+        customTools: [...ctx.tools, researchReview.tool],
       });
       session = created.session;
     }
@@ -145,8 +147,10 @@ export function createSessionService({
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
       if (outside) return outside;
-      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? undefined;
+      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? researchReview.before(toolCall.name, args) ?? undefined;
     };
+
+    session.agent.afterToolCall = async context => researchReview.record(context);
 
     const entry = {
       id: session.sessionId,

@@ -22,7 +22,7 @@ Commit: `72a2efa`.
 - Real DeepSeek session: `fffd4a34-955e-48da-929e-b549b1644543`; correctly answers 2.1% revenue share, 65% gross margin, 1.6% gross-profit share, Beta 1.49 and USD/GB.
 - This is a targeted, explicitly instructed model check; it does not establish that unrestricted research or every other P0 issue is fixed. The model chose workbook_trace in this check; the changed workbook_query path was separately exercised by the live API assertions.
 
-Remaining: unsupported thresholds, security identity checks, comparability, mandatory research workflow, correction propagation, and comprehensive report evidence validation.
+Remaining at the end of the first pass: issues 3–8 below. Historical entries are retained; see the continuation results.
 
 ## Actual targeted model answer
 
@@ -51,3 +51,19 @@ Remaining: unsupported thresholds, security identity checks, comparability, mand
 - **单位是 USD/GB**（美元每 GB），不是 USD/Gb、也不是人民币价格。即 2026E HBM 平均售价约 8.34 美元/GB。
 
 一句话总结：AH32 是 HBM 收入占比（2.1%）、AH42 是 HBM 毛利率（65%）、AH47 是 HBM 毛利占比（1.6%）；65% 是**毛利率**不是收入占比；AH122 价格单位是 **USD/GB**；Beta=1.49。
+
+
+## Continuation: ordinary QA policy and quote identity
+
+- Issue 6, commit `6507e9e`: research-qa/1 is injected by the host for ordinary/new/resumed sessions, independent of keyword skill selection. Policy test and 11 server tests passed. Prompt injection alone does not guarantee compliance with every financial reasoning requirement.
+- Issue 4, commit `c729d10`: quote requires expectedName and a single matching security code/name before returning prices. Seven identity cases and existing ticker normalization suite passed. Exact name matching is deliberately strict; this does not establish the issuer from a ticker supplied by the model, or validate non-quote commands.
+
+## Issues 3, 5, 8: report preflight
+
+- Added per-session review_research with a write/edit hook for Markdown files under exports/. Full approved content is bound to its SHA-256 and current file baseline; direct partial edits require a new full review. Every numeric line, including headings, requires covered numeric tokens or an explicit unknown statement.
+- Issue 3 regression: a 50% threshold without proof is rejected; a normal model ASP value cannot become an invalidation threshold; explicit threshold source accepted; unknown values clearly marked pending are accepted.
+- Issue 5 regression: same-basis comparison accepted; company, product, metric, unit, period and actual/forecast mismatches each rejected.
+- Issue 8 regression: exact source cell, original cached value, rounded display text, original unit (case-sensitive GB/Gb), column period and ratio operands checked. Wrong body value/unit, wrong year, missing file, extra uncovered number and heading bypass rejected.
+- External citations must come from actual successful read/search/fetch/quote tool results in this session. Source excerpts, locator, displayed number and declared period/entity/metric must be present in captured evidence.
+- 12 agent-tool tests and 11 server tests passed. Real-model regression follows separately.
+- Scope: this is a bounded provenance/consistency preflight, not a semantic financial truth verifier. Unknown claims are explicitly unverified. Product/metric classifications and narrative conclusions still require judgment. Other file formats, non-export paths and free-form chat are outside this write gate.
