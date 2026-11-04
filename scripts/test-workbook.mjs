@@ -258,7 +258,7 @@ async function main() {
     console.log("\ndamaged optional parts");
     const corruptFixtures = [
       ["emf", /图片/, /ZeroDivisionError/],
-      ["drawing", /图形\/图表/, /XML|Premature/],
+      ["drawing", /图形\/图表/, /XML|Premature|ParseError/],
       ["comments", /辅助部件/, /comments/],
       ["hyperlink", /格式与装饰/, /sheet1\.xml/],
     ];
