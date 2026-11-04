@@ -67,3 +67,30 @@ Remaining at the end of the first pass: issues 3–8 below. Historical entries a
 - External citations must come from actual successful read/search/fetch/quote tool results in this session. Source excerpts, locator, displayed number and declared period/entity/metric must be present in captured evidence.
 - 12 agent-tool tests and 11 server tests passed. Real-model regression follows separately.
 - Scope: this is a bounded provenance/consistency preflight, not a semantic financial truth verifier. Unknown claims are explicitly unverified. Product/metric classifications and narrative conclusions still require judgment. Other file formats, non-export paths and free-form chat are outside this write gate.
+
+
+## Issue 7: correction propagation and truthful write status
+
+- Failed write/edit results no longer trigger onMaterialSaved or enter the trace changedFiles list. Both event-level and result-level errors are handled and rendered as errors.
+- Research write results are re-read by the host and compared byte-for-byte with requested content before returning research_write_verified. Missing/mismatched files return an error.
+- Review rejects stale approved baselines and partial edits. It scans sibling reports for explicit retracted phrases and removed quantitative lines copied verbatim from the existing report. Old reports can be preserved with a first-line withdrawal marker and correction link.
+- Regression passed: failed edit notification/trace exclusion, missing-file false-success prevention, successful write receipt, changed baseline rejection, stale sibling detection, valid withdrawal, traversal and symlink-parent rejection. Existing trace suite passed.
+- Scope: exact text/line matching cannot find every paraphrase of an old error; the research policy still requires reviewing all affected reports. The host cannot guarantee that arbitrary final chat prose will honestly describe all tool results.
+
+## Real-model preflight usability regression
+
+- Session `179799f3-8d22-4745-beea-f765a767ee11`, local Product Eng on 8081, same uploaded model. Prompt asked for a brief report, HBM ASP/share/margin, and whether a 50% yield invalidation rule is supported.
+- First run was stopped after three failed review attempts. Direct write was correctly blocked, but the model repeatedly confused kind with valueType, and legitimate rounded values and unit whitespace were rejected. No report was published from those failed attempts.
+- Fixed the interface: explicit claim schema enum, concise valid example, equivalent USD/US$ and whitespace normalization while preserving GB/Gb, rounding checks against the original cached value, reuse of verified period/reference/file metadata. Added positive regressions for these cases while retaining wrong-value/unit/threshold rejection.
+- Resumed-model outcome recorded below. This test is not presented as an uninterrupted first-attempt success.
+
+
+### Resumed report result
+
+- Resumed the same session after the interface fix, asking for concise completion. After further correction of its claims, review_research passed, write succeeded, and the host emitted a read-back verification receipt.
+- Saved test report: projects/product-eng/exports/P0回归-模型核验.md. SHA-256: e92fc733be4e68574b439cd0df7de159603cec97da9d27a009c3e02e4e2ae520.
+- Report values: ASP 8.34 US$/GB, revenue share 2.1%, gross margin 65%; the 50% yield invalidation threshold is marked unsupported/pending.
+- Residual model limitation observed: the final chat overstates absence of a yield field as a certainty. The saved report marks this pending, but a passed report preflight does not validate arbitrary final chat. A fresh ordinary-QA check is recorded separately.
+- Expanded verification: test:p0 passed; agent-tools 12, server 11, tool-contracts 20, protocol 189, workbook 26, and trace passed. Workbook wiring assertion updated to account for the appended per-session review tool.
+- test:p1 did not fully pass: test-approvals reports 13 passed / 6 failed because LibreOffice is unavailable, preventing recalculation and cascading through approval-success assertions. This environment limitation is not counted as a pass. Model write-back is already propose-only on this host.
+- Added executed CLI fixture tests: mismatched security response is suppressed and a verified quote returns its price. No live market-data calls required for this deterministic regression.

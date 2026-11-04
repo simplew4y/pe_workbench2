@@ -44,6 +44,7 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
         });
         break;
       case "tool_execution_end": {
+        const failed = Boolean(event.isError || event.result?.isError);
         const args = entry.toolArgs.get(event.toolCallId) || {};
         entry.toolArgs.delete(event.toolCallId);
         const extracted = extractPresentation(event.result);
@@ -93,14 +94,14 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
           type: "tool.completed",
           id: event.toolCallId,
           name: event.toolName,
-          status: event.isError ? "error" : "done",
+          status: failed ? "error" : "done",
           detail: toolDetail(entry.ctx, event.toolName, args),
           output: resultText(event.result).slice(0, 4000),
           ...(presentation ? { presentation } : {}),
           ...(presentationError ? { presentationError } : {}),
         });
-        onMaterialSaved(entry, event.toolName, args);
-        if (["write", "edit"].includes(event.toolName) && typeof args.path === "string") {
+        if (!failed) onMaterialSaved(entry, event.toolName, args);
+        if (!failed && ["write", "edit"].includes(event.toolName) && typeof args.path === "string") {
           const root = path.resolve(entry.ctx.root);
           const absolute = path.resolve(root, args.path);
           if (absolute.startsWith(root + path.sep)) {

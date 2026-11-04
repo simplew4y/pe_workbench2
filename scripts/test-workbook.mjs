@@ -370,7 +370,7 @@ async function main() {
       ].map((file) => fs.readFileSync(path.join(PROJECT, file), "utf8")).join("\n");
       assert.match(source, /function warmWorkbook\(ctx, material\)/);
       assert.ok((source.match(/warmWorkbook\(ctx, material\);/g) || []).length >= 2);
-      assert.match(source, /customTools: ctx\.tools/);
+      assert.match(source, /customTools:\s*\[\.\.\.ctx\.tools, researchReview\.tool\]/);
       assert.match(source, /new AsrService/);
       assert.match(source, /warmAsr\(ctx, material\)/);
       assert.ok(source.includes("workbookMatch") && source.includes("workbook|query"));

@@ -34,6 +34,8 @@ if(['all','comparison'].includes(mode)){
 }
 if(['all','citation'].includes(mode)){
  assert.equal((await review([cell])).ok,true);
+ assert.equal((await review([{...cell,unit:'USD/GB'}])).ok,true,'equivalent currency alias and spaces accepted');
+ assert.equal((await reviewClaims({content:cell.text,claims:[cell],store,workbooks:{queryMaterial:async()=>({seeds:[cell.ref],cells:[{ref:cell.ref,value:8.34039754980094,rowLabel:'ASP (US$ / GB)',columnLabel:'2026E'}]})}})).ok,true,'rounded tool display can be cited without guessing hidden precision');
  for(const patch of [{unit:'US$ / Gb'},{period:'2027E'},{value:9},{file:'missing'},{text:cell.text.replace('8.34','9.34')},{text:cell.text.replace('GB','Gb')},{text:cell.text+'，另有良率50%'}]) assert.equal((await review([{...cell,...patch}])).ok,false);
  assert.equal((await review([{...cell,text:'# '+cell.text+' 多出50%'}])).ok,false,'headings cannot hide unsupported numbers');
  const uncovered=await reviewClaims({content:'未经核验的良率50%',claims:[],store,workbooks});assert.equal(uncovered.ok,false);
@@ -49,6 +51,10 @@ if(['all','correction'].includes(mode)){
  const args={path:'exports/report.md',content:cell.text,claims:[cell]};
  assert.equal((await guard.tool.execute('id',args)).isError,false);
  assert.equal(guard.before('write',args),undefined);
+ assert.equal(guard.record({toolCall:{name:'write'},args,result:{content:[]}}).isError,true,'missing write cannot be declared complete');
+ fs.writeFileSync(path.join(root,args.path),args.content);
+ assert.match(guard.record({toolCall:{name:'write'},args,result:{content:[]}}).content[0].text,/research_write_verified/);
+
  assert.equal(guard.before('write',args).block,true,'approval single use');
  await guard.tool.execute('id',args);fs.writeFileSync(path.join(root,args.path),'concurrent change');
  assert.equal(guard.before('write',args).block,true,'baseline changed');
@@ -60,6 +66,10 @@ if(['all','correction'].includes(mode)){
  fs.writeFileSync(path.join(root,'exports/old.md'),withdrawal);
  assert.equal((await guard.tool.execute('id',{...args,retracted:['HBM收入占比65%']})).isError,false);
  assert.equal((await guard.tool.execute('id',{...args,path:'../escape.md'})).isError,true);
+ const stale='旧报告写道：HBM收入占比达到65%，这是核心估值假设。';
+ fs.writeFileSync(path.join(root,args.path),stale);
+ fs.writeFileSync(path.join(root,'exports/stale-copy.md'),stale);
+ assert.equal((await guard.tool.execute('id',args)).isError,true,'automatically find removed quantitative lines copied to sibling reports');
  fs.symlinkSync(os.tmpdir(),path.join(root,'exports/link'));
  assert.equal((await guard.tool.execute('id',{...args,path:'exports/link/escape-new.md'})).isError,true);
  assert.equal(createResearchReview({ctx:{root,store,workbooks}}).before('write',{path:'exports/plain.md',content:'价格50'}).block,true);
