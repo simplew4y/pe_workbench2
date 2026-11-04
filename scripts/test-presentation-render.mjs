@@ -15,6 +15,28 @@ assert.equal((html.match(/class="hl-(decision|review)"/g)||[]).length,4);
 assert.ok(html.includes('关键判断：')); assert.ok(html.includes('需复核：'));
 assert.equal(renderFrameworkPresentation({}), '');
 assert.equal(renderFrameworkPresentation({presentation:{}}), '');
+
+// Optional sections disappear when absent or empty; core prices remain visible.
+for (const value of [undefined, []]) {
+  const empty = {presentation: {verdict: state.presentation.verdict, review_items: value, key_drivers: value}, sensitivities: value, falsifiers: value, valuations: value};
+  const rendered = renderFrameworkPresentation(empty);
+  for (const title of ['需人工复核', '核心驱动', '敏感性', '进入跟踪的失效条件', '估值依据']) {
+    assert.ok(!rendered.includes(`<h3>${title}</h3>`), `${title} is hidden without records`);
+  }
+  assert.ok(!rendered.includes('暂无'));
+  assert.ok(rendered.includes('模型价 未获取'));
+  assert.ok(rendered.includes('现价 未获取'));
+  assert.ok(rendered.includes('空间 未获取'));
+}
+const noReview = structuredClone(state);
+noReview.presentation.review_items = [];
+const noReviewHTML = renderFrameworkPresentation(noReview);
+assert.ok(!noReviewHTML.includes('<h3>需人工复核</h3>'));
+assert.ok(noReviewHTML.includes('<h3>敏感性</h3>'), 'other populated sections remain');
+const retiredValuation = structuredClone(noReview);
+retiredValuation.valuations[0].status = 'superseded';
+assert.ok(!renderFrameworkPresentation(retiredValuation).includes('<h3>估值依据</h3>'));
+
 state.falsifiers[0].status='triggered'; assert.ok(renderFrameworkPresentation(state).includes('数据不足'));
 state.presentation.highlights=['missing']; assert.equal((renderFrameworkPresentation(state).match(/class="hl-/g)||[]).length,0);
 const renderer=fs.readFileSync(new URL('../ui/chat/renderer.js',import.meta.url),'utf8');
