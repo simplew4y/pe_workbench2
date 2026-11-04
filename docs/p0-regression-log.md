@@ -94,3 +94,13 @@ Remaining at the end of the first pass: issues 3–8 below. Historical entries a
 - Expanded verification: test:p0 passed; agent-tools 12, server 11, tool-contracts 20, protocol 189, workbook 26, and trace passed. Workbook wiring assertion updated to account for the appended per-session review tool.
 - test:p1 did not fully pass: test-approvals reports 13 passed / 6 failed because LibreOffice is unavailable, preventing recalculation and cascading through approval-success assertions. This environment limitation is not counted as a pass. Model write-back is already propose-only on this host.
 - Added executed CLI fixture tests: mismatched security response is suppressed and a verified quote returns its price. No live market-data calls required for this deterministic regression.
+
+
+### Fresh ordinary-QA regression and final state
+
+- New session `3981e27e-7468-41af-ad69-91d8a62917cf` asked whether hypothetical 51.6% H1 margin establishes a 60% FY forecast, and whether the uploaded model supports a 50% HBM yield invalidation threshold. No skill keyword or tool instructions were supplied.
+- The model used workbook_query eight times and rejected both conclusions: periods are incomparable, and no evidenced 50% invalidation threshold can be derived. It also identified the workbook's net-margin forecast as approximately 51.8%.
+- This case passes the specific threshold/comparability acceptance checks. Its wording still overstates search absence as proof that a field does not exist. This remains a narrative reliability limitation, not a claim of fully reliable autonomous investment research.
+- Runtime fixes: `6507e9e`, `c729d10`, `9be8dcd`, `bc1d73a`. Prior fixes `72a2efa`, `f474252` remain on branch `fix/p0-research-reliability`.
+- Local 8081 is running the changed code. No remote deployment or push performed; the pre-existing .gitignore modification is untouched. Test sessions and the clearly named P0 report are preserved for inspection in Product Eng.
+- Re-run focused checks with `npm run test:p0`; tests are offline except the separately documented real-model sessions.
