@@ -106,6 +106,22 @@ async function main() {
       assert.equal(graph.cells.get("模型!B5").colLabel, "2025");
     });
 
+    await test("independent scalar blocks, annual headers and amount conversions", async () => {
+      const graph = await workbooks.getGraph(sha, { fileName: "test-model.xlsx", ext: "xlsx" });
+      const first = ref => queryGraph(graph, "Valuation blocks!" + ref, { maxCells: 1 }).cells[0];
+      assert.equal(first("F12").sourceContext.labelRef, "Valuation blocks!B12");
+      assert.equal(first("N12").rowLabel, "");
+      assert.deepEqual(first("N12").sourceContext.context, []);
+      assert.equal(first("G4").period, "2030E");
+      assert.equal(first("F4").annualCounterpart.ref, "Valuation blocks!G4");
+      assert.equal(first("G4").amount.yiYuan, 7453.99);
+    });
+
+    await test("Excel error values cannot replace product labels", async () => {
+      const result=await workbooks.queryMaterial(material.id,"Valuation blocks!G16",{maxCells:1});
+      assert.equal(result.cells[0].rowLabel,"HBM");
+    });
+
     await test("SUM range expands to every intermediate cell", async () => {
       const graph = await workbooks.getGraph(sha, {
         fileName: "test-model.xlsx",
@@ -258,7 +274,7 @@ async function main() {
     console.log("\ndamaged optional parts");
     const corruptFixtures = [
       ["emf", /图片/, /ZeroDivisionError/],
-      ["drawing", /图形\/图表/, /XML|Premature/],
+      ["drawing", /图形\/图表/, /XML|Premature|ParseError/],
       ["comments", /辅助部件/, /comments/],
       ["hyperlink", /格式与装饰/, /sheet1\.xml/],
     ];
@@ -370,7 +386,7 @@ async function main() {
       ].map((file) => fs.readFileSync(path.join(PROJECT, file), "utf8")).join("\n");
       assert.match(source, /function warmWorkbook\(ctx, material\)/);
       assert.ok((source.match(/warmWorkbook\(ctx, material\);/g) || []).length >= 2);
-      assert.match(source, /customTools: ctx\.tools/);
+      assert.match(source, /customTools:\s*\[\.\.\.ctx\.tools, researchReview\.tool\]/);
       assert.match(source, /new AsrService/);
       assert.match(source, /warmAsr\(ctx, material\)/);
       assert.ok(source.includes("workbookMatch") && source.includes("workbook|query"));

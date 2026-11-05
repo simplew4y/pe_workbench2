@@ -6,6 +6,9 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import {auditResearch} from "../../lib/research-audit.mjs";
+import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
+import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -120,6 +123,9 @@ export function createSessionService({
   async function createEntry({ id, file, ctx, writeRoots = null }) {
     if (!ctx) throw Object.assign(new Error("project not found"), { status: 404 });
 
+    const researchReview = createResearchReview({ctx,
+      authorizeWrite: args => blockOutsideProject(ctx, "write", args) ?? blockOutsideWriteRoots(ctx, "write", args, writeRoots),
+    });
     let session;
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
@@ -136,17 +142,36 @@ export function createSessionService({
         thinkingLevel: "off",
         sessionManager,
         resourceLoader: loader,
-        tools: config.toolNames,
-        customTools: ctx.tools,
+        tools: [...config.toolNames, "review_research"],
+        customTools: [...ctx.tools, researchReview.tool],
       });
       session = created.session;
+      researchReview.restoreEvidence(session.messages);
+      const provider=session.agent.streamFunction;
+      const recordAudit=record=>{
+        fs.appendFileSync(path.join(ctx.root,".pi","research-audit.jsonl"),JSON.stringify(record)+"\n");
+      };
+      session.agent.streamFunction = guardResearchDelivery(provider,{
+        recordAudit,
+        audit:(source,model,context,options,draft)=>auditResearch(source,model,context,options,draft,{workbookEvidence:researchReview.evidenceSnapshot()}),
+        onContext:(model,context,options)=>{
+          researchReview.restoreEvidence(context.messages);
+          researchReview.setAuditor(async(content,extra)=>{
+            const verdict=await auditResearch(provider,model,context,options,content,{...extra,workbookEvidence:researchReview.evidenceSnapshot()});
+            recordAudit({...verdict,kind:"report",at:new Date().toISOString()});
+            return verdict;
+          });
+        },
+      });
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
       if (outside) return outside;
-      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? undefined;
+      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? researchReview.before(toolCall.name, args) ?? undefined;
     };
+
+    session.agent.afterToolCall = async context => researchReview.record(context);
 
     const entry = {
       id: session.sessionId,
@@ -162,7 +187,7 @@ export function createSessionService({
       localRunId: null,
     };
     entry.snapshot = () => serializeSession(entry);
-    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled });
+    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled, onRunStarted: researchReview.startRun });
     entry.agui = new PiAgUiAdapter({
       session,
       threadId: entry.id,

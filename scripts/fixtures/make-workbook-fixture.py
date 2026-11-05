@@ -39,6 +39,20 @@ def main() -> None:
     chinese.append(["折现率", 0.1])
     chinese.append(["估值", "=B7/(1+B8)"])
 
+    blocks = wb.create_sheet("Valuation blocks")
+    blocks["B2"] = "CNY mn"
+    blocks["F2"] = "4Q30E"
+    blocks["G1"] = 0.85
+    blocks["G2"] = "2030E"
+    blocks["B4"] = "Net income"
+    blocks["F4"], blocks["G4"] = 123, 745399
+    blocks["B12"] = "Risk premium"
+    blocks["F12"], blocks["N12"] = 0.065, 143.89
+    blocks["N13"] = "=N12+F12+F4+G4"
+    blocks["B16"] = "HBM"
+    blocks["F16"] = "#DIV/0!"
+    blocks["G16"] = 0.65
+
     wb.save(out)
     print(out)
 
