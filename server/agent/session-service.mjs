@@ -146,6 +146,7 @@ export function createSessionService({
         customTools: [...ctx.tools, researchReview.tool],
       });
       session = created.session;
+      researchReview.restoreEvidence(session.messages);
       const provider=session.agent.streamFunction;
       const recordAudit=record=>{
         fs.appendFileSync(path.join(ctx.root,".pi","research-audit.jsonl"),JSON.stringify(record)+"\n");
@@ -153,11 +154,14 @@ export function createSessionService({
       session.agent.streamFunction = guardResearchDelivery(provider,{
         recordAudit,
         audit:(source,model,context,options,draft)=>auditResearch(source,model,context,options,draft,{workbookEvidence:researchReview.evidenceSnapshot()}),
-        onContext:(model,context,options)=>researchReview.setAuditor(async(content,extra)=>{
-          const verdict=await auditResearch(provider,model,context,options,content,{...extra,workbookEvidence:researchReview.evidenceSnapshot()});
-          recordAudit({...verdict,kind:"report",at:new Date().toISOString()});
-          return verdict;
-        }),
+        onContext:(model,context,options)=>{
+          researchReview.restoreEvidence(context.messages);
+          researchReview.setAuditor(async(content,extra)=>{
+            const verdict=await auditResearch(provider,model,context,options,content,{...extra,workbookEvidence:researchReview.evidenceSnapshot()});
+            recordAudit({...verdict,kind:"report",at:new Date().toISOString()});
+            return verdict;
+          });
+        },
       });
     }
 

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {createAssistantMessageEventStream} from "@earendil-works/pi-ai";
-import {AUDIT_CHECKS,parseAudit,evidenceTimeline,auditResearch,deterministicEvidenceIssues} from "../lib/research-audit.mjs";
+import {AUDIT_CHECKS,parseAudit,evidenceTimeline,auditResearch,deterministicEvidenceIssues,researchContext} from "../lib/research-audit.mjs";
 import {guardResearchDelivery} from "../lib/research-delivery.mjs";
 import {createResearchReview,reviewClaims} from "../lib/research-review.mjs";
 import {queryGraph,formatResult} from "../lib/workbook-query.mjs";
@@ -57,7 +57,7 @@ await test("审校连续失败时有限重试，草稿不会发布或入历史",
  {},{messages:[{role:"user",content:"检查估值"}]},{});
  const events=[];for await(const e of result)events.push(e);
  assert.equal(n,4);assert.doesNotMatch(JSON.stringify(events),/62%/);
- assert.match((await result.result()).content[0].text,/未完成证据核验/);
+ assert.match((await result.result()).content[0].text,/尚缺推导依据/);
 });
 await test("非研究聊天保留普通流式输出",async()=>{
  const result=await guardResearchDelivery(()=>stream("你好"),{audit:async()=>{throw new Error("must not audit");}})(
@@ -154,14 +154,43 @@ await test("标准Gb到GB换算常数允许，任意阈值及错误换算不豁�
  assert.equal((await run("Gb→GB 换算除以 8，良率门槛50%。")).ok,false);
 });
 
-await test("连续报告失败在宿主层终止，避免模型无限重试和额外计费",async()=>{
+await test("连续报告失败停止工具重试，但仍交付经过核验的答复",async()=>{
  const messages=[{role:"user",content:"保存研究报告"}];
  for(let i=0;i<6;i++){
   messages.push({role:"assistant",content:[{type:"toolCall",id:"r"+i,name:"review_research",arguments:{path:"exports/report.md"}}]});
   messages.push({role:"toolResult",toolCallId:"r"+i,isError:true,content:[{type:"text",text:"校验失败"}]});
  }
- const result=await guardResearchDelivery(()=>{throw new Error("must not call provider");})({}, {messages},{});
+ let calls=0;
+ const result=await guardResearchDelivery((_model,context)=>{
+  calls++;assert.deepEqual(context.tools,[]);
+  return stream("模型假设仍待外部证据验证，失效信号应结合价格和成本变化观察，不能直接编造定量门槛。");
+ },{audit:async()=>({ok:true,issues:[]})})({}, {messages},{});
  for await(const e of result){}
- assert.match((await result.result()).content[0].text,/重试上限/);
+ assert.equal(calls,2);
+ assert.match((await result.result()).content.map(p=>p.text).join("\n"),/模型假设仍待外部证据验证[\s\S]*尚未保存/);
 });
 console.log("Research reliability: "+count+" scenarios passed");
+
+await test('审校格式差异不误拒，部分协议错误保留有效意见，异常状态可区分',()=>{
+ const draft='模型毛利率 **84.2%**（2026 年）。';
+ const verdict={checks:{...pass.checks,numeric_units:'fail'},issues:[{check:'numeric_units',excerpt:'模型毛利率 84.2%(2026年)',reason:'测试定位'}]};
+ const result=parseAudit(JSON.stringify(verdict),draft);
+ assert.equal(result.status,'reviewed');assert.equal(result.issues[0].excerpt,'模型毛利率 **84.2%**（2026 年）');
+ verdict.issues.push({check:'numeric_units',excerpt:'不存在的句子',reason:'无效条目'});
+ const mixed=parseAudit(JSON.stringify(verdict),draft);
+ assert.equal(mixed.status,'unavailable');assert.ok(mixed.issues.some(i=>i.excerpt===result.issues[0].excerpt));
+ assert.equal(parseAudit('invalid',draft).status,'unavailable');
+});
+
+await test('历史报告草稿与实际证据分离，当前修复草稿保留',()=>{
+ const call={role:'assistant',content:[{type:'toolCall',id:'r',name:'review_research',arguments:{path:'exports/r.md',content:'虚构的历史草稿',claims:[{text:'伪事实'}]}}]};
+ const tool={role:'toolResult',toolCallId:'real',toolName:'workbook_query',content:[{type:'text',text:'原始模型证据'}]};
+ const context={messages:[call,tool,{role:'user',content:'继续核验'},call]};
+ const clean=researchContext(context);
+ assert.equal(clean.messages[0].content[0].arguments.content,undefined);
+ assert.equal(clean.messages[1],tool);assert.equal(clean.messages[3],call);
+ assert.equal(context.messages[0].content[0].arguments.content,'虚构的历史草稿','history is not mutated');
+ const audit=evidenceTimeline(context.messages);
+ assert.equal(audit[0].calls[0].arguments.content,undefined);
+ assert.equal(audit[1].text,'原始模型证据');
+});

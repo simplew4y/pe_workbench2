@@ -8,6 +8,8 @@ import {loadConfig} from "../server/config.mjs";
 import {auditResearch} from "../lib/research-audit.mjs";
 const config=await loadConfig();
 const cases=[
+ ["rounding-positive",true,"workbook_query","Model!G8 2026E 毛利率缓存值0.841551219079623，属于模型预测假设。","模型2026E毛利率约84.2%（Model!G8），属于模型假设，不代表实绩。"],
+ ["progress-negative",false,"workbook_query","Model!G8 2026E毛利率84.16%。","我先重新梳理"],
  ["metric",false,"workbook_trace","Model!C11 HBM, 区块GM, =C9/C4, value=0.65；C9 HBM毛利1560百万元；C4 HBM收入2400百万元；C3总收入12000百万元。","HBM收入占比是65%，对应Model!C11。"],
  ["unit",false,"workbook_query","Model!C4 2031E HBM收入2400百万元，24亿元，来自Revenues区块。","2031E HBM收入是2400万元（Model!C4）。"],
  ["threshold",false,"deepseek_search","2028-03-01 媒体摘要：某工艺当前良率约28%。未披露经济性阈值。","到2029年良率必须达到62%才能商业化，这是业内共识。"],

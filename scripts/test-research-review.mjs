@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {Value} from 'typebox/value';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {reviewClaims,createResearchReview} from '../lib/research-review.mjs';
 const store={findMaterialByPath: file=>file==='uploads/model.xlsx'?{id:'m'}:null};
@@ -96,4 +97,86 @@ if(['all','correction'].includes(mode)){
  assert.equal(createResearchReview({ctx:{root,store,workbooks}}).before('write',{path:'exports/plain.md',content:'价格50'}).block,true);
  console.log('PASS correction: full-content approval, edit block, baseline race, old-report scan, withdrawal and path guard');
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+
+if (mode==='all') {
+ const metadata = '> 模型：`uploads/model.xlsx`（2026-09-04 版）\n> 证据截止：2026-11-05\n## 0. 对象身份校准\n## 1. 结论\n## 2.1 假设与失效信号\n| A1 | 待验证 |';
+ const check = (content,claims=[],evidence=new Map())=>reviewClaims({content,claims,evidence,store,workbooks,file:'uploads/model.xlsx'});
+ assert.equal((await check(metadata)).ok,true,'version/date/heading/table identifiers are metadata');
+ assert.equal((await check('> 模型：长鑫 Model 20260904（.xlsx，2026-09-04 版）')).ok,true);
+ for (const content of ['## 1. 毛利率已达70%','> 证据截止：2026-11-05，良率70%', '> 模型：2026年毛利率70%', '2026 毛利率待观察', metadata+'\n毛利率70%', '| A1 | 毛利率70% |']) {
+  assert.equal((await check(content)).ok,false,'financial claims not exempt: '+content);
+ }
+ const source={id:'s',kind:'source',text:'甲公司2026年营业利润率70%（来源披露，待独立验证）',evidenceId:'fetch',quote:'公司营业利润率达到70%。',contextQuote:'甲公司2026年财报\n公司营业利润率达到70%。',locator:'https://example.test/report',value:.7,valueText:'70%',unit:'ratio',entity:'甲公司',metric:'营业利润率',period:'2026年'};
+ const evidence=new Map([['fetch',{kind:'fetched_document',text:source.contextQuote+'\n'+source.locator}]]);
+ assert.equal((await check(source.text,[source],evidence)).ok,true,'verbatim nearby title supplies subject/period');
+ assert.equal((await check(source.text,[{...source,contextQuote:source.contextQuote.replace('2026年','2026 年').replace('\n',' '),period:'2026 年'}],evidence)).ok,true,'formatting whitespace is not a factual difference');
+ assert.equal((await check(source.text,[source],new Map([['fetch',{kind:'fetched_document',text:evidence.get('fetch').text.replace('70%','7 0%')}]]))).ok,false,'whitespace cannot join distinct numbers');
+ const recovered=await check(source.text,[{...source,evidenceId:undefined}],evidence);
+ assert.equal(recovered.ok,true);assert.deepEqual(recovered.resolvedEvidence,[{id:'s',evidenceId:'fetch'}]);
+ const ambiguous=new Map([...evidence,['other',evidence.get('fetch')]]);
+ assert.equal((await check(source.text,[{...source,evidenceId:undefined}],ambiguous)).ok,false,'ambiguous evidence must not be guessed');
+ for (const patch of [{evidenceId:'invented'},{quote:'营业利润率为70%'},{entity:'乙公司'},{period:'2027年'},{contextQuote:'甲公司2026年财报\n公司营业利润率为70%。'},{contextQuote:'x'.repeat(2100)+source.contextQuote},{valueText:'营业利润率达到70%'},{value:70},{locator:'https://invented.test'}]) {
+  assert.equal((await check(source.text,[{...source,...patch}],evidence)).ok,false,JSON.stringify(patch));
+ }
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'research-source-'));
+ try {
+  fs.mkdirSync(path.join(root,'exports'));
+  const guard=createResearchReview({ctx:{root,store,workbooks}});
+  const args={path:'exports/source.md',content:metadata+'\n'+source.text,file:'uploads/model.xlsx',claims:[source],save:true};
+  assert.equal(Value.Check(guard.tool.parameters,args),true,'valid source schema');
+  for (const patch of [{evidenceId:undefined},{quote:undefined},{value:undefined},{valueText:'营业利润率70%'}]) assert.equal(Value.Check(guard.tool.parameters,{...args,claims:[{...source,...patch}]}),false,'invalid source arguments rejected at contract');
+  guard.record({toolCall:{id:'fetch',name:'deepseek_fetch'},args:{url:source.locator},result:{content:[{type:'text',text:evidence.get('fetch').text}]}});
+  const restored=createResearchReview({ctx:{root,store,workbooks}});
+  restored.restoreEvidence([
+    {role:'assistant',content:[{type:'toolCall',id:'fetch',name:'deepseek_fetch'}]},
+    {role:'toolResult',toolCallId:'fetch',isError:false,content:[{type:'text',text:evidence.get('fetch').text+'\n[research_evidence_id] fetch'}]},
+    {role:'assistant',content:[{type:'toolCall',id:'error-source',name:'deepseek_fetch'}]},
+    {role:'toolResult',toolCallId:'error-source',isError:true,content:[{type:'text',text:evidence.get('fetch').text}]}
+  ]);
+  assert.equal((await restored.tool.execute('resume',{...args,save:false})).isError,false,'resume reuses recorded evidence without refetching');
+  restored.restoreEvidence([
+    {role:'assistant',content:[{type:'toolCall',id:'wb',name:'workbook_query',arguments:{path:'uploads/model.xlsx'}}]},
+    {role:'toolResult',toolCallId:'wb',isError:false,content:[],details:{researchEvidence:[{ref:'Model!C11',value:.7,metricContext:{label:'GM'}}]}}
+  ]);
+  assert.equal(restored.evidenceSnapshot()[0].metricContext.label,'GM','resume preserves structured workbook semantics for auditing');
+  assert.equal((await restored.tool.execute('resume-error',{...args,save:false,claims:[{...source,evidenceId:'error-source'}]})).isError,true,'failed fetch cannot become evidence');
+  let audited=0,writes=0;
+  guard.setAuditor(async()=>{audited++;return {ok:true,issues:[]};});
+  const saved=await guard.tool.execute('save',args,undefined,undefined,{executeTool:async(_name,write)=>{
+   fs.writeFileSync(path.join(root,write.path),write.content);writes++;return {result:{content:[]}};
+  }});
+  assert.equal(saved.isError,false,JSON.stringify(saved));assert.equal(audited,1);assert.equal(writes,1);
+  assert.equal(fs.readFileSync(path.join(root,args.path),'utf8'),args.content);
+  const broken=Array.from({length:12},(_,i)=>({...source,id:'bad'+i,evidenceId:'missing'+i}));
+  const failed=await guard.tool.execute('bad',{...args,path:'exports/bad.md',claims:broken});
+  assert.ok(failed.details.errors.some(e=>e.startsWith('claims[11]')),'later claim errors must remain visible');
+  assert.match(failed.details.nextStep,/evidenceId/);
+  assert.equal(writes,1);assert.equal(audited,1,'bad source blocked before audit/write');
+  const excerpt={path:'exports/excerpt.md',save:true,content:'# 核验报告\n\n{{source:s1}}\n\n该比例尚未独立核实，需取得分子分母复算。',
+    sources:[{id:'s1',evidenceId:'fetch',quote:source.contextQuote,locator:source.locator}]};
+  const writeContext={executeTool:async(_name,write)=>{fs.writeFileSync(path.join(root,write.path),write.content);writes++;return {result:{content:[]}};}};
+  assert.equal(Value.Check(guard.tool.parameters,excerpt),true);
+  assert.equal((await guard.tool.execute('excerpt',excerpt,undefined,undefined,writeContext)).isError,false);
+  const body=fs.readFileSync(path.join(root,excerpt.path),'utf8');
+  assert.match(body,/来源原文（不等于独立验证）/);assert.match(body,/70%/);assert.doesNotMatch(body,/\{\{source:/);
+  const bound={...excerpt,content:'# 2026 年核验\n\n来源披露营业利润率70%。{{source:s1}}'};
+  assert.equal((await guard.tool.execute('bound',bound,undefined,undefined,writeContext)).isError,false,'same-paragraph quote binds restated number');
+  assert.equal((await guard.tool.execute('unbound',{...bound,content:'来源披露营业利润率70%。\n\n{{source:s1}}'},undefined,undefined,writeContext)).isError,true,'unrelated paragraph not automatically bound');
+  for(const value of ['90%','-70%','202670%']) assert.equal((await guard.tool.execute('invented-number',{...bound,content:'来源披露营业利润率'+value+'。{{source:s1}}'},undefined,undefined,writeContext)).isError,true,'adjacent citation cannot cover fabricated number '+value);
+  const beforeWrites=writes;
+  for(const patch of [{evidenceId:'fabricated'},{quote:'公司营业利润率为90%。'},{locator:'https://fake.test'}, {quote:source.contextQuote.replace('70%','7 0%')}]) {
+   assert.equal((await guard.tool.execute('bad-excerpt',{...excerpt,sources:[{...excerpt.sources[0],...patch}]},undefined,undefined,writeContext)).isError,true);
+  }
+  assert.equal((await guard.tool.execute('extra-number',{...excerpt,content:excerpt.content+'\n良率门槛50%'},undefined,undefined,writeContext)).isError,true);
+  assert.equal(writes,beforeWrites);
+  guard.setAuditor(async()=>({ok:false,issues:[{reason:'来源摘录不能证明独立验证'}]}));
+  assert.equal((await guard.tool.execute('overclaim',{...excerpt,content:excerpt.content+'\n已独立证实。'},undefined,undefined,writeContext)).isError,true);
+  assert.equal(writes,beforeWrites,'source excerpt never bypasses semantic audit');
+  guard.setAuditor(async()=>({ok:false,status:'unavailable',issues:[{check:'audit',reason:'审校返回协议错误'}]}));
+  assert.equal((await guard.tool.execute('audit-outage',excerpt,undefined,undefined,writeContext)).isError,false,'auditor outage does not veto proven provenance and file save');
+  assert.match(fs.readFileSync(path.join(root,excerpt.path),'utf8'),/补充复核暂未完成/);
+  assert.equal((await guard.tool.execute('bad-during-outage',{...excerpt,content:excerpt.content+'\n良率门槛99%'},undefined,undefined,writeContext)).isError,true,'real numeric failure still blocks save during outage');
+ } finally {fs.rmSync(root,{recursive:true,force:true});}
+ console.log('PASS source report regression: metadata, contract, exact evidence recovery, context, complete errors, audited save and negative controls');
 }
