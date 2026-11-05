@@ -49,6 +49,9 @@ def main() -> None:
     blocks["B12"] = "Risk premium"
     blocks["F12"], blocks["N12"] = 0.065, 143.89
     blocks["N13"] = "=N12+F12+F4+G4"
+    blocks["B16"] = "HBM"
+    blocks["F16"] = "#DIV/0!"
+    blocks["G16"] = 0.65
 
     wb.save(out)
     print(out)

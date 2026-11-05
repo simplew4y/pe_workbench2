@@ -6,6 +6,7 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import {auditResearch} from "../../lib/research-audit.mjs";
 import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
 import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
@@ -145,7 +146,19 @@ export function createSessionService({
         customTools: [...ctx.tools, researchReview.tool],
       });
       session = created.session;
-      session.agent.streamFunction = guardResearchDelivery(session.agent.streamFunction);
+      const provider=session.agent.streamFunction;
+      const recordAudit=record=>{
+        fs.appendFileSync(path.join(ctx.root,".pi","research-audit.jsonl"),JSON.stringify(record)+"\n");
+      };
+      session.agent.streamFunction = guardResearchDelivery(provider,{
+        recordAudit,
+        audit:(source,model,context,options,draft)=>auditResearch(source,model,context,options,draft,{workbookEvidence:researchReview.evidenceSnapshot()}),
+        onContext:(model,context,options)=>researchReview.setAuditor(async(content,extra)=>{
+          const verdict=await auditResearch(provider,model,context,options,content,{...extra,workbookEvidence:researchReview.evidenceSnapshot()});
+          recordAudit({...verdict,kind:"report",at:new Date().toISOString()});
+          return verdict;
+        }),
+      });
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {

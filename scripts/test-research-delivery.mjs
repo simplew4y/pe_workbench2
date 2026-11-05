@@ -23,13 +23,13 @@ async function run(messages, second) {
     stream.end();
     return stream;
   };
-  const result = await guardResearchDelivery(provider)({}, {messages}, {});
+  const result = await guardResearchDelivery(provider,{audit:async()=>({ok:true,issues:[]})})({}, {messages}, {});
   const events = [];
   for await (const e of result) events.push(e);
   return {requests,events,final:await result.result()};
 }
 const rejected = await run(pending);
-assert.equal(rejected.requests,2);
+assert.equal(rejected.requests,4);
 assert.doesNotMatch(JSON.stringify(rejected.events),/999%/);
 assert.match(rejected.final.content[0].text,/尚未交付/);
 const repair = await run(pending,[text,...call("review_research","retry").content]);
@@ -40,9 +40,9 @@ const receipt = {role:"toolResult",toolCallId:"w",isError:false,
 for (const messages of [[...pending,user],[...pending,call("write","w"),receipt]]) {
   const normal = await run(messages);
   assert.equal(normal.requests,1);
-  assert.equal(normal.events[0].type,"text_delta");
+  assert.equal(normal.events[0].type,"start");
 }
-console.log("PASS failed research delivery: no rejected draft in stream/history, one recovery attempt, tool calls preserved, turn reset and successful receipt");
+console.log("PASS failed research delivery: no rejected draft in stream/history, bounded recovery attempts, tool calls preserved, turn reset and successful receipt");
 
 const state = {written:false,previousPartial:new Map([["exports/analysis.md","该文件为部分核验记录"]])};
 assert.ok(answerIssues("模型用 66,881 百万股。模型是 66.9 亿股，差了约 10 倍。",state).some(x=>x.includes("668.81")));

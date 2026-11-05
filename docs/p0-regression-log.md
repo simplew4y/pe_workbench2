@@ -141,3 +141,11 @@ Acceptance remains incomplete:
 - Q10 wrongly says the workbook has no 65% figure, instead of locating its gross-margin meaning. Merely resisting a false question premise does not establish source accuracy.
 - Q11/Q12 still push some evidence lookup and persistence follow-up back onto the user.
 - Source-level numerical checks do not settle causal claims such as attributing total margin to HBM, or certify the underlying external evidence. The full P0 group must remain open.
+
+## 2026-11-05 all-issue repair with independent acceptance
+
+The user changed acceptance to independent scenarios for all 15 issues; the online dialogue is no longer the pass/fail corpus. See docs/research-reliability-acceptance.md for mapping and remaining live acceptance.
+
+Implemented parser version 8: numeric inputs, error-safe labels, local period bands, amount block semantics, percentage lookup, chart axis/range/OLS/leave-one-out evidence and downstream paths. Added structured evidence checks and separate source/conclusion audits before research publication, bounded draft repair, edit reread guards, report source semantics and related-file baseline checks. Existing user entry points remain intact.
+
+Unified offline suites passed (P0 including 15 new reliability scenarios, workbook 28, agent tools 12, server 11, contracts 20, protocol 189, real workbook and report save/read-back). Real-model synthetic cases passed 19 during implementation. Final HTTP tests were interrupted by 402 insufficient_balance_error for threshold/comparison, report and persistence scenarios. No additional model calls were started after identifying insufficient balance. Do not label full live acceptance complete.

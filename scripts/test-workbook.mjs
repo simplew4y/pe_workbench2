@@ -117,6 +117,11 @@ async function main() {
       assert.equal(first("G4").amount.yiYuan, 7453.99);
     });
 
+    await test("Excel error values cannot replace product labels", async () => {
+      const result=await workbooks.queryMaterial(material.id,"Valuation blocks!G16",{maxCells:1});
+      assert.equal(result.cells[0].rowLabel,"HBM");
+    });
+
     await test("SUM range expands to every intermediate cell", async () => {
       const graph = await workbooks.getGraph(sha, {
         fileName: "test-model.xlsx",

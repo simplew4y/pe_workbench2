@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 4
+PARSER_VERSION = 8
 
 try:
     import openpyxl
@@ -87,7 +87,9 @@ def safe_value(value: Any) -> Any:
 
 
 def is_text(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and not value.lstrip().startswith("=")
+    return (isinstance(value, str) and bool(value.strip())
+            and not value.lstrip().startswith(("=", "#"))
+            and value.strip().lower() not in {"na", "n/a", "-"})
 
 
 def sha256_file(path: Path) -> str:
@@ -262,16 +264,32 @@ def period_headers(display, max_row, max_col):
     return headers
 
 
+
+def local_period_header(display, row, col, headers):
+    label = re.compile(r"^((?:[1-4]Q\d{2,4}|(?:19|20)\d{2})(?:[AE])?)(?:\s+(?:P/E|PE|NI|Revenue|EPS).*)?$", re.I)
+    for r in range(row - 1, 0, -1):
+        match = label.fullmatch(str(display.get((r, col), "")).strip())
+        if match and any(label.fullmatch(str(display.get((r, other), "")).strip()) for other in (col-1, col+1)):
+            return r, match.group(1), str(display[(r, col)]).strip()
+        value = display.get((r, col))
+        if is_text(value) and not match and any(label.fullmatch(str(display.get((r, other), "")).strip()) for other in (col-1, col+1)):
+            return r, None, value.strip()
+    original = headers.get(col)
+    if original and original[0] < row:
+        return original[0], original[1], original[1]
+    return None
+
 def cell_period(display, headers, row, col, row_label):
     # Scalar outputs can carry their own year (e.g. discounted back to 2027).
     years = re.findall(r"\b(?:19|20)\d{2}[AE]?\b", row_label or "")
     if len(years) == 1:
         return years[0]
-    if col not in headers or row <= headers[col][0]:
+    local = local_period_header(display, row, col, headers)
+    if local is None:
         return None
     # An isolated scalar below a period table is a separate block.
     if any(adj in headers and (row, adj) in display for adj in (col-1, col+1)):
-        return headers[col][1]
+        return local[1]
     return None
 
 
@@ -310,7 +328,8 @@ def scoped_row_labels(display, col_labels):
 
 
 def column_label(display, formulas, row, col, col_labels):
-    col_label = col_labels.get(col)
+    local = local_period_header(display, row, col, {})
+    col_label = local[2] if local else col_labels.get(col)
     if col_label is None:
         for r in range(row - 1, max(0, row - 9), -1):
             value = display.get((r, col))
@@ -341,6 +360,70 @@ def dedupe_warnings(messages: list[str], limit: int = 20) -> list[str]:
             break
     return result
 
+
+
+def chart_evidence(ws, values_ws):
+    """Keep chart references and reproduce linear fits from numeric cached pairs."""
+    charts = []
+    def title_text(axis):
+        rich = getattr(getattr(getattr(axis, "title", None), "tx", None), "rich", None)
+        return "".join(run.t for para in getattr(rich, "p", []) for run in getattr(para, "r", []) if run.t)
+    for index, chart in enumerate(getattr(ws, "_charts", [])):
+        for number, series in enumerate(chart.series):
+            xref = getattr(getattr(getattr(series, "xVal", None), "numRef", None), "f", None)
+            yref = getattr(getattr(getattr(series, "yVal", None), "numRef", None), "f", None)
+            trend = getattr(getattr(series, "trendline", None), "trendlineType", None)
+            item = {"sheet": ws.title, "chart": index + 1, "series": number + 1,
+                    "xRange": xref, "yRange": yref, "trendline": trend,
+                    "xTitle": title_text(getattr(chart, "x_axis", None)),
+                    "yTitle": title_text(getattr(chart, "y_axis", None))}
+            if xref and yref and values_ws is not None:
+                def read_range(ref):
+                    sheet, coord = ref.rsplit("!", 1)
+                    sheet = sheet.strip("'").replace("''", "'")
+                    target = values_ws.parent[sheet]
+                    return [(c.coordinate, c.value) for row in target[coord] for c in row]
+                try:
+                    xs, ys = read_range(xref), read_range(yref)
+                    pairs = [{"xRef": xref.rsplit("!", 1)[0] + "!" + x[0],
+                              "yRef": yref.rsplit("!", 1)[0] + "!" + y[0], "x": x[1], "y": y[1]}
+                             for x, y in zip(xs, ys) if isinstance(x[1], (int, float))
+                             and isinstance(y[1], (int, float)) and not isinstance(x[1], bool)
+                             and not isinstance(y[1], bool)]
+                    item["points"] = pairs
+                    if trend == "linear" and len(pairs) >= 2 and getattr(series.trendline, "intercept", None) is None:
+                        mx = sum(p["x"] for p in pairs) / len(pairs)
+                        my = sum(p["y"] for p in pairs) / len(pairs)
+                        xx = sum((p["x"] - mx) ** 2 for p in pairs)
+                        if xx:
+                            slope = sum((p["x"] - mx) * (p["y"] - my) for p in pairs) / xx
+                            intercept = my - slope * mx
+                            yy = sum((p["y"] - my) ** 2 for p in pairs)
+                            residual = sum((p["y"] - (slope * p["x"] + intercept)) ** 2 for p in pairs)
+                            item["fit"] = {"slope": slope, "intercept": intercept,
+                                           "rSquared": 1 - residual / yy if yy else None,
+                                           "n": len(pairs), "basis": "numeric cached chart points"}
+                            item["leaveOneOut"] = []
+                            if len(pairs) >= 3:
+                                for excluded in pairs:
+                                    sample = [point for point in pairs if point is not excluded]
+                                    ax = sum(point["x"] for point in sample) / len(sample)
+                                    ay = sum(point["y"] for point in sample) / len(sample)
+                                    dx = sum((point["x"] - ax) ** 2 for point in sample)
+                                    if not dx:
+                                        continue
+                                    k = sum((point["x"] - ax) * (point["y"] - ay) for point in sample) / dx
+                                    b = ay - k * ax
+                                    total = sum((point["y"] - ay) ** 2 for point in sample)
+                                    err = sum((point["y"] - k * point["x"] - b) ** 2 for point in sample)
+                                    item["leaveOneOut"].append({"excluded": excluded["xRef"],
+                                        "slope": k, "intercept": b,
+                                        "rSquared": 1 - err / total if total else None, "n": len(sample)})
+
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    item["warning"] = "Chart ranges could not be fully resolved"
+            charts.append(item)
+    return charts
 
 def parse_sheet(
     ws: Any, values_ws: Any | None
@@ -425,6 +508,7 @@ def parse_sheet(
         "formulaCount": len(sheet_formulas),
         "rowLabels": {str(k): v for k, v in row_labels.items()},
         "colLabels": {str(k): v for k, v in col_labels.items()},
+        "charts": chart_evidence(ws, values_ws),
     }
     return (
         sheet,
@@ -513,6 +597,12 @@ def parse_workbook(path: Path) -> dict[str, Any]:
     # Referenced cells without a formula are input nodes. They may be
     # referenced by a sheet other than the one they live in, so resolve them
     # only after every sheet has been read.
+    for sheet, display in sheet_values.items():
+        for (row, col), value in display.items():
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and sheet_labels[sheet][2].get(col, (None,))[0] != row):
+                referenced.add(cell_id(sheet, row, col))
+
     for cid in sorted(referenced):
         if cid in formulas:
             continue
@@ -535,7 +625,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
             "col": col,
             "rowLabel": row_label,
             "labelCoord": label_coord,
-            "colLabel": col_labels.get(col),
+            "colLabel": column_label(sheet_values[sheet], {}, row, col, col_labels),
             "period": cell_period(sheet_values[sheet], headers, row, col, row_label),
         }
 

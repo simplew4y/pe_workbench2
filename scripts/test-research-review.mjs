@@ -64,7 +64,7 @@ if(['all','correction'].includes(mode)){
  const readOnly=createResearchReview({ctx:{root,store,workbooks},authorizeWrite:()=>({block:true,reason:"只读"})});
  assert.equal((await readOnly.tool.execute('denied',inline,undefined,undefined,toolContext)).isError,true);
  assert.equal(nestedCalls,1,'nested write respects host write roots');
- const partialArgs={...inline,path:'exports/partial.md',content:inline.content+'，未经验证50%'};
+ const partialArgs={...inline,allowPartial:true,path:'exports/partial.md',content:inline.content+'，未经验证50%'};
  assert.equal((await guard.tool.execute('repair1',partialArgs,undefined,undefined,toolContext)).isError,true);
  const partial=await guard.tool.execute('repair2',partialArgs,undefined,undefined,toolContext);
  assert.ok(partial.content.some(p=>p.text.includes('[research_partial_delivery]')));

@@ -47,7 +47,8 @@
     "test:presentation:browser": "python3 scripts/test-presentation-browser.py",
     "test:westock": "node scripts/test-westock-ticker.mjs",
     "test:mail": "node scripts/test-mail.mjs",
-    "test:p0": "node scripts/test-workbook-references.mjs && node scripts/test-workbook-semantics.mjs && node scripts/test-research-policy.mjs && node scripts/test-westock-identity.mjs && node scripts/test-research-review.mjs && node scripts/test-research-delivery.mjs && node scripts/test-trace-hook.mjs"
+    "test:p0": "node scripts/test-workbook-references.mjs && node scripts/test-workbook-semantics.mjs && node scripts/test-research-policy.mjs && node scripts/test-westock-identity.mjs && node scripts/test-research-review.mjs && node scripts/test-research-delivery.mjs && node scripts/test-trace-hook.mjs && node scripts/test-research-reliability.mjs",
+    "test:research": "node scripts/test-research-all.mjs"
   },
   "keywords": [],
   "author": "",
