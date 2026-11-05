@@ -104,3 +104,40 @@ Remaining at the end of the first pass: issues 3–8 below. Historical entries a
 - Runtime fixes: `6507e9e`, `c729d10`, `9be8dcd`, `bc1d73a`. Prior fixes `72a2efa`, `f474252` remain on branch `fix/p0-research-reliability`.
 - Local 8081 is running the changed code. No remote deployment or push performed; the pre-existing .gitignore modification is untouched. Test sessions and the clearly named P0 report are preserved for inspection in Product Eng.
 - Re-run focused checks with `npm run test:p0`; tests are offline except the separately documented real-model sessions.
+
+
+## 2026-11-05 repair and original-question acceptance
+
+User constraint: keep the existing chat UI and user operation path. Changes are in workbook parsing, evidence generation, report authoring/validation and agent output handling. No extra user approval or form was added. Research responses may wait for internal checks before display.
+
+Implemented commits:
+- de37062: scoped row labels for formulas and referenced input cells. Blank gutters after an existing data block stop unrelated left-side labels crossing to a separate calculation. Label source addresses are returned. Parser cache version invalidates earlier parses.
+- e6c0e3b: period-header bands survive intervening numeric inputs; scalar row periods and scenario headers are separate. A quarterly cell can include its independently labeled annual counterpart. Explicit monetary amount rows include million-to-hundred-million conversions. Report checks handle scalars with no period.
+- e934f9c: failed report delivery buffers model drafts before UI/persistence and permits an internal recovery attempt.
+- 5ca117e and 937f8dd: inline workbook references are expanded by the host, validated and saved through the existing write tool. A new report can preserve checked source facts as an explicitly partial delivery after failed repair. Existing reports retain baseline and correction checks. Nested writes explicitly enforce project/write scope and read-back verification.
+- 5426601: check explicitly conflicting unit restatements, unsupported delivery assertions and partial-period fulfillment claims before publishing research answers. Retry once with diagnostics, otherwise expose unresolved status. These bounded checks do not validate every financial sentence.
+
+Runtime:
+- Local 8081 runs 5426601.
+- Installed the same statically linked westock 0.0.12 binary as the configured server into the WSL user's ~/.local/bin after SHA-256 verification. Only the executable was copied.
+- Live quote test passed for sh688981 + 中芯国际; sh688981 + 长鑫科技 was rejected and its price table suppressed.
+- Existing .gitignore changes remain outside these commits.
+
+Verification:
+- Workbook suite 27 passed; agent-tools 12 passed; server modules 11 passed; protocol 189 passed; focused test:p0 passed.
+- New tests cover independent worksheet blocks, source label addresses, annual headers, amount conversion, inline citation save/read-back, nested write-root denial, partial output status and rejected-draft suppression.
+- Replayed actual failed Q3/Q8/Q14 response text from the intermediate run through the output checks. They detected false full-report status, half-year fulfillment assertions and 66,881 million shares incorrectly restated as 66.9 hundred-million shares.
+- Two preliminary runs were stopped after repeated report-validation failures. They are diagnostics, not passing acceptance runs.
+- Final original-question run completed 14/14 at commit 5426601, total 690 seconds, session 763e59a6-9fc7-4895-91e7-abd6e43747f4, project p-14b034fe. Persisted user contents exactly match all 14 source questions, including upload paths. No additional user hints were sent.
+- Evidence directory: /mnt/c/Users/14531/Downloads/pe-qa-retest-20261105-763e59a6.
+- A report was actually saved through review_research and a read-back receipt. Final report path: projects/p-14b034fe/exports/高盛-长鑫-model-解读.md. Q1 delivered checked facts with a partial status; Q2 subsequently completed a reviewed rewrite of that file.
+- The repeated numeric coverage check also rejected literal product names such as LPDDR4X and LPDDR5X, causing unnecessary retries. This remains a usability limitation.
+
+Acceptance remains incomplete:
+- The final run correctly uses approximately 26.8% for 2030 full-year HBM revenue share and treats N35/N36 as fit parameters rather than mislabeled risk premium/COE.
+- Q8 still compares contemporary comparable-company PE with the model's terminal PE, without aligning periods and valuation basis.
+- Q9/Q14 introduce an insufficiently supported 60% commercial yield threshold. The output checks currently do not establish provenance for all free-form quantitative conditions.
+- Q7 still calls the HBM revenue amount 7,293 ten-thousand yuan, while the source block is in million yuan. Amount conversion support does not yet cover every product sub-row.
+- Q10 wrongly says the workbook has no 65% figure, instead of locating its gross-margin meaning. Merely resisting a false question premise does not establish source accuracy.
+- Q11/Q12 still push some evidence lookup and persistence follow-up back onto the user.
+- Source-level numerical checks do not settle causal claims such as attributing total margin to HBM, or certify the underlying external evidence. The full P0 group must remain open.
