@@ -85,7 +85,7 @@ async function main() {
       const brokenRel = "exports/broken/analysis-state.json";
       await fsp.writeFile(path.join(workspace, brokenRel), JSON.stringify(broken, null, 2));
       const result = await validateTool.execute("call-2", { path: brokenRel });
-      assert.equal(result.isError, undefined);
+      assert.equal(result.isError, true);
       assert.equal(result.details.ok, false);
       assert.equal(result.details.passed, false);
       assert.ok(result.details.errors.some((item) => item.includes("SRC404")));
@@ -111,7 +111,7 @@ async function main() {
       const configSource = fs.readFileSync(path.join(PROJECT, "server/config.mjs"), "utf8");
       const contextSource = fs.readFileSync(path.join(PROJECT, "server/project-context.mjs"), "utf8");
       assert.match(configSource, /"create_tracking", "validate_state"/);
-      assert.match(configSource, /toolNames\.push\("workbook_query", "workbook_trace"\)/);
+      assert.match(configSource, /toolNames\.push\("workbook_query", "workbook_trace", "model_whatif"\)/);
       assert.match(contextSource, /createWorkbookTraceTool/);
       assert.match(contextSource, /createValidateStateTool/);
       assert.match(contextSource, /workbookTraceTool, validateStateTool/);

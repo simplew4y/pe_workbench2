@@ -297,6 +297,7 @@ function messageHTML(m) {
       <div>
         <div class="msg-head"><span class="msg-name">${isUser ? '林默' : 'Workbench'}</span><span class="msg-time">${esc(m.time || '')}</span></div>
         <div class="msg-body${isUser ? '' : ' md-preview'}">${body}</div>
+        ${(m.qualityWarnings || []).map(w=>`<div class="quality-warning" role="status">${esc(w.message)}</div>`).join('')}
         ${group}
         ${reports}
       </div>

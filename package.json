@@ -46,7 +46,8 @@
     "test:presentation": "node scripts/test-presentation.mjs && node scripts/test-presentation-render.mjs && node scripts/test-presentation-snapshot.mjs",
     "test:presentation:browser": "python3 scripts/test-presentation-browser.py",
     "test:westock": "node scripts/test-westock-ticker.mjs",
-    "test:mail": "node scripts/test-mail.mjs"
+    "test:mail": "node scripts/test-mail.mjs",
+    "test:reliability": "node scripts/test-reliability.mjs && node scripts/test-reliability-repair.mjs && node scripts/test-grounded-delivery.mjs && node scripts/test-reliability-integration.mjs"
   },
   "keywords": [],
   "author": "",

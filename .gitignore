@@ -12,3 +12,6 @@ projects/*/exports/
 
 # Generated CopilotKit pilot bundle (npm run build:copilot-pilot)
 ui/copilot-pilot/pilot.bundle.js
+
+# Private evidence and generated reliability evaluation outputs
+/out/reliability-eval/

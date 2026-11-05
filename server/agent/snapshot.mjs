@@ -5,6 +5,8 @@
  */
 
 import path from "node:path";
+import { lintAnswer } from "../../lib/answer-lint.mjs";
+import { readLedger } from "../../lib/research-context.mjs";
 
 export function textOfContent(content) {
   if (typeof content === "string") return content;
@@ -97,6 +99,8 @@ export function lastAssistantText(session) {
 }
 
 export function snapshotMessages(session, ctx, entry = null) {
+  let corrections=[];
+  if(entry?.id && ctx.root) { try {corrections=readLedger(ctx.root,entry.id).corrections;} catch { /* corrupt ledger does not hide conversation */ } }
   const results = new Map();
   for (const message of session.messages) {
     if (message.role === "toolResult") results.set(message.toolCallId, message);
@@ -142,6 +146,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         role: "assistant",
         text,
         processText,
+        qualityWarnings: [...(current.groundingWarnings||[]), ...lintAnswer(text), ...corrections.filter(c=>Date.parse(c.recorded_at)>Number(new Date(current.turnStartedAt)) && (c.affected_artifacts||[]).some(p=>text.includes(p)||current.tools.some(t=>t.detail===p))).map(c=>({code:'ARTIFACT_REVIEW_PENDING',severity:'warning',message:`此历史产物涉及后续纠错，需复核是否同步：${c.claim}`}))],
         tools: current.tools,
         ...(current.analysisState ? { analysisState: current.analysisState } : {}),
         time: current.time,
@@ -162,6 +167,9 @@ export function snapshotMessages(session, ctx, entry = null) {
     if (message.role !== "assistant") continue;
 
     if (!current) current = { role: "assistant", segments: [], tools: [], time: hm(message.timestamp), turnStartedAt: turnStartedAt ?? message.timestamp };
+    if(message.groundingReview?.remainingIssues?.length){
+      current.groundingWarnings=(current.groundingWarnings||[]).concat(message.groundingReview.remainingIssues.map(i=>({code:i.code,severity:'warning',message:'答复证据待复核：'+i.evidence})));
+    }
     const text = textOfContent(message.content);
     if (text) current.segments.push({ type: "text", text });
 

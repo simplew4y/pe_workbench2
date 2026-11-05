@@ -374,3 +374,11 @@ node scripts/validate_state.mjs analysis-state.json
 
 
 判词只写判断，直接表达增长逻辑和估值结论，不写“仅供参考”“不能作为当前可执行目标价”等防御或免责声明。风险与限制只以事实写入“需人工复核”（如“分部乘数未记录依据”）。交付前调用 westock_query 获取最新行情；先去除 ticker 中文后缀、括号和空白并转换市场格式（02513.HK（港股）→hk02513）。market.price/currency/price_date/source/fetched_at 分别记录真实现价、币种、行情日期、来源和 ISO 获取时间，可用 quote_at 记录行情时间；失败时 price=null，记录获取时间和 fetch_error，显示“未获取”，不得沿用缓存价冒充实时价。verdict.valuation_id 引用原 valuations 中的模型价；结论卡同时展示模型价、现价、获取时间及空间=(模型价/现价-1)×100%；行情缺失或币种不一致则空间“未获取”。
+
+### 待校准阈值与语义复核（兼容旧状态）
+
+- 无阈值证据时写 `threshold_status: "pending"`、`threshold: null`、`status: "unknown"`，并写具体 `calibration_plan`（数据、口径、校准方法和完成条件）。不得为了通过校验编造数字。草稿可保留这类条件；跟踪导入跳过它们。
+- 已校准阈值写 `threshold_basis`；旧文件缺此字段只提示复核。
+- `sensitivities` 可写 `input_role`、`independent_input`。公式派生格不应标成可独立扰动的输入；完整情景用临时副本重算。
+- 缺 bear/base/bull 情景给出提示；只复现原模型时说明范围，无需杜撰情景值。
+- 转写类 `gaps` 用 `source_ids` 关联 `sources`。在线 `validate_state` 可将对应材料的 ASR 状态与缺口交叉检查；转写完成仅提示复核，不自动认定内容已验证或关闭缺口。离线 CLI 无材料运行状态，不执行这一检查。

@@ -6,6 +6,7 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import { createResearchTools, installResearchContext } from "../../lib/research-context.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -137,10 +138,12 @@ export function createSessionService({
         sessionManager,
         resourceLoader: loader,
         tools: config.toolNames,
-        customTools: ctx.tools,
+        customTools: [...ctx.tools, ...createResearchTools({workspace:ctx.root,getSession:()=>session,readOnly:Boolean(writeRoots)})],
       });
       session = created.session;
     }
+
+    if (!config.fakeAgent) installResearchContext(session.agent,{workspace:ctx.root,id:session.sessionId});
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
