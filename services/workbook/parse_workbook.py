@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 try:
     import openpyxl
@@ -244,27 +244,41 @@ def build_labels(
     return row_labels, col_labels
 
 
-def nearest_text(
-    display: dict[tuple[int, int], Any],
-    formulas: dict[tuple[int, int], str],
-    row: int,
-    col: int,
-    label_cols: list[int],
-    col_labels: dict[int, str],
-) -> tuple[str | None, str | None]:
-    """Row label: nearest text to the left (prefer label columns).
-    Column label: precomputed header, else nearest label-like value above."""
-    row_label = None
-    candidates = [c for c in label_cols if c < col]
-    candidates += [c for c in range(col - 1, max(0, col - 9), -1) if c not in candidates]
-    for c in candidates:
-        value = display.get((row, c))
-        if is_text(value):
-            text = str(value).strip()
-            if len(text) <= 80 and "\n" not in text:
-                row_label = text
-                break
+def scoped_row_labels(display, col_labels):
+    """Associate each occupied cell with a label in its own horizontal run.
 
+    Valuation sheets often have a label, a distant first value, then a
+    separate calculation across a blank gutter. A gap before the *first*
+    value is ordinary label padding. A gap after data can start a new block.
+    Keep sparse time series together when both columns have period headers.
+    """
+    period = re.compile(r"(?:[1-4]Q\d{2,4}|(?:19|20)\d{2})(?:[AE])?$", re.I)
+    sources = {}
+    previous_row = previous_col = None
+    for (row, col), value in sorted(display.items()):
+        if row != previous_row:
+            source = None
+            seen_data = False
+        elif seen_data and col - previous_col > 2:
+            periods_continue = all(
+                period.fullmatch(str(col_labels.get(c, "")))
+                for c in (previous_col, col)
+            )
+            if not periods_continue:
+                source = None
+                seen_data = False
+        if source is not None:
+            sources[(row, col)] = source
+        if is_text(value) and len(value.strip()) <= 80 and "\n" not in value:
+            source = (value.strip(), f"{get_column_letter(col)}{row}")
+            seen_data = False
+        else:
+            seen_data = True
+        previous_row, previous_col = row, col
+    return sources
+
+
+def column_label(display, formulas, row, col, col_labels):
     col_label = col_labels.get(col)
     if col_label is None:
         for r in range(row - 1, max(0, row - 9), -1):
@@ -280,7 +294,7 @@ def nearest_text(
                 continue
             break
 
-    return row_label, col_label
+    return col_label
 
 
 def dedupe_warnings(messages: list[str], limit: int = 20) -> list[str]:
@@ -302,7 +316,7 @@ def parse_sheet(
 ) -> tuple[
     dict[str, Any],
     dict[tuple[int, int], Any],
-    tuple[dict[int, str], dict[int, str]],
+    tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str]],
     dict[str, dict[str, Any]],
     dict[str, set[str]],
     set[str],
@@ -350,10 +364,10 @@ def parse_sheet(
     formulas: dict[str, dict[str, Any]] = {}
     formula_refs: dict[str, set[str]] = {}
     referenced: set[str] = set()
+    sources = scoped_row_labels(display, col_labels)
     for (row, col), formula in sheet_formulas.items():
-        row_label, col_label = nearest_text(
-            display, sheet_formulas, row, col, label_cols, col_labels
-        )
+        row_label, label_coord = sources.get((row, col), (None, None))
+        col_label = column_label(display, sheet_formulas, row, col, col_labels)
         computed_value = computed.get((row, col))
         cid = cell_id(ws.title, row, col)
         refs = extract_refs(formula, ws.title)
@@ -367,6 +381,7 @@ def parse_sheet(
             "row": row,
             "col": col,
             "rowLabel": row_label,
+            "labelCoord": label_coord,
             "colLabel": col_label,
         }
 
@@ -381,7 +396,7 @@ def parse_sheet(
     return (
         sheet,
         display,
-        (row_labels, col_labels),
+        (sources, col_labels),
         formulas,
         formula_refs,
         referenced,
@@ -414,7 +429,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
     formula_refs: dict[str, set[str]] = {}
     referenced: set[str] = set()
     sheet_values: dict[str, dict[tuple[int, int], Any]] = {}
-    sheet_labels: dict[str, tuple[dict[int, str], dict[int, str]]] = {}
+    sheet_labels: dict[str, tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str]]] = {}
 
     for ws in wb.worksheets:
         values_ws = None
@@ -478,13 +493,15 @@ def parse_workbook(path: Path) -> dict[str, Any]:
         value = sheet_values[sheet].get((row, col))
         if value is None:
             continue
-        row_labels, col_labels = sheet_labels[sheet]
+        sources, col_labels = sheet_labels[sheet]
+        row_label, label_coord = sources.get((row, col), (None, None))
         formulas[cid] = {
             "formula": None,
             "value": safe_value(value),
             "row": row,
             "col": col,
-            "rowLabel": row_labels.get(row),
+            "rowLabel": row_label,
+            "labelCoord": label_coord,
             "colLabel": col_labels.get(col),
         }
 
@@ -505,6 +522,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
                 info["col"],
                 info["rowLabel"],
                 info["colLabel"],
+                info["labelCoord"],
             ]
         )
 
