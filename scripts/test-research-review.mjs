@@ -51,16 +51,24 @@ if(['all','correction'].includes(mode)){
  const inline={path:'exports/inline.md',file:'uploads/model.xlsx',content:'模型售价 {{Assumption!AH122}}',save:true};
  let nestedCalls=0;
  const toolContext={executeTool:async(name,write)=>{
-   assert.equal(name,'write');assert.equal(guard.before(name,write),undefined);
+   assert.equal(name,'write');
    assert.match(write.content,/2026E.*8.34.*Assumption!AH122/);
    fs.writeFileSync(path.join(root,write.path),write.content);nestedCalls++;
-   return {isError:false,result:guard.record({toolCall:{name},args:write,result:{content:[]}})};
+   return {isError:false,result:{content:[]}};
  }};
  const saved=await guard.tool.execute('inline',inline,undefined,undefined,toolContext);
  assert.equal(saved.isError,false,JSON.stringify(saved));
  assert.match(saved.content[0].text,/research_write_verified/);
  const bad=await guard.tool.execute('bad',{...inline,content:inline.content+'，失效门槛50%'},undefined,undefined,toolContext);
  assert.equal(bad.isError,true);assert.equal(nestedCalls,1,'unsupported number must prevent save');
+ const readOnly=createResearchReview({ctx:{root,store,workbooks},authorizeWrite:()=>({block:true,reason:"只读"})});
+ assert.equal((await readOnly.tool.execute('denied',inline,undefined,undefined,toolContext)).isError,true);
+ assert.equal(nestedCalls,1,'nested write respects host write roots');
+ const partialArgs={...inline,path:'exports/partial.md',content:inline.content+'，未经验证50%'};
+ assert.equal((await guard.tool.execute('repair1',partialArgs,undefined,undefined,toolContext)).isError,true);
+ const partial=await guard.tool.execute('repair2',partialArgs,undefined,undefined,toolContext);
+ assert.ok(partial.content.some(p=>p.text.includes('[research_partial_delivery]')));
+ assert.doesNotMatch(fs.readFileSync(path.join(root,partialArgs.path),'utf8'),/50%/);
  const args={path:'exports/report.md',content:cell.text,claims:[cell]};
  assert.equal((await guard.tool.execute('id',args)).isError,false);
  assert.equal(guard.before('write',args),undefined);

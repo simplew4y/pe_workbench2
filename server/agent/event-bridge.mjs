@@ -12,10 +12,11 @@ import { newRunId } from "../../lib/agent-protocol/ids.mjs";
 import { extractPresentation } from "../../lib/contracts/index.mjs";
 import { resultText, toolDetail } from "./snapshot.mjs";
 
-export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, onRunSettled = () => {} }) {
+export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, onRunSettled = () => {}, onRunStarted = () => {} }) {
   entry.unsubscribe = entry.session.subscribe((event) => {
     switch (event.type) {
       case "agent_start":
+        onRunStarted(entry);
         entry.localRunId = newRunId();
         entry.traceChangedFiles = [];
         entry.traceRunStartedAt = new Date().toISOString();

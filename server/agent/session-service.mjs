@@ -122,7 +122,9 @@ export function createSessionService({
   async function createEntry({ id, file, ctx, writeRoots = null }) {
     if (!ctx) throw Object.assign(new Error("project not found"), { status: 404 });
 
-    const researchReview = createResearchReview({ctx});
+    const researchReview = createResearchReview({ctx,
+      authorizeWrite: args => blockOutsideProject(ctx, "write", args) ?? blockOutsideWriteRoots(ctx, "write", args, writeRoots),
+    });
     let session;
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
@@ -168,7 +170,7 @@ export function createSessionService({
       localRunId: null,
     };
     entry.snapshot = () => serializeSession(entry);
-    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled });
+    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled, onRunStarted: researchReview.startRun });
     entry.agui = new PiAgUiAdapter({
       session,
       threadId: entry.id,
