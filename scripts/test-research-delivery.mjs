@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {createAssistantMessageEventStream} from "@earendil-works/pi-ai";
-import {guardResearchDelivery} from "../lib/research-delivery.mjs";
+import {answerIssues,guardResearchDelivery} from "../lib/research-delivery.mjs";
 
 const path = "exports/analysis.md";
 const user = {role:"user", content:"请解读估值模型"};
@@ -43,3 +43,13 @@ for (const messages of [[...pending,user],[...pending,call("write","w"),receipt]
   assert.equal(normal.events[0].type,"text_delta");
 }
 console.log("PASS failed research delivery: no rejected draft in stream/history, one recovery attempt, tool calls preserved, turn reset and successful receipt");
+
+const state = {written:false,previousPartial:new Map([["exports/analysis.md","该文件为部分核验记录"]])};
+assert.ok(answerIssues("模型用 66,881 百万股。模型是 66.9 亿股，差了约 10 倍。",state).some(x=>x.includes("668.81")));
+assert.deepEqual(answerIssues("66,881 百万股折合 668.81 亿股。",state),[]);
+assert.deepEqual(answerIssues("甲有10000百万股，乙有10亿股。",state),[]);
+assert.ok(answerIssues("84% 毛利率已兑现：上半年毛利率 84.84%。",state).length);
+assert.deepEqual(answerIssues("上半年收入目标已兑现。",state),[]);
+assert.ok(answerIssues("我把完整的假设验证报告写入文件。",state).length);
+assert.ok(answerIssues("完整报告在 exports/analysis.md。",state).length);
+console.log("PASS checks for unit restatement, report receipts, partial-period evidence");
