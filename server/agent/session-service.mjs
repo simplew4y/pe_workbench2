@@ -6,6 +6,7 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
 import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -142,6 +143,7 @@ export function createSessionService({
         customTools: [...ctx.tools, researchReview.tool],
       });
       session = created.session;
+      session.agent.streamFunction = guardResearchDelivery(session.agent.streamFunction);
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
