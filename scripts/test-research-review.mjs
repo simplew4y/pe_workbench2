@@ -48,6 +48,19 @@ if(['all','correction'].includes(mode)){
  guard.before('workbook_query',{});
  assert.equal(guard.before('write',{path:'exports/report.md',content:'结论50%'}).block,true);
  assert.equal(guard.before('edit',{path:'exports/report.md',oldText:'a',newText:'b'}).block,true);
+ const inline={path:'exports/inline.md',file:'uploads/model.xlsx',content:'模型售价 {{Assumption!AH122}}',save:true};
+ let nestedCalls=0;
+ const toolContext={executeTool:async(name,write)=>{
+   assert.equal(name,'write');assert.equal(guard.before(name,write),undefined);
+   assert.match(write.content,/2026E.*8.34.*Assumption!AH122/);
+   fs.writeFileSync(path.join(root,write.path),write.content);nestedCalls++;
+   return {isError:false,result:guard.record({toolCall:{name},args:write,result:{content:[]}})};
+ }};
+ const saved=await guard.tool.execute('inline',inline,undefined,undefined,toolContext);
+ assert.equal(saved.isError,false,JSON.stringify(saved));
+ assert.match(saved.content[0].text,/research_write_verified/);
+ const bad=await guard.tool.execute('bad',{...inline,content:inline.content+'，失效门槛50%'},undefined,undefined,toolContext);
+ assert.equal(bad.isError,true);assert.equal(nestedCalls,1,'unsupported number must prevent save');
  const args={path:'exports/report.md',content:cell.text,claims:[cell]};
  assert.equal((await guard.tool.execute('id',args)).isError,false);
  assert.equal(guard.before('write',args),undefined);
