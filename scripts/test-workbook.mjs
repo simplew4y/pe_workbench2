@@ -106,6 +106,17 @@ async function main() {
       assert.equal(graph.cells.get("模型!B5").colLabel, "2025");
     });
 
+    await test("independent scalar blocks, annual headers and amount conversions", async () => {
+      const graph = await workbooks.getGraph(sha, { fileName: "test-model.xlsx", ext: "xlsx" });
+      const first = ref => queryGraph(graph, "Valuation blocks!" + ref, { maxCells: 1 }).cells[0];
+      assert.equal(first("F12").sourceContext.labelRef, "Valuation blocks!B12");
+      assert.equal(first("N12").rowLabel, "");
+      assert.deepEqual(first("N12").sourceContext.context, []);
+      assert.equal(first("G4").period, "2030E");
+      assert.equal(first("F4").annualCounterpart.ref, "Valuation blocks!G4");
+      assert.equal(first("G4").amount.yiYuan, 7453.99);
+    });
+
     await test("SUM range expands to every intermediate cell", async () => {
       const graph = await workbooks.getGraph(sha, {
         fileName: "test-model.xlsx",

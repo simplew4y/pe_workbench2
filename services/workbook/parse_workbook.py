@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 try:
     import openpyxl
@@ -244,6 +244,37 @@ def build_labels(
     return row_labels, col_labels
 
 
+PERIOD_HEADER = re.compile(r"(?:[1-4]Q(?:\d{2}|\d{4})|(?:19|20)\d{2})(?:[AE])?$", re.I)
+
+
+def period_headers(display, max_row, max_col):
+    """Use a band of neighboring date headers, even below scenario inputs."""
+    headers = {}
+    for row in range(1, min(max_row, 9) + 1):
+        band = {}
+        for col in range(1, max_col + 1):
+            value = str(display.get((row, col), "")).strip()
+            if PERIOD_HEADER.fullmatch(value):
+                band[col] = value
+        for col, value in band.items():
+            if col - 1 in band or col + 1 in band:
+                headers[col] = (row, value)
+    return headers
+
+
+def cell_period(display, headers, row, col, row_label):
+    # Scalar outputs can carry their own year (e.g. discounted back to 2027).
+    years = re.findall(r"\b(?:19|20)\d{2}[AE]?\b", row_label or "")
+    if len(years) == 1:
+        return years[0]
+    if col not in headers or row <= headers[col][0]:
+        return None
+    # An isolated scalar below a period table is a separate block.
+    if any(adj in headers and (row, adj) in display for adj in (col-1, col+1)):
+        return headers[col][1]
+    return None
+
+
 def scoped_row_labels(display, col_labels):
     """Associate each occupied cell with a label in its own horizontal run.
 
@@ -316,7 +347,7 @@ def parse_sheet(
 ) -> tuple[
     dict[str, Any],
     dict[tuple[int, int], Any],
-    tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str]],
+    tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str], dict[int, tuple[int, str]]],
     dict[str, dict[str, Any]],
     dict[str, set[str]],
     set[str],
@@ -364,7 +395,8 @@ def parse_sheet(
     formulas: dict[str, dict[str, Any]] = {}
     formula_refs: dict[str, set[str]] = {}
     referenced: set[str] = set()
-    sources = scoped_row_labels(display, col_labels)
+    headers = period_headers(display, max_row, max_col)
+    sources = scoped_row_labels(display, {**col_labels, **{c: h[1] for c, h in headers.items()}})
     for (row, col), formula in sheet_formulas.items():
         row_label, label_coord = sources.get((row, col), (None, None))
         col_label = column_label(display, sheet_formulas, row, col, col_labels)
@@ -382,6 +414,7 @@ def parse_sheet(
             "col": col,
             "rowLabel": row_label,
             "labelCoord": label_coord,
+            "period": cell_period(display, headers, row, col, row_label),
             "colLabel": col_label,
         }
 
@@ -396,7 +429,7 @@ def parse_sheet(
     return (
         sheet,
         display,
-        (sources, col_labels),
+        (sources, col_labels, headers),
         formulas,
         formula_refs,
         referenced,
@@ -429,7 +462,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
     formula_refs: dict[str, set[str]] = {}
     referenced: set[str] = set()
     sheet_values: dict[str, dict[tuple[int, int], Any]] = {}
-    sheet_labels: dict[str, tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str]]] = {}
+    sheet_labels: dict[str, tuple[dict[tuple[int, int], tuple[str, str]], dict[int, str], dict[int, tuple[int, str]]]] = {}
 
     for ws in wb.worksheets:
         values_ws = None
@@ -493,7 +526,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
         value = sheet_values[sheet].get((row, col))
         if value is None:
             continue
-        sources, col_labels = sheet_labels[sheet]
+        sources, col_labels, headers = sheet_labels[sheet]
         row_label, label_coord = sources.get((row, col), (None, None))
         formulas[cid] = {
             "formula": None,
@@ -503,6 +536,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
             "rowLabel": row_label,
             "labelCoord": label_coord,
             "colLabel": col_labels.get(col),
+            "period": cell_period(sheet_values[sheet], headers, row, col, row_label),
         }
 
     # Emit formula cells first, then referenced input cells.
@@ -523,6 +557,7 @@ def parse_workbook(path: Path) -> dict[str, Any]:
                 info["rowLabel"],
                 info["colLabel"],
                 info["labelCoord"],
+                info["period"],
             ]
         )
 
