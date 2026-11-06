@@ -5,6 +5,7 @@
  */
 
 import path from "node:path";
+import {readLedgerSync, pendingMerges} from "../../lib/ledger.mjs";
 
 export function textOfContent(content) {
   if (typeof content === "string") return content;
@@ -99,6 +100,7 @@ export function lastAssistantText(session) {
 export function snapshotMessages(session, ctx, entry = null) {
   const results = new Map();
   for (const message of session.messages) {
+    if (message.peInternal || /^pe_(?:turn_context|answer_)/.test(message.customType || "")) continue;
     if (message.role === "toolResult") results.set(message.toolCallId, message);
   }
   const presentations = new Map();
@@ -143,7 +145,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         text,
         processText,
         tools: current.tools,
-        ...(current.analysisState ? { analysisState: current.analysisState } : {}),
+        ...(current.analysisState ? { analysisState: current.analysisState, analysisStatePath: current.analysisStatePath } : {}),
         time: current.time,
         turnStartedAt: current.turnStartedAt,
       });
@@ -152,6 +154,7 @@ export function snapshotMessages(session, ctx, entry = null) {
   };
 
   for (const message of session.messages) {
+    if (message.peInternal || /^pe_(?:turn_context|answer_)/.test(message.customType || "")) continue;
     if (message.role === "user") {
       flush();
       turnStartedAt = message.timestamp;
@@ -223,7 +226,7 @@ export function snapshotMessages(session, ctx, entry = null) {
             stateContents.set(statePath, content);
             try {
               const parsed = JSON.parse(content);
-              if (parsed?.presentation) current.analysisState = parsed;
+              if (parsed?.presentation) { current.analysisState = parsed; current.analysisStatePath = statePath; }
             } catch { /* malformed writes fall back to the assistant's text */ }
           }
         }
@@ -247,10 +250,12 @@ export function snapshotMessages(session, ctx, entry = null) {
 export function serializeSession(entry) {
   return {
     type: "snapshot",
+    pendingMerges: entry.automated ? [] : pendingMerges(readLedgerSync(entry.ctx.root, entry.id)),
     sessionId: entry.id,
     title: entry.title,
     messages: snapshotMessages(entry.session, entry.ctx, entry),
-    streaming: entry.session.isStreaming,
+    streaming: Boolean(entry.session.isStreaming || entry.postAnswerPending),
+    ...(entry.answerLint ? { lint: entry.answerLint } : {}),
     model: entry.modelId,
     projectId: entry.ctx.id,
     approvals: entry.ctx.store.listApprovalRequests({ threadId: entry.id, limit: 50 }),

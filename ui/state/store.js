@@ -25,6 +25,7 @@ const target = {
   sessions: [],
   notifications: [],
   approvals: [],
+  pendingMerges: [],
   messages: [],
   streaming: false,
   live: { text: "", tools: [], startedAt: 0 },

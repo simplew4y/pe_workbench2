@@ -180,7 +180,8 @@ class FakeSession {
     if (!this.sessionName) this.sessionName = makeTitle(promptText);
 
     this.messages.push({
-      role: "user",
+      role: options.peInternal ? "custom" : "user",
+      ...(options.peInternal ? { customType: "pe_answer_internal", display: false } : {}),
       content: [
         { type: "text", text: promptText },
         ...((options.images || []).map(() => ({ type: "image" }))),
