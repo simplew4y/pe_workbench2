@@ -44,7 +44,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           const result = messages.find(r => r.role === 'toolResult' && r.toolCallId === c.id);
           scanned.push({ name: c.name, args: c.arguments, success: Boolean(result) && result.isError === false });
         }
-        const findings = [...lintAnswer(answer), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
+        const findings = [...lintAnswer(answer, entry.answerLintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
         const data = {
           version: 1, turnId, timestamp: new Date().toISOString(),
           findings, stats: answerStats(answer), correctionCount, continuationCount,
@@ -54,7 +54,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         entry.session.sessionManager?.appendCustomEntry('pe_answer_lint', data);
         entry.answerLint = data;
         const nonIncomplete = findings.filter(item => item.rule !== 'incomplete');
-        const numericRules = new Set(['unit_conversion', 'percent_change', 'inconsistent_value', 'repeats_corrected_value']);
+        const numericRules = new Set(['unit_conversion', 'magnitude', 'percent_change', 'inconsistent_value', 'repeats_corrected_value']);
         const label = nonIncomplete.some(item => numericRules.has(item.rule)) && nonIncomplete.every(item => numericRules.has(item.rule))
           ? '数值待核'
           : nonIncomplete.length ? '待核'
@@ -66,7 +66,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         if (errors.length && correctionCount < 1) {
           correctionCount++;
           continuationPrefix = "";
-          prompt = `请调用所需工具（数值用 calc，负向依赖用 workbook_trace mode=path，自查先 transcript_search 并读台账）核验以下问题，并给出修正后的完整回答，不要说明修正过程：\n${errors.map(item => `${item.message}：${item.excerpt}；应为 ${item.expected}`).join('\n')}`;
+          prompt = `请调用所需工具（数值用 calc，单位换算用 unit_convert，负向依赖用 workbook_trace mode=path，自查先 transcript_search 并读台账）核验以下问题，并给出修正后的完整回答，不要说明修正过程：\n${errors.map(item => `${item.message}：${item.excerpt}；应为 ${item.expected}`).join('\n')}`;
         } else if (incomplete && continuationCount < 1) {
           continuationCount++;
           continuationPrefix = answer;

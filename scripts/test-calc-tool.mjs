@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { calculate, createCalcTool } from "../lib/calc-tool.mjs";
+import { calculate, createCalcTool, unitConvert, createUnitConvertTool } from "../lib/calc-tool.mjs";
 const value = (expression, options = {}) => calculate({ expression, ...options }).value;
 assert.equal(value("0.1+0.2", { precision: 2 }), "0.30");
 assert.equal(value("ROUNDUP(831.1,0)"), "832");
@@ -16,6 +16,7 @@ assert.equal(value("7053400", { fromUnit: "百万元", toUnit: "亿元", precisi
 assert.equal(value("7293", { fromUnit: "百万元", toUnit: "亿元", precision: 2 }), "72.93");
 assert.throws(() => calculate({ expression: "1", currency: "USD", toCurrency: "RMB" }), /汇率/);
 assert.equal(value("2", { currency: "USD", toCurrency: "RMB", rate: "7.2" }), "14.4");
+assert.equal(value("1", { fromUnit: "Rmb mn", toUnit: "HKD mn", rate: "1.1" }), "1.1");
 assert.throws(() => value("process.exit()"));
 assert.throws(() => value("1/0"));
 const tool = createCalcTool();
@@ -27,3 +28,25 @@ assert.equal((await tool.execute("test", { expression: "1/0" })).isError, true);
 console.log("calc tool deterministic tests passed");
 assert.throws(() => value('(2^1000)^100'), /数值大小/);
 assert.throws(() => value('1/((2^1000)^100)'), /数值大小/);
+
+// DT-1 gold: 7,053,443 Rmb mn = 70,534.43 亿元 (divide by 100), never 7,053 亿元.
+const gold = unitConvert({ value: "7053443", from_unit: "Rmb mn", to_unit: "亿元" });
+assert.equal(gold.value, "70534.43");
+assert.equal(gold.unit, "亿元");
+assert.equal(gold.currency, "RMB");
+assert.match(gold.conversionChain, /7053443 Rmb mn/);
+assert.match(gold.conversionChain, /70534\.43 亿元/);
+assert.equal(unitConvert({ value: "7053443", from_unit: "RMB mn", to_unit: "亿" }).value, "70534.43");
+assert.equal(unitConvert({ value: "7053443", from_unit: "rmb mn", to_unit: "亿元" }).value, "70534.43");
+assert.equal(unitConvert({ value: "7053443", from_unit: "mn", to_unit: "亿元" }).value, "70534.43");
+assert.equal(unitConvert({ value: "7053443", from_unit: "HKD mn", to_unit: "亿元" }).currency, "HKD");
+assert.equal(unitConvert({ value: "15", from_unit: "%", to_unit: "decimal" }).value, "0.15");
+assert.equal(unitConvert({ value: "0.15", from_unit: "decimal", to_unit: "%" }).value, "15");
+assert.throws(() => unitConvert({ value: "1", from_unit: "元", to_unit: "%" }), /不兼容/);
+assert.throws(() => unitConvert({ value: "1", from_unit: "Rmb mn", to_unit: "HKD mn" }), /币种/);
+assert.equal(value("7053443", { fromUnit: "Rmb mn", toUnit: "亿元" }), "70534.43");
+const unitTool = createUnitConvertTool();
+const unitOut = await unitTool.execute("test", { value: "7053443", from_unit: "Rmb mn", to_unit: "亿元" });
+assert.equal(unitOut.details.value, "70534.43");
+assert.match(unitOut.content[0].text, /换算链/);
+assert.match(unitOut.content[0].text, /70534\.43 亿元/);
