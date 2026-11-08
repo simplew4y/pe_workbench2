@@ -141,6 +141,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
    - 两者都没有时：才按 [状态契约](references/state-contract.md) 的自查清单逐项核对，并在第 7 节写“脚本校验未执行（当前会话无 validate_state / bash）”。
 3. 修掉所有 error；warning 可以保留但要理解。校验器会检查方法身份、驱动引用、归因闭合、可比性、证据类型和同日反向修正的稳定性，具体规则见 [状态契约](references/state-contract.md)。
 4. 人工再查三件事：**最大驱动是否在 `attribution` 里？有没有把不进入公式的 A 写成目标价变化原因？报告有没有把不同方法写成一条目标价序列？**
+   - **数字自查（十倍错）硬规则**：先 `transcript_search`（同时返回台账 `ledgerMatches`）→ 列出候选人（可空，写「未发现候选人」）→ 金额逐条 `unit_convert`/`calc`（百万元 ÷ 100 = 亿元）→ 输出 `角色 | 主张 | 应为 | 依据` 表。未检索不得写「全部正确 / 没有十倍错误」；允许「核对 N 条后均与单元格一致」。用户口述「写成了/应为/有人写成」先记 `ledger_record kind=claim`，确认后 `kind=correction`。
 5. `stage` 设为 `draft` 或 `reviewed`。`reviewed` 要求每个 active 观点都有失效条件和反证。
 6. 回复给结论摘要 + 两个路径（报告、状态），不要逐字贴报告。
 

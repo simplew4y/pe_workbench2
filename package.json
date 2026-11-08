@@ -47,7 +47,8 @@
     "test:presentation:browser": "python3 scripts/test-presentation-browser.py",
     "test:westock": "node scripts/test-westock-ticker.mjs",
     "test:mail": "node scripts/test-mail.mjs",
-    "test:systemic": "node scripts/test-turn-context.mjs && node scripts/test-calc-tool.mjs && node scripts/test-answer-lint.mjs && node scripts/test-trace-path.mjs && node scripts/test-workbook-query-semantics.mjs && node scripts/test-model-whatif.mjs && node scripts/test-validate-state-warnings.mjs && node scripts/test-post-answer.mjs && node scripts/test-ledger.mjs && node scripts/test-transcript-search.mjs && node scripts/test-artifact-revision.mjs && node scripts/test-ledger-lint.mjs && node scripts/test-f5-ui.mjs && node scripts/test-f5-session.mjs"
+    "test:ledger-claims": "node scripts/test-ledger-claims.mjs",
+    "test:systemic": "node scripts/test-turn-context.mjs && node scripts/test-calc-tool.mjs && node scripts/test-answer-lint.mjs && node scripts/test-trace-path.mjs && node scripts/test-workbook-query-semantics.mjs && node scripts/test-model-whatif.mjs && node scripts/test-validate-state-warnings.mjs && node scripts/test-post-answer.mjs && node scripts/test-ledger.mjs && node scripts/test-transcript-search.mjs && node scripts/test-artifact-revision.mjs && node scripts/test-ledger-lint.mjs && node scripts/test-ledger-claims.mjs && node scripts/test-f5-ui.mjs && node scripts/test-f5-session.mjs"
   },
   "keywords": [],
   "author": "",

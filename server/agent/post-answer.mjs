@@ -1,6 +1,7 @@
 /** Shared user-turn lifecycle. Automated watch/tracking prompts never use this wrapper. */
 import { buildTurnContext, checkTurnTools } from '../../lib/turn-context.mjs';
 import { readLedger } from '../../lib/ledger.mjs';
+import { recordUserClaims } from '../../lib/claim-detect.mjs';
 import { randomUUID } from 'node:crypto';
 import { lintAnswer, lintLedgerAnswer, answerStats } from '../../lib/answer-lint.mjs';
 import { textOfContent } from './snapshot.mjs';
@@ -18,12 +19,15 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     const toolCalls = entry.turnToolCalls = [];
     const turnBoundary = entry.session.messages.length;
     entry.transcriptBoundary = turnBoundary;
+    // Explicit user corrections become append-only claims before the model responds.
+    const turn = entry.session.messages.filter(m => m.role === 'user' && !m.peInternal && !m.customType).length + 1;
+    try { await recordUserClaims(entry.ctx?.root, entry.id, text, { turn }); } catch { /* never block the turn */ }
     const context = await buildTurnContext({ question: text, root: entry.ctx?.root, sessionId: entry.id });
     const unsubscribe = entry.session.subscribe?.(event => {
       if (event.type === 'tool_execution_start') toolCalls.push({ id: event.toolCallId, name: event.toolName, args: event.args, success: false });
       if (event.type === 'tool_execution_end') {
         const call = toolCalls.findLast(c => c.id === event.toolCallId);
-        if (call) call.success = event.isError === false && event.result?.isError !== true;
+        if (call) { call.success = event.isError === false && event.result?.isError !== true; call.details = event.result?.details; }
       }
       if (event.type === 'agent_settled' && event.aborted) aborted = true;
     });
