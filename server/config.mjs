@@ -46,8 +46,11 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   const deepseekSearch = env.DEEPSEEK_SEARCH !== "0" && Boolean(env.DEEPSEEK_API_KEY);
   const webFetch = env.WEB_FETCH !== "0";
   const asrEnabled = env.ASR !== "0";
-  const toolNames = ["read", "write", "edit", "grep", "find", "ls", "create_tracking", "validate_state"];
-  if (workbookQuery) toolNames.push("workbook_query", "workbook_trace");
+  const toolNames = ["read", "write", "edit", "grep", "find", "ls", "create_tracking", "validate_state", "calc"];
+  if (workbookQuery) {
+    toolNames.push("workbook_query", "workbook_trace");
+    toolNames.push("model_whatif");
+  }
   if (pdfRead) toolNames.push("pdf_read");
   if (westockQuery) toolNames.push("westock_query");
   if (anysearchQuery) toolNames.push("anysearch_search");

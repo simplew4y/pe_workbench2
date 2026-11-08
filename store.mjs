@@ -920,6 +920,18 @@ export class Store {
 
   /* ---------- approval requests ---------- */
 
+  /** Exact F5 lookup: no recent-list limit can defeat artifact/correction dedupe. */
+  findPendingArtifactRevision({ threadId, path: artifactPath, correctionId }) {
+    const row = this.db.prepare(`select * from approval_requests
+      where workspace_id = ? and thread_id = ? and kind = 'artifact_revision'
+        and status in ('pending_approval','approved','applying') and json_valid(payload_json)
+        and json_extract(payload_json, '$.artifact.path') = ?
+        and exists (select 1 from json_each(payload_json, '$.corrections')
+          where json_extract(value, '$.id') = ?)
+      order by created_at desc limit 1`).get(this.projectId, String(threadId), artifactPath, correctionId);
+    return row ? this.approvalRecord(row) : null;
+  }
+
   createApprovalRequest({
     id = null,
     threadId = "",

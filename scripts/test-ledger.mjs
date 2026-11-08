@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {readLedger, appendFact, appendCorrection, appendOpen, resolveOpen, markArtifact, summarizeLedger, correctedValues} from '../lib/ledger.mjs';
+const root=await mkdtemp(path.join(os.tmpdir(),'ledger-'));
+try {
+  assert.equal(await readLedger(root,'s'),null);
+  await assert.rejects(appendFact(root,'../escape',{}));
+  const evidence={type:'user',ref:'turn 1'};
+  await Promise.all(Array.from({length:20},(_,i)=>appendFact(root,'s',{claim:'利润',value:i,unit:'亿',period:'1H27',evidence,turn:1})));
+  let ledger=await readLedger(root,'s');
+  assert.equal(ledger.version,1); assert.equal(ledger.sessionId,'s'); assert.equal(ledger.facts.length,20);
+  assert.equal(new Set(ledger.facts.map(f=>f.id)).size,20);
+  await assert.rejects(appendCorrection(root,'s',{claim:'利润',from:7.3,to:72.93,turn:2}));
+  const c=await appendCorrection(root,'s',{claim:'利润',from:7.3,to:72.93,unit:'亿',evidence,turn:2,reason:'十倍'});
+  await appendCorrection(root,'s',{claim:'期间',from:'2026H1',to:'1H27',evidence,turn:2});
+  await appendCorrection(root,'s',{claim:'利润',from:72.93,to:80,unit:'亿',evidence,turn:3});
+  const open=await appendOpen(root,'s',{text:'待核',turn:3});
+  await resolveOpen(root,'s',open.id);
+  await markArtifact(root,'s',c.id,{artifact:'report',path:'exports/r.md',status:'pending_merge',approvalId:'a'});
+  await markArtifact(root,'s',c.id,{artifact:'report',path:'exports/r.md',status:'merged',approvalId:'a'});
+  ledger=await readLedger(root,'s');
+  assert.equal(ledger.open.length,0); assert.equal(ledger.corrections[0].affects.length,1); assert.equal(ledger.corrections[0].affects[0].status,'merged');
+  await appendFact(root,'s',{claim:'备注',value:'旧稿利润7.30 亿',unit:'',evidence,turn:3});
+  ledger=await readLedger(root,'s');
+  const summary=summarizeLedger(ledger); assert.ok(summary.length<=150); assert.ok(summary.includes('80')); assert.ok(!summary.includes('7.3')); assert.ok(!summary.includes('7.30')); assert.ok(!summary.includes('72.93')); assert.ok(!summary.includes('2026H1'));
+  assert.deepEqual(correctedValues(ledger)[0],{from:7.3,to:80,unit:'亿',claim:'利润'});
+  assert.deepEqual(JSON.parse(await readFile(path.join(root,'.pi/ledger/s.json'),'utf8')),ledger);
+  assert.deepEqual(await readdir(path.join(root,'.pi/ledger')),['s.json']);
+  console.log('ledger PASS');
+} finally {await rm(root,{recursive:true,force:true});}
+const stalePeriod=summarizeLedger({facts:[{id:'F',value:'利润7.30亿',period:'2026H1'}],corrections:[{claim:'期间',from:'2026H1',to:'1H27'},{claim:'利润',from:7.3,to:72.93,unit:'亿'}]});
+assert.ok(!stalePeriod.includes('2026H1'));assert.ok(!stalePeriod.includes('7.30'));
+assert.equal(summarizeLedger({facts:'bad',corrections:{from:1,to:2},open:5}),'');

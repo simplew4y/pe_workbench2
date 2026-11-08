@@ -1068,7 +1068,7 @@ ${question}
   async function answer(ctx, watchId, question) {
     let watch = ctx.store.getWatch(watchId);
     if (!watch) return;
-    let entry = watch.sessionId ? await sessions.ensureEntry(watch.sessionId, ctx) : null;
+    let entry = watch.sessionId ? await sessions.ensureEntry(watch.sessionId, ctx, { automated: true, writeRoots: [`${WATCH_DIR}/`] }) : null;
     if (!entry) {
       entry = await sessions.createEntry({ ctx, writeRoots: [`${WATCH_DIR}/`] });
       entry.session.setSessionName(`[盯] ${watch.brief?.target?.company || watch.name}`);

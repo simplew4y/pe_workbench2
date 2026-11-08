@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 8
+PARSER_VERSION = 9
 
 try:
     import openpyxl
@@ -280,6 +280,11 @@ def local_period_header(display, row, col, headers):
     return None
 
 def cell_period(display, headers, row, col, row_label):
+    # Main also supports a single value column immediately under a period label.
+    # Keep this local so scalar values do not inherit a distant table's period.
+    immediate = str(display.get((row - 1, col), "")).strip()
+    if re.fullmatch(r"(?:FY\s*\d{2,4}|[12]H\s*\d{2,4}|[1-4]Q\s*\d{2,4}|(?:19|20)\d{2}[AE]?)", immediate, re.I):
+        return immediate
     # Scalar outputs can carry their own year (e.g. discounted back to 2027).
     years = re.findall(r"\b(?:19|20)\d{2}[AE]?\b", row_label or "")
     if len(years) == 1:
@@ -501,7 +506,16 @@ def parse_sheet(
             "colLabel": col_label,
         }
 
+    context_cells = []
+    for (row, col), value in display.items():
+        if (row, col) in sheet_formulas or value is None:
+            continue
+        row_label, label_coord = sources.get((row, col), (None, None))
+        col_label = column_label(display, sheet_formulas, row, col, col_labels)
+        context_cells.append([cell_id(ws.title, row, col), None, safe_value(value), row, col, row_label, col_label, label_coord, cell_period(display, headers, row, col, row_label)])
+
     sheet = {
+        "contextCells": context_cells,
         "name": ws.title,
         "rows": max_row,
         "cols": max_col,

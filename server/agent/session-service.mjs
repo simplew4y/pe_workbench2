@@ -10,6 +10,9 @@ import {auditResearch} from "../../lib/research-audit.mjs";
 import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
 import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
+import {readLedger} from "../../lib/ledger.mjs";
+import {createLedgerTool} from "../../lib/ledger-tool.mjs";
+import {createTranscriptSearchTool} from "../../lib/transcript-search-tool.mjs";
 import path from "node:path";
 import {
   createAgentSession,
@@ -17,6 +20,7 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
+import { runWithPostAnswer } from "./post-answer.mjs";
 import { PiAgUiAdapter } from "../../lib/agent-protocol/pi-ag-ui-adapter.mjs";
 import { createFakeSession } from "./fake-agent.mjs";
 import { attachSessionEvents } from "./event-bridge.mjs";
@@ -120,18 +124,32 @@ export function createSessionService({
     return { block: true, reason: `「盯」是只读的：只能写 ${writeRoots.join("、")} 下的结果文件` };
   }
 
-  async function createEntry({ id, file, ctx, writeRoots = null }) {
+  async function createEntry({ id, file, ctx, writeRoots = null, automated = false }) {
     if (!ctx) throw Object.assign(new Error("project not found"), { status: 404 });
 
+    // Restore the persisted background boundary even through generic session routes.
+    const restoredManager = !config.fakeAgent && file ? SessionManager.open(file, ctx.sessionsDir) : null;
+    const restoredName = restoredManager?.getSessionName?.() || "";
+    if (/^\[(计划|跟踪|盯)\]/.test(restoredName)) automated = true;
+    if (/^\[盯\]/.test(restoredName) && !writeRoots) writeRoots = [".watch/"];
     const researchReview = createResearchReview({ctx,
       authorizeWrite: args => blockOutsideProject(ctx, "write", args) ?? blockOutsideWriteRoots(ctx, "write", args, writeRoots),
     });
     let session;
+    let entry;
+    const sessionTools = automated || writeRoots ? [] : [
+      createLedgerTool({ctx, getSessionId: () => session.sessionId,
+        getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
+        broadcast: event => bus.broadcastGlobal(event, ctx.id),
+        onChange: () => { if (entry) bus.broadcast(entry, entry.snapshot()); },
+      }),
+      createTranscriptSearchTool({getMessages: () => session.messages.slice(0, entry?.transcriptBoundary ?? session.messages.length), getLedger: () => readLedger(ctx.root, session.sessionId)}),
+    ];
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
     } else {
       const sessionManager = file
-        ? SessionManager.open(file, ctx.sessionsDir)
+        ? restoredManager
         : SessionManager.create(ctx.root, ctx.sessionsDir, id ? { id } : undefined);
       const loader = makeLoader(ctx);
       await loader.reload();
@@ -142,8 +160,8 @@ export function createSessionService({
         thinkingLevel: "off",
         sessionManager,
         resourceLoader: loader,
-        tools: [...config.toolNames, "review_research"],
-        customTools: [...ctx.tools, researchReview.tool],
+        tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
+        customTools: [...ctx.tools, researchReview.tool, ...sessionTools],
       });
       session = created.session;
       researchReview.restoreEvidence(session.messages);
@@ -173,8 +191,10 @@ export function createSessionService({
 
     session.agent.afterToolCall = async context => researchReview.record(context);
 
-    const entry = {
+    entry = {
       id: session.sessionId,
+      sessionTools,
+      automated: Boolean(automated || writeRoots),
       session,
       ctx,
       clients: new Set(),
@@ -193,13 +213,15 @@ export function createSessionService({
       threadId: entry.id,
       workspaceId: ctx.id,
       log: ctx.agentEvents,
+      isBusy: () => Boolean(entry.postAnswerPending),
+      promptRunner: (text, options) => runWithPostAnswer(entry, text, options, event => bus.broadcast(entry, event)),
     });
     entry.agui.attach();
     live.set(entry.id, entry);
     return entry;
   }
 
-  async function ensureEntry(id, ctx = null) {
+  async function ensureEntry(id, ctx = null, scope = {}) {
     const existing = live.get(id);
     if (existing) {
       if (ctx && existing.ctx.id !== ctx.id) return null;
@@ -209,7 +231,7 @@ export function createSessionService({
     const candidates = ctx ? [ctx] : projectManager.list();
     for (const candidate of candidates) {
       const file = SessionManager.findById(candidate.root, id, candidate.sessionsDir);
-      if (file) return createEntry({ id, file, ctx: candidate });
+      if (file) return createEntry({ id, file, ctx: candidate, ...scope });
     }
     return null;
   }
