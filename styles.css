@@ -88,7 +88,12 @@ svg{display:block}
   background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);
   box-shadow:0 12px 32px rgba(20,20,18,.10);
 }
-.ws-menu{left:4px;right:4px;top:calc(100% + 4px);min-width:0}
+.ws-menu{
+  left:4px;right:4px;top:calc(100% + 4px);min-width:0;
+  display:flex;flex-direction:column;overflow:hidden;
+  max-height:min(70vh,calc(100dvh - 72px));
+}
+.ws-menu[hidden]{display:none}
 .menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border-radius:var(--r-sm);font-size:13px;text-align:left;color:var(--ink-2);transition:background .12s}
 .menu-item:hover{background:var(--bone)}
 .menu-item.is-on{color:var(--ink)}
@@ -96,8 +101,12 @@ svg{display:block}
 .menu-note{margin-left:auto;font-size:12px;color:var(--muted);font-weight:400}
 
 /* project switcher */
-.ws-menu-label{padding:6px 8px 4px;font-size:11px;color:var(--faint)}
-.ws-menu-list{display:flex;flex-direction:column;gap:1px}
+.ws-menu-label{flex:none;padding:6px 8px 4px;font-size:11px;color:var(--faint)}
+.ws-menu-list{
+  display:flex;flex-direction:column;gap:1px;
+  flex:1 1 auto;min-height:0;overflow-y:auto;
+  overscroll-behavior:contain;padding-bottom:2px;
+}
 .ws-menu .menu-item.is-on::before{display:none}
 .proj-item{gap:9px;padding:7px 8px}
 .proj-mark{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;font-size:11px;font-weight:600;background:var(--bone);border:1px solid var(--line-2);color:var(--ink-2)}
@@ -112,7 +121,8 @@ svg{display:block}
 .proj-check{margin-left:auto;color:var(--ink);flex:none;opacity:0}
 .proj-item.is-on .proj-check{opacity:1}
 .menu-sep{height:1px;background:var(--line);margin:4px 4px}
-.ws-new{color:var(--ink-2)}
+.ws-menu .menu-sep{flex:none}
+.ws-new{flex:none;color:var(--ink-2)}
 .ws-new-icon{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none;background:var(--surface-2);border:1px dashed var(--line-2);color:var(--muted)}
 
 .side-head{display:flex;align-items:center;justify-content:space-between;padding:14px 8px 4px;font-size:12px;color:var(--muted)}
