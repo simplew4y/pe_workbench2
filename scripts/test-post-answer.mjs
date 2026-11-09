@@ -291,3 +291,44 @@ await runWithPostAnswer(noChecklistEntry,'问题');
 assert.equal(noChecklist.messages.length,1,'no checklist keeps the old single-pass behavior');
 assert.equal(noChecklistEntry.answerLint.findings.length,0);
 console.log('DT-8 checklist passed');
+
+// CELL-CITE L3: unverified locator gets at most one bounded correction and the
+// prompt must protect the numbers.
+let locatorCalls = 0;
+const locatorPrompts = [];
+const locatorSession = {
+  messages: [], sessionManager: { appendCustomEntry() {} },
+  async prompt(text) {
+    locatorPrompts.push(text);
+    locatorCalls++;
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: '收入见 Fake!B2。' });
+  },
+};
+const locatorEntry = { id: 'locator', ctx: {}, session: locatorSession };
+await runWithPostAnswer(locatorEntry, '问题');
+assert.equal(locatorCalls, 2, 'one correction, never a loop');
+assert.equal(locatorEntry.answerLint.correctionCount, 1);
+assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'unverified_locator').length, 1);
+assert.match(locatorPrompts[1], /未核验/);
+assert.match(locatorPrompts[1], /不要改动任何数字/);
+// A verified locator is not corrected.
+let verifiedCalls = 0;
+const verifiedSession = {
+  messages: [], listeners: new Set(), sessionManager: { appendCustomEntry() {} },
+  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
+  async prompt() {
+    verifiedCalls++;
+    for (const fn of this.listeners) fn({ type: 'tool_execution_start', toolCallId: 'q1', toolName: 'workbook_query', args: {} });
+    for (const fn of this.listeners) fn({
+      type: 'tool_execution_end', toolCallId: 'q1', isError: false,
+      result: { details: { citations: [{ id: 'c1', materialId: 'mat-1', version: 1, locator: 'Model!A1' }] } },
+    });
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: '收入见 Model!A1。' });
+  },
+};
+const verifiedEntry = { id: 'verified', ctx: {}, session: verifiedSession };
+await runWithPostAnswer(verifiedEntry, '问题');
+assert.equal(verifiedCalls, 1);
+assert.equal(verifiedEntry.answerLint.citations.length, 1);
+assert.equal(verifiedEntry.answerLint.findings.some((item) => item.rule === 'unverified_locator'), false);
+console.log('cell citation post-answer L3 passed');

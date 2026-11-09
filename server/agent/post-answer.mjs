@@ -4,6 +4,7 @@ import { readLedger } from '../../lib/ledger.mjs';
 import { recordUserClaims } from '../../lib/claim-detect.mjs';
 import { randomUUID } from 'node:crypto';
 import { lintAnswer, lintLedgerAnswer, answerStats } from '../../lib/answer-lint.mjs';
+import { collectCitationsFromToolCalls } from '../../lib/citations.mjs';
 import { textOfContent } from './snapshot.mjs';
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
@@ -27,9 +28,10 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     const requiredSections = Array.isArray(options.requiredSections)
       ? options.requiredSections
       : Array.isArray(entry.requiredSections) ? entry.requiredSections : null;
-    const lintContext = requiredSections?.length
-      ? { ...(entry.answerLintContext || {}), requiredSections }
-      : entry.answerLintContext;
+    const baseLintContext = {
+      ...(entry.answerLintContext || {}),
+      ...(requiredSections?.length ? { requiredSections } : {}),
+    };
     const unsubscribe = entry.session.subscribe?.(event => {
       if (event.type === 'tool_execution_start') toolCalls.push({ id: event.toolCallId, name: event.toolName, args: event.args, success: false });
       if (event.type === 'tool_execution_end') {
@@ -55,10 +57,14 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           const result = messages.find(r => r.role === 'toolResult' && r.toolCallId === c.id);
           scanned.push({ name: c.name, args: c.arguments, success: Boolean(result) && result.isError === false });
         }
+        const turnCitations = collectCitationsFromToolCalls([...toolCalls, ...scanned]);
+        entry.citationIndex = turnCitations;
+        const lintContext = { ...baseLintContext, citations: turnCitations };
         const findings = [...lintAnswer(answer, lintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
         const data = {
           version: 1, turnId, timestamp: new Date().toISOString(),
           findings, stats: answerStats(answer), correctionCount, continuationCount,
+          citations: turnCitations,
           messageIndex: entry.session.messages.lastIndexOf(message),
         };
         // Custom entries are durable metadata, never model-visible chat messages.
@@ -66,13 +72,17 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         entry.answerLint = data;
         const nonIncomplete = findings.filter(item => item.rule !== 'incomplete');
         const numericRules = new Set(['unit_conversion', 'magnitude', 'percent_change', 'inconsistent_value', 'repeats_corrected_value']);
+        const locatorOnly = nonIncomplete.length > 0 && nonIncomplete.every(item => item.rule === 'unverified_locator');
         const label = nonIncomplete.some(item => numericRules.has(item.rule)) && nonIncomplete.every(item => numericRules.has(item.rule))
           ? '数值待核'
-          : nonIncomplete.length ? '待核'
-          : findings.length ? '回答不完整' : '';
+          : locatorOnly
+            ? '引用待核'
+            : nonIncomplete.length ? '待核'
+            : findings.length ? '回答不完整' : '';
         broadcast({ type: 'answer.lint', ...data, label });
         const errors = findings.filter(item => item.severity === 'error' && item.rule !== 'incomplete');
         const incomplete = findings.some(item => item.rule === 'incomplete');
+        const unverified = findings.filter(item => item.rule === 'unverified_locator');
         let prompt;
         if (errors.length && correctionCount < 1) {
           correctionCount++;
@@ -82,6 +92,10 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           continuationCount++;
           continuationPrefix = answer;
           prompt = '上一条回答在句中截断，请从断点继续补完，不要重复已写内容';
+        } else if (unverified.length && correctionCount < 1) {
+          correctionCount++;
+          continuationPrefix = "";
+          prompt = `以下单元格引用没有本轮工具 citations 支撑：\n${unverified.map(item => `${item.excerpt}`).join('\n')}\n请只修正引用：删除这些坐标，或明确标注“未核验”；不要改动任何数字、单位、结论或格式。`;
         } else break;
         if (aborted) break;
         boundary = entry.session.messages.length;

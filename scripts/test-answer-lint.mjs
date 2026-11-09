@@ -49,3 +49,24 @@ assert.equal(withCtx('目标价 100 元。', { marketCap: 500 }).filter(x => x.r
 const { answerStats } = await import('../lib/answer-lint.mjs');
 assert.deepEqual(answerStats('让我核对。我来检查。让me想想。\n| A | B |\n| --- | --- |'), { processTextCount: 3, markdownTables: 1 });
 assert.deepEqual(lintAnswer('让我核对。'), []);
+
+// CELL-CITE L1-L4: locator verification is opt-in via this turn's citations.
+const cite = (locator = 'Model!A1') => ({ id: `c:${locator}`, materialId: 'mat-1', version: 1, locator });
+const locatorFindings = (text, citations) => withCtx(text, { citations }).filter((item) => item.rule === 'unverified_locator');
+// L1: answer locator matches a tool citation.
+assert.deepEqual(locatorFindings('收入见 Model!A1。', [cite('Model!A1')]), []);
+// L2: answer locator has no citation -> soft warning, code L2.
+const l2 = locatorFindings('收入见 Model!Z99。', [cite('Model!A1')]);
+assert.equal(l2.length, 1);
+assert.equal(l2[0].severity, 'warning');
+assert.equal(l2[0].code, 'L2');
+assert.match(l2[0].excerpt, /Model!Z99/);
+// Explicitly marking it unverified is the documented escape hatch.
+assert.deepEqual(locatorFindings('收入见 Model!Z99（未核验）。', [cite('Model!A1')]), []);
+// L3: quoted sheets and ranges normalise to the same citation.
+assert.deepEqual(locatorFindings("收入见 'Discount PE'!H33。", [cite('Discount PE!H33')]), []);
+assert.deepEqual(locatorFindings('区域 Model!A1:B2。', [cite('Model!A1:B2')]), []);
+// L4: prose without a coordinate never reports; missing citations context keeps legacy behavior.
+assert.deepEqual(locatorFindings('收入增长 10%。', []), []);
+assert.deepEqual(locatorFindings('收入见 Model!A1。', undefined), []);
+console.log('cell citation lint L1-L4 passed');
