@@ -3,7 +3,7 @@ import { buildTurnContext, checkTurnTools } from '../../lib/turn-context.mjs';
 import { readLedger } from '../../lib/ledger.mjs';
 import { recordUserClaims } from '../../lib/claim-detect.mjs';
 import { randomUUID } from 'node:crypto';
-import { lintAnswer, lintLedgerAnswer, answerStats } from '../../lib/answer-lint.mjs';
+import { lintAnswer, lintLedgerAnswer, answerStats, asksDeviationQuestion, contextModelTarget } from '../../lib/answer-lint.mjs';
 import { collectCitationsFromToolCalls } from '../../lib/citations.mjs';
 import { textOfContent } from './snapshot.mjs';
 
@@ -28,8 +28,11 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     const requiredSections = Array.isArray(options.requiredSections)
       ? options.requiredSections
       : Array.isArray(entry.requiredSections) ? entry.requiredSections : null;
+    const injectedLintContext = { ...(entry.answerLintContext || {}), ...(options.answerLintContext || {}) };
+    const asksDeviation = injectedLintContext.userAsksDeviation ?? asksDeviationQuestion(text);
     const baseLintContext = {
-      ...(entry.answerLintContext || {}),
+      ...injectedLintContext,
+      ...(asksDeviation ? { userAsksDeviation: true } : {}),
       ...(requiredSections?.length ? { requiredSections } : {}),
     };
     const unsubscribe = entry.session.subscribe?.(event => {
@@ -41,6 +44,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       if (event.type === 'agent_settled' && event.aborted) aborted = true;
     });
     try {
+      const priorCitations = Array.isArray(entry.citationIndex) ? entry.citationIndex : [];
       let boundary = entry.session.messages.length;
       // Older fake sessions may omit custom messages: context injection is skipped there.
       if (entry.session.sendCustomMessage) await entry.session.sendCustomMessage({ customType: 'pe_turn_context', content: context.content, display: false, details: { turnId, routes: context.routes } }, { deliverAs: 'nextTurn' });
@@ -59,7 +63,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         }
         const turnCitations = collectCitationsFromToolCalls([...toolCalls, ...scanned]);
         entry.citationIndex = turnCitations;
-        const lintContext = { ...baseLintContext, citations: turnCitations };
+        const lintContext = { ...baseLintContext, citations: turnCitations, ...(priorCitations.length ? { priorCitations } : {}) };
         const findings = [...lintAnswer(answer, lintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
         const data = {
           version: 1, turnId, timestamp: new Date().toISOString(),
@@ -84,7 +88,14 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         const incomplete = findings.some(item => item.rule === 'incomplete');
         const unverified = findings.filter(item => item.rule === 'unverified_locator');
         let prompt;
-        if (errors.length && correctionCount < 1) {
+        const targetErrors = errors.filter(item => item.code === 'G1' || item.code === 'G2');
+        if (targetErrors.length && correctionCount < 1) {
+          correctionCount++;
+          continuationPrefix = "";
+          const knownTarget = contextModelTarget(lintContext);
+          const targetHint = knownTarget !== null ? `本会话/状态已有模型目标价 ${knownTarget}；` : '';
+          prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）与 westock_query 现价重写首句，格式“模型目标价 <值> vs 现价 <值>，空间 ≈ <X>%”；G1/G2 只是缺口 ID，禁止写成单元格，禁止用“没有独立目标价单元格/先纠正前提/无法精确回答”挡掉；券商目标价只作对照。不要说明修正过程。`;
+        } else if (errors.length && correctionCount < 1) {
           correctionCount++;
           continuationPrefix = "";
           prompt = `请调用所需工具（数值用 calc，单位换算用 unit_convert，负向依赖用 workbook_trace mode=path，自查先 transcript_search 并读台账）核验以下问题，并给出修正后的完整回答，不要说明修正过程：\n${errors.map(item => `${item.message}：${item.excerpt}；应为 ${item.expected}`).join('\n')}`;

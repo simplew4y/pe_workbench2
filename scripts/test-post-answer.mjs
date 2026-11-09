@@ -332,3 +332,54 @@ assert.equal(verifiedCalls, 1);
 assert.equal(verifiedEntry.answerLint.citations.length, 1);
 assert.equal(verifiedEntry.answerLint.findings.some((item) => item.rule === 'unverified_locator'), false);
 console.log('cell citation post-answer L3 passed');
+
+// G1/G2: a gap-id shield gets exactly one correction that rewrites the first
+// sentence with the known model target and forbids treating G1 as a cell.
+let targetCalls = 0;
+const targetPrompts = [];
+const targetSession = {
+  messages: [], sessionManager: { appendCustomEntry() {} },
+  async prompt(text) {
+    targetPrompts.push(text);
+    targetCalls++;
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: targetCalls === 1
+      ? '先纠正前提：模型底层没有独立目标价单元格（G1），无法精确回答目标价较现价偏离这么多。'
+      : '模型目标价 752 港元 vs 现价 418.4 港元，空间约 +79.7%；驱动来自 SOTP 分部重估。' });
+  },
+};
+const targetEntry = { id: 'target', ctx: {}, session: targetSession };
+await runWithPostAnswer(targetEntry, '目标价较现价偏离这么多', {
+  answerLintContext: { valuations: [{ id: 'V1', output: 'target_price', value: 752 }] },
+});
+assert.equal(targetCalls, 2, 'exactly one target correction');
+assert.equal(targetEntry.answerLint.correctionCount, 1);
+assert.match(targetPrompts[1], /模型目标价/);
+assert.match(targetPrompts[1], /752/);
+assert.match(targetPrompts[1], /首句/);
+assert.match(targetPrompts[1], /G1/);
+assert.match(targetPrompts[1], /禁止/);
+assert.equal(targetEntry.answerLint.findings.filter(f => ['gap_id_as_cell', 'target_missing_claim'].includes(f.rule)).length, 0);
+// An earlier turn already read SOTP!J134=752: the correction must reuse that
+// session target instead of pretending the model has no target price.
+let priorCalls = 0;
+const priorPrompts = [];
+const priorSession = {
+  messages: [], sessionManager: { appendCustomEntry() {} },
+  async prompt(text) {
+    priorPrompts.push(text);
+    priorCalls++;
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: priorCalls === 1
+      ? '模型底层没有独立目标价单元格（G1），无法精确回答目标价较现价偏离这么多。'
+      : '模型目标价 752 港元 vs 现价 418.4 港元，空间约 +79.7%；驱动来自 SOTP 分部重估。' });
+  },
+};
+const priorEntry = {
+  id: 'prior', ctx: {}, session: priorSession,
+  citationIndex: [{ materialId: 'm1', version: 1, locator: 'SOTP!J134', value: 752, role: 'output' }],
+};
+await runWithPostAnswer(priorEntry, '目标价较现价偏离这么多');
+assert.equal(priorCalls, 2);
+assert.match(priorPrompts[1], /SOTP!J134|752/);
+assert.match(priorPrompts[1], /752/);
+assert.equal(priorEntry.answerLint.citations.length, 0, 'prior citations must not satisfy current-turn locator checks');
+console.log('target deviation post-answer correction passed');
