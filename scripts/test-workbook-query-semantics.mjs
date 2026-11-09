@@ -33,9 +33,9 @@ s=w.create_sheet('Plain'); s['A1']='数值'; s['B1']=123; w.save(sys.argv[1])`,f
  // DT-5 M3: normal hit is not a miss.
  const normalHit=queryGraph(graph,'Money!C2');
  assert.notEqual(normalHit.miss,true); assert.equal(normalHit.exact,true); assert.equal(normalHit.coverage.namedSheetsOk,true);
- // An in-sheet address miss may fall back to labels, but only as degraded results.
- const degraded=queryGraph(graph,'Discount PE!H33 估值');
- assert.equal(degraded.degraded,true); assert.equal(degraded.miss,false); assert.equal(degraded.exact,false); assert.ok(degraded.cells.length>0); assert.ok(degraded.cells.every(c=>!c.exact)); assert.match(formatResult(degraded),/降级/);
+ // Mixed prose and explicit references fail closed; retain DT-5 miss metadata.
+ const invalid=queryGraph(graph,'Discount PE!H33 估值');
+ assert.equal(invalid.isError,true); assert.equal(invalid.miss,true); assert.equal(invalid.degraded,false); assert.equal(invalid.exact,false); assert.equal(invalid.cells.length,0); assert.match(formatResult(invalid),/未执行关键词回退/);
  const hbm=queryGraph(graph,'HBM',{maxCells:40});
  const margin=hbm.cells.find(c=>c.ref==='Segments!C2'), share=hbm.cells.find(c=>c.ref==='Segments!C4');
  assert.ok(margin.sectionPath.includes('毛利率')); assert.ok(share.sectionPath.includes('收入占比')); assert.equal(margin.unit,'%'); assert.equal(margin.display_unit,'%'); assert.equal(margin.period,'2025E'); assert.equal(share.period,'FY26');

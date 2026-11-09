@@ -46,10 +46,10 @@ try {
     title: "Hook test",
     updatedAt: null,
   };
-  const received = [];
+  const received = [], saved = [], events = [];
   attachSessionEvents(entry, {
-    bus: { broadcast() {} },
-    onMaterialSaved() {},
+    bus: { broadcast(_entry,event) { events.push(event); } },
+    onMaterialSaved(_entry,name,args) { saved.push({name,args}); },
     onRunSettled(_entry, data) {
       received.push(data);
       return trace.recordRun({
@@ -76,6 +76,12 @@ try {
     args: { path: "exports/估值模型调整提案.md" },
     result: { content: [{ type: "text", text: "ok" }] },
   });
+  for (const [id,failure] of Object.entries({failedEdit:{isError:true},failedResult:{result:{isError:true,content:[{type:'text',text:'blocked'}]}}})) {
+    listener({type:'tool_execution_start',toolCallId:id,toolName:'edit',args:{path:`exports/${id}.md`}});
+    listener({type:'tool_execution_end',toolCallId:id,toolName:'edit',result:{content:[{type:'text',text:'oldText not found'}]},...failure});
+  }
+  assert.equal(saved.length,1,'failed write/edit must not notify material saved');
+  assert.deepEqual(events.filter(e=>e.type==='tool.completed').map(e=>e.status),['done','error','error']);
   listener({ type: "agent_settled", aborted: false });
 
   await new Promise((resolve) => setTimeout(resolve, 20));

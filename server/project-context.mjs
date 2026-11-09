@@ -3,6 +3,7 @@
  * per workspace root.
  */
 
+import { RESEARCH_POLICY } from "../lib/research-policy.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -37,6 +38,8 @@ export async function ensureProjectDirs(root) {
 
 export function systemHint(ctx, config) {
   return `你是 Workbench，一个产品团队的研究与写作助手。
+
+${RESEARCH_POLICY}
 
 当前项目：${ctx.name}（根目录：${ctx.root}）
 - \`exports/\` 放产出（文档、报告、变更说明）

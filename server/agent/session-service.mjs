@@ -6,6 +6,9 @@
  * handlers only parse HTTP input and call these methods.
  */
 
+import {auditResearch} from "../../lib/research-audit.mjs";
+import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
+import {createResearchReview} from "../../lib/research-review.mjs";
 import fs from "node:fs";
 import {readLedger} from "../../lib/ledger.mjs";
 import {createLedgerTool} from "../../lib/ledger-tool.mjs";
@@ -129,6 +132,9 @@ export function createSessionService({
     const restoredName = restoredManager?.getSessionName?.() || "";
     if (/^\[(计划|跟踪|盯)\]/.test(restoredName)) automated = true;
     if (/^\[盯\]/.test(restoredName) && !writeRoots) writeRoots = [".watch/"];
+    const researchReview = createResearchReview({ctx,
+      authorizeWrite: args => blockOutsideProject(ctx, "write", args) ?? blockOutsideWriteRoots(ctx, "write", args, writeRoots),
+    });
     let session;
     let entry;
     const sessionTools = automated || writeRoots ? [] : [
@@ -154,17 +160,36 @@ export function createSessionService({
         thinkingLevel: "off",
         sessionManager,
         resourceLoader: loader,
-        tools: [...config.toolNames, ...sessionTools.map(t => t.name)],
-        customTools: ctx.tools.concat(sessionTools),
+        tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
+        customTools: [...ctx.tools, researchReview.tool, ...sessionTools],
       });
       session = created.session;
+      researchReview.restoreEvidence(session.messages);
+      const provider=session.agent.streamFunction;
+      const recordAudit=record=>{
+        fs.appendFileSync(path.join(ctx.root,".pi","research-audit.jsonl"),JSON.stringify(record)+"\n");
+      };
+      session.agent.streamFunction = guardResearchDelivery(provider,{
+        recordAudit,
+        audit:(source,model,context,options,draft)=>auditResearch(source,model,context,options,draft,{workbookEvidence:researchReview.evidenceSnapshot()}),
+        onContext:(model,context,options)=>{
+          researchReview.restoreEvidence(context.messages);
+          researchReview.setAuditor(async(content,extra)=>{
+            const verdict=await auditResearch(provider,model,context,options,content,{...extra,workbookEvidence:researchReview.evidenceSnapshot()});
+            recordAudit({...verdict,kind:"report",at:new Date().toISOString()});
+            return verdict;
+          });
+        },
+      });
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
       if (outside) return outside;
-      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? undefined;
+      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? researchReview.before(toolCall.name, args) ?? undefined;
     };
+
+    session.agent.afterToolCall = async context => researchReview.record(context);
 
     entry = {
       id: session.sessionId,
@@ -182,7 +207,7 @@ export function createSessionService({
       localRunId: null,
     };
     entry.snapshot = () => serializeSession(entry);
-    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled });
+    attachSessionEvents(entry, { bus, onMaterialSaved, onRunSettled, onRunStarted: researchReview.startRun });
     entry.agui = new PiAgUiAdapter({
       session,
       threadId: entry.id,
