@@ -1,3 +1,4 @@
+import { runWithPostAnswer } from "../agent/post-answer.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -69,11 +70,8 @@ export async function handleSessions({ req, res, url, app, ctx }) {
       }
 
       entry.updatedAt = nowIso();
-      const streaming = entry.session.isStreaming;
-      const run = entry.session.prompt(
-        promptText,
-        streaming ? { streamingBehavior: "followUp" } : {},
-      );
+      const streaming = Boolean(entry.session.isStreaming || entry.postAnswerPending);
+      const run = runWithPostAnswer(entry, promptText, {}, event => broadcast(entry, event));
       run.catch((error) => {
         broadcast(entry, { type: "run.error", message: error?.message || String(error) });
       });

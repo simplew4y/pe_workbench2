@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import fs from 'node:fs';
+import {artifactRevisionCardHTML} from '../ui/approvals/approvals.js';
+import {renderFrameworkPresentation} from '../ui/chat/presentation.js';
+const approval={id:'a',kind:'artifact_revision',status:'pending_approval',payload:{artifact:{path:'exports/<script>.md'},corrections:[{claim:'利润',from:7.3,to:72.93}]}};
+const html=artifactRevisionCardHTML(approval);assert.match(html,/7\.3.*→.*72\.93/s);assert.match(html,/&lt;script&gt;/);assert.match(html,/data-approval-action="approve"/);assert.match(html,/data-approval-action="reject"/);
+assert.ok(!artifactRevisionCardHTML({...approval,status:'applied'}).includes('data-approval-action'));
+assert.match(renderFrameworkPresentation({presentation:{verdict:{text:'结论'}}},{pendingMerge:true}),/待并入/);
+const source=fs.readFileSync('ui/chat/renderer.js','utf8');
+const scope={state:{pendingMerges:[{path:'exports/r.md'}]},reportKey:()=>'',reportCache:new Map(),esc:s=>s,icon:()=>'',renderMarkdownHTML:()=>''};
+const card=vm.runInNewContext(`${source.slice(source.indexOf('function reportCardHTML('),source.indexOf('const reportCache ='))}; reportCardHTML('exports/r.md')`,scope);
+assert.match(card,/待并入/);
+console.log('F5 UI PASS');

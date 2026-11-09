@@ -234,6 +234,7 @@ function reportCardHTML(path, highlightBudget = { remaining: 4 }) {
       <div class="report-summary">
         ${icon('file-text', 13)}
         <span class="report-title">完整报告</span>
+        ${typeof state !== 'undefined' && (state.pendingMerges || []).some(a => a.path === path) ? '<span class="ap-badge warn">待并入</span>' : ''}
         <span class="report-name">${esc(name)}</span>
       </div>
       <div class="report-body" data-report-body${cached != null ? ` data-report-key="${esc(key)}"` : ''}>${body}</div>
@@ -289,7 +290,7 @@ function messageHTML(m) {
   const isUser = m.role === 'user';
   const body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
-    : (renderFrameworkPresentation(m.analysisState, { highlightBudget, turnStartedAt: m.turnStartedAt }) || renderMarkdownHTML(m.text || '', '', highlightBudget));
+    : (renderFrameworkPresentation(m.analysisState, { highlightBudget, turnStartedAt: m.turnStartedAt, pendingMerge: typeof state !== 'undefined' && (state.pendingMerges || []).some(a => a.path === m.analysisStatePath) }) || renderMarkdownHTML(m.text || '', '', highlightBudget));
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '', highlightBudget });
   const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}">
@@ -383,10 +384,14 @@ function updateLiveMessage() {
   }
 }
 
+function pendingMergesBadgeHTML() {
+  return (state.pendingMerges || []).length ? '<div class="tc-note"><span class="ap-badge warn">有待并入的更正</span></div>' : '';
+}
+
 function renderThread(scroll = false) {
   const messages = state.messages;
   if (!messages.length && !state.streaming) {
-    const shelf = approvalsShelfHTML();
+    const shelf = pendingMergesBadgeHTML() + approvalsShelfHTML();
     threadEl.innerHTML = shelf
       ? `<div class="thread-inner">${shelf}</div>`
       : `<div class="thread-empty">
@@ -399,7 +404,7 @@ function renderThread(scroll = false) {
   }
   if (state.streaming) {
     if (!liveArticle || !threadEl.contains(liveArticle)) {
-      threadEl.innerHTML = `<div class="thread-inner">${approvalsShelfHTML()}${messages.map(messageHTML).join('')}${liveMessageHTML()}</div>`;
+      threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${messages.map(messageHTML).join('')}${liveMessageHTML()}</div>`;
       liveArticle = threadEl.querySelector('#liveMsg');
       renderTraceHitl();
       void hydrateReports(threadEl);
@@ -410,7 +415,7 @@ function renderThread(scroll = false) {
     if (scroll) threadEl.scrollTop = threadEl.scrollHeight;
     return;
   }
-  threadEl.innerHTML = `<div class="thread-inner">${approvalsShelfHTML()}${messages.map(messageHTML).join('')}</div>`;
+  threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${messages.map(messageHTML).join('')}</div>`;
   liveArticle = null;
   renderTraceHitl();
   void hydrateReports(threadEl);

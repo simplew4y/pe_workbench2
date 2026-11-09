@@ -878,7 +878,7 @@ async function runTracking(ctx, trackingId, {
     if (template.writeMode === "in_place") {
       backupRel = await backupTrackingTarget(ctx, target, run.id);
     }
-    entry = await createEntry({ id: crypto.randomUUID(), ctx });
+    entry = await createEntry({ id: crypto.randomUUID(), ctx, automated: true });
   } catch (error) {
     activeTrackingRuns.delete(trackingId);
     store.clearTrackingLease(trackingId);

@@ -294,6 +294,7 @@ function handleGlobalEvent(payload) {
   if (payload.type === 'approval.created' || payload.type === 'approval.updated') {
     if (payload.approval) {
       upsertApproval(payload.approval);
+      if (payload.approval.threadId === state.activeSession) void runtime.refreshSnapshot?.({ preserveLive: true });
       renderThread(false);
     }
     if (payload.tracking) window.Tracking?.upsert?.(payload.tracking);
@@ -371,6 +372,7 @@ async function createSession() {
   state.sessions.unshift(item);
   state.activeSession = item.id;
   state.messages = [];
+  state.pendingMerges = [];
   state.streaming = false;
   state.live = { text: '', tools: [], startedAt: 0 };
   syncStop();
@@ -387,6 +389,7 @@ async function createSession() {
 function openSession(id) {
   state.activeSession = id;
   state.messages = [];
+  state.pendingMerges = [];
   state.streaming = false;
   state.live = { text: '', tools: [], startedAt: 0 };
   syncStop();
@@ -432,6 +435,7 @@ function handleServerEvent(ev) {
   switch (ev.type) {
     case 'snapshot':
       state.messages = ev.messages || [];
+      state.pendingMerges = ev.pendingMerges || [];
       if (Array.isArray(ev.approvals) && ev.approvals.length) {
         for (const approval of ev.approvals) {
           if (!state.approvals.some((item) => item.id === approval.id)) state.approvals.push(approval);
@@ -494,6 +498,7 @@ function handleServerEvent(ev) {
     case 'approval.updated': {
       if (!ev.approval) break;
       upsertApproval(ev.approval);
+      if (ev.approval.threadId === state.activeSession) void runtime.refreshSnapshot?.({ preserveLive: true });
       renderThread(false);
       break;
     }
@@ -538,6 +543,7 @@ async function refreshSnapshot({
     if (state.activeSession !== id) return null;
     if (guard && !guard()) return null;
     state.messages = snap.messages || [];
+    state.pendingMerges = snap.pendingMerges || [];
     if (Array.isArray(snap.approvals)) {
       const ids = new Set(snap.approvals.map((item) => item.id));
       state.approvals = [...snap.approvals, ...state.approvals.filter((item) => !ids.has(item.id))];

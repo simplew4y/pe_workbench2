@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 try:
     import openpyxl
@@ -370,7 +370,15 @@ def parse_sheet(
             "colLabel": col_label,
         }
 
+    context_cells = []
+    for (row, col), value in display.items():
+        if (row, col) in sheet_formulas or value is None:
+            continue
+        row_label, col_label = nearest_text(display, sheet_formulas, row, col, label_cols, col_labels)
+        context_cells.append([cell_id(ws.title, row, col), None, safe_value(value), row, col, row_label, col_label])
+
     sheet = {
+        "contextCells": context_cells,
         "name": ws.title,
         "rows": max_row,
         "cols": max_col,

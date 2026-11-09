@@ -10,6 +10,8 @@ import path from "node:path";
 import { openStore } from "../store.mjs";
 import { WorkbookStore } from "../lib/workbook-store.mjs";
 import { ExcelPreviewStore } from "../lib/excel-preview.mjs";
+import { createModelWhatifTool } from "../lib/model-whatif-tool.mjs";
+import { createCalcTool, createRatioTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
 import { createWorkbookTraceTool } from "../lib/workbook-trace-tool.mjs";
 import { createValidateStateTool } from "../lib/validate-state-tool.mjs";
@@ -58,7 +60,7 @@ ${config.webFetch ? "- 用户给出具体网页链接（http/https）时，用 w
 - 回答、执行摘要和报告正文直接陈述判断与依据，不输出内部校验统计、原因码、空字段解释及“诚实记录、非遗漏、非逻辑错误”等自我辩护。可选内容为空时省略，不填“暂无”；同一限制只在最相关的位置说明一次。数据缺失若影响结论、估值计算或监测执行，写清缺什么及具体影响；模型价、现价与空间等核心结果缺失时仍明确标注。
 - 投资框架首屏按有内容的区块依次展示：结论 → 需人工复核 → 核心驱动 → 敏感性 → 进入跟踪的失效条件 → 估值依据 → 报告链接。第一句直接回答问题，摘要约 250–400 中文字符，复核项不超过三项且前置。删除自述、对象计数、重复交付说明、推销尾句。
 - 判词只写判断，直接表达增长逻辑和估值结论，不写“仅供参考”“不能作为当前可执行目标价”等防御或免责声明。风险与限制只以事实写入“需人工复核”（如“分部乘数未记录依据”）。交付前调用 westock_query 获取最新行情；先去除 ticker 中文后缀、括号和空白并转换市场格式（02513.HK（港股）→hk02513）。market.price/currency/price_date/source/fetched_at 分别记录真实现价、币种、行情日期、来源和 ISO 获取时间，可用 quote_at 记录行情时间；失败时 price=null，记录获取时间和 fetch_error，显示“未获取”，不得沿用缓存价冒充实时价。verdict.valuation_id 引用原 valuations 中的模型价；结论卡同时展示模型价、现价、获取时间及空间=(模型价/现价-1)×100%；行情缺失或币种不一致则空间“未获取”。
-- analysis-state 的 presentation 维护结论状态（可采信/条件判断/暂不能判断）、值身份（复现值/自建情景/当前判断）、复核项≤3、驱动≤3（含权重）、高亮≤4（仅引用 ID）；敏感性/失效条件/估值复用原记录。单期数据不能证明连续多期已触发；校验 warning 在内部处理，仅将影响结论或执行的具体问题写入复核项。
+- analysis-state 的 presentation 维护结论状态（可采信/条件判断/暂不能判断）、值身份（复现值/自建情景/当前判断）、复核项≤3、驱动≤3（含权重）、高亮≤4（仅引用 ID）；敏感性/失效条件/估值复用原记录。单期偏差可支持短期修订或调整置信度；机制失效与连续多期触发须另核证据，warning 按原因码解释，且只在内部处理，仅将影响结论或执行的具体问题写入复核项。
 - 强调仅允许带文字标签的 hl-decision / hl-review，合计≤4；任意 style 会被清除。完整研究留在折叠报告中。
 - 回答使用 Markdown，但不要使用表格（结构化状态的 UI 表格由渲染器生成）。`;
 }
@@ -175,7 +177,7 @@ export function createProjectManager({
       previews,
       pdfs,
       asr,
-      tools: [workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
+      tools: [createCalcTool(), createRatioTool(), createUnitConvertTool(), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
     };
     ctx.trace = createTraceService({
       store,

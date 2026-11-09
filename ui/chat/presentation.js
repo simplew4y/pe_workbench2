@@ -2,7 +2,7 @@
 const esc = value => String(value ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const rows = value => Array.isArray(value) ? value.filter(x => x && typeof x === 'object') : [];
 
-export function renderFrameworkPresentation(state, { asOf = Date.now(), turnStartedAt, highlightBudget = { remaining: 4 } } = {}) {
+export function renderFrameworkPresentation(state, { asOf = Date.now(), turnStartedAt, pendingMerge = false, highlightBudget = { remaining: 4 } } = {}) {
   const p = state?.presentation;
   if (!p?.verdict?.text) return '';
   const review = rows(p.review_items).slice(0, 3);
@@ -34,7 +34,7 @@ export function renderFrameworkPresentation(state, { asOf = Date.now(), turnStar
   const comparable = latest && Number.isFinite(modelPrice) && currency(valuation.unit) && currency(market.currency) && currency(valuation.unit) === currency(market.currency);
   const upside = comparable ? (modelPrice / market.price - 1) * 100 : null;
   const prices = `<p class="framework-prices">模型价 ${esc(Number.isFinite(modelPrice) ? `${modelPrice} ${valuation.unit || ''}` : '未获取')} · 现价 ${esc(latest ? `${market.price} ${market.currency || ''}` : '未获取')} · 空间 ${upside === null ? '未获取' : esc(`${upside >= 0 ? '+' : ''}${upside.toFixed(2)}%`)}</p><p class="framework-meta">获取时间：${esc(market.fetched_at || '未获取')} · 行情时间：${esc(market.quote_at || market.price_date || '未获取')} · 来源：${esc(market.source || '未获取')}</p>`;
-  const verdict = `<p class="framework-verdict">${mark(p.verdict.id,p.verdict.text)}</p><p class="framework-meta">${esc(p.verdict.status)} · ${esc(p.verdict.value_identity)}</p>${prices}`;
+  const verdict = `${pendingMerge ? '<span class="ap-badge warn">待并入</span>' : ''}<p class="framework-verdict">${mark(p.verdict.id,p.verdict.text)}</p><p class="framework-meta">${esc(p.verdict.status)} · ${esc(p.verdict.value_identity)}</p>${prices}`;
   const reviews = review.map(item=>`<li><strong>${mark(item.id,item.question,true)}</strong><span>原因：${esc(item.reason)}；影响：${esc(item.impact)}</span><button type="button" disabled title="本阶段仅展示，尚不支持写回">待人工复核</button></li>`).join('');
   const drivers = rows(p.key_drivers).slice(0,3).map(d=>{
     const ref=index.get(d.reference_id);

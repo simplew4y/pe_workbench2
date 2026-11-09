@@ -280,6 +280,7 @@ source, frequency, warning, action, status, last_checked_at, last_observed
 - `metric` 必须是**可观测**的量，且给出具体口径（如“季度 DRAM 合约价环比”），不能写“行业景气度”。
 - `operator`：`>` `>=` `<` `<=` `=` `crosses_below` `crosses_above`。
 - `threshold` 要有依据：历史波动、模型临界值、经营约束或明确约定；不默认 ±10%。
+- `threshold_status`：`calibrated` / `pending`；明确阈值是否已校准。缺省时校验器按 `threshold_basis` 推导并告警，建议显式写。仅用本模型预测增速作依据会报 `THRESHOLD_MODEL_ONLY`。
 - `source`：数据源名称 + 发布节奏。
 - `frequency`：`daily` / `weekly` / `monthly` / `quarterly` / `event`。
 - `action`：触发后做什么（核验、改判、重算、降级），**不是自动交易**。
