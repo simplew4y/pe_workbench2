@@ -1,7 +1,56 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { linkCitations } from "../ui/chat/cell-citations.js";
 import { snapshotMessages } from "../server/agent/snapshot.mjs";
+
+/* S1: the browser linkifier may only import files the static server exposes
+ * under /ui. `/lib` is deliberately not a static root, so a `../../lib/...`
+ * import 404s in the browser and breaks the whole chat bootstrap. */
+{
+  const uiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../ui");
+  const projectRoot = dirname(uiRoot);
+  const entry = resolve(uiRoot, "chat/cell-citations.js");
+  const importRe = [
+    /\bfrom\s*["']([^"']+)["']/g,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\bimport\s+["']([^"']+)["']/g,
+  ];
+  const seen = new Set();
+  const queue = [entry];
+  while (queue.length) {
+    const file = queue.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const source = readFileSync(file, "utf8");
+    for (const regex of importRe) {
+      for (const match of source.matchAll(regex)) {
+        const specifier = match[1];
+        assert.ok(
+          !/(^|\/)lib\//.test(specifier),
+          `${file} must not import /lib (browser 404): ${specifier}`,
+        );
+        if (!specifier.startsWith(".") && !specifier.startsWith("/")) continue;
+        const target = specifier.startsWith("/")
+          ? resolve(projectRoot, specifier.slice(1))
+          : resolve(dirname(file), specifier);
+        assert.ok(
+          target.startsWith(uiRoot + sep),
+          `${file} import escapes the /ui static root: ${specifier}`,
+        );
+        assert.ok(existsSync(target), `static dependency is missing: ${specifier}`);
+        queue.push(target);
+      }
+    }
+  }
+  assert.ok(seen.has(entry), "the browser entry point must be scanned");
+  assert.ok(
+    seen.has(resolve(uiRoot, "chat/citation-locator.js")),
+    "cell-citations.js must use the /ui copy of the locator",
+  );
+}
 
 const cite = (locator, overrides = {}) => ({
   id: `c:${locator}`,
