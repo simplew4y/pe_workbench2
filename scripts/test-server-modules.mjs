@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { createWorkbench } from "../server/create-app.mjs";
 import { loadConfig } from "../server/config.mjs";
 import { createEventBus } from "../server/events/bus.mjs";
-import { createProjectManager } from "../server/project-context.mjs";
+import { createProjectManager, systemHint } from "../server/project-context.mjs";
 import { createSessionService } from "../server/agent/session-service.mjs";
 import { createTrackingScheduler } from "../server/schedulers/tracking.mjs";
 import { createMonitorScheduler } from "../server/schedulers/monitor.mjs";
@@ -72,6 +72,28 @@ await run("config import does not start schedulers", async () => {
   const config = await loadConfig({ env: { PI_FAKE_AGENT: "1", WORKBENCH_STORAGE_ROOT: "/tmp/pe-config-test" } });
   assert.equal(config.fakeAgent, true);
   assert.ok(config.toolNames.includes("read"));
+});
+
+await run("systemHint scopes the investment first-screen contract", () => {
+  const hint = systemHint({ name: "test", root: "/tmp/test" }, {});
+  assert.match(hint, /回答结构随问题而定/);
+  assert.match(hint, /investment-framework/);
+  assert.doesNotMatch(hint, /结论 → 需人工复核/);
+  assert.doesNotMatch(hint, /报告链接/);
+  assert.doesNotMatch(hint, /进入跟踪的失效条件/);
+
+  const skill = fs.readFileSync(new URL("../skills/investment-framework/SKILL.md", import.meta.url), "utf8");
+  assert.match(skill, /结论 → 需人工复核/);
+});
+
+await run("investment skill allows empty subsections", () => {
+  const skill = fs.readFileSync(new URL("../skills/investment-framework/SKILL.md", import.meta.url), "utf8");
+  const template = fs.readFileSync(new URL("../skills/investment-framework/references/report-template.md", import.meta.url), "utf8");
+  assert.match(skill, /保留七个一级标题/);
+  assert.match(skill, /三级小节、行和空表可省略或合并/);
+  assert.doesNotMatch(skill, /不能删节/);
+  assert.match(template, /保留七个一级标题/);
+  assert.doesNotMatch(template, /七节主体保留/);
 });
 
 await run("event bus is project scoped", () => {
