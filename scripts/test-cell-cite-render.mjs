@@ -30,6 +30,12 @@ const unverifiedCount = (html) => (html.match(/cell-ref-unverified/g) || []).len
   assert.ok(!/<button[^>]*>Model!Z99/.test(html), "an unverified locator must not become clickable");
 }
 
+/* U1b: partial cell tokens are not locators. */
+{
+  const partial = linkCitations("<p>Model!A1B2 与 Model!A1:B2C3。</p>", [cite("Model!A1"), cite("Model!A1:B2")]);
+  assert.equal(buttonCount(partial), 0);
+}
+
 /* U2: no citations means no clickable links and no invented chips. */
 {
   const source = "<p>收入见 Model!A1。</p>";
