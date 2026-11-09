@@ -70,3 +70,51 @@ assert.deepEqual(locatorFindings('区域 Model!A1:B2。', [cite('Model!A1:B2')])
 assert.deepEqual(locatorFindings('收入增长 10%。', []), []);
 assert.deepEqual(locatorFindings('收入见 Model!A1。', undefined), []);
 console.log('cell citation lint L1-L4 passed');
+
+// G1-G3: gap IDs are never cells; target/deviation answers need model + live price.
+const { readFileSync } = await import('node:fs');
+const badSection2 = readFileSync(new URL('./fixtures/g1-answer-section2.md', import.meta.url), 'utf8');
+const byCode = (text, ctx, code) => lintAnswer(text, ctx).filter(x => x.code === code);
+// The live bad answer (section 2) mixes a gap id with a cell claim, denies a
+// target, and never gives the model price.
+const g1 = byCode(badSection2, { userAsksDeviation: true }, 'G1');
+assert.ok(g1.length >= 1, 'bad section 2 must hit G1');
+assert.equal(g1[0].rule, 'gap_id_as_cell');
+assert.equal(g1[0].severity, 'error');
+assert.match(g1[0].excerpt, /G1/);
+assert.ok(byCode(badSection2, { userAsksDeviation: true }, 'G2').length >= 1);
+assert.ok(byCode(badSection2, { userAsksDeviation: true }, 'G3').length >= 1);
+// G1 variants.
+for (const text of ['目标价单元格（G1）不存在。', '没有独立目标价单元格（G1）。', '单元格(G2)留空。', '目标价单元格 G3 为空。']) {
+  assert.ok(byCode(text, {}, 'G1').length >= 1, text);
+}
+// Gap ledgers/status tables are legitimate and must not trigger.
+const gapStatus = '| 项 | 状态 |\n| --- | --- |\n| gaps: G1 | tool open |\n缺口 G2 待补；gaps[].id=G3。';
+assert.deepEqual(lintAnswer(gapStatus).filter(x => ['gap_id_as_cell', 'target_missing_claim', 'deviation_no_model_price'].includes(x.rule)), []);
+// G2: absence claims are warnings; a context target escalates to error.
+const g2 = byCode('模型底层没有独立目标价，无法精确回答目标价与现价的偏离。', {}, 'G2');
+assert.ok(g2.length >= 1);
+assert.equal(g2[0].severity, 'warning');
+const g2Escalated = byCode('模型底层没有独立目标价。', { valuations: [{ id: 'V1', output: 'target_price', value: 752 }] }, 'G2');
+assert.ok(g2Escalated.length >= 1);
+assert.equal(g2Escalated[0].severity, 'error');
+// The same escalation works from a trace citation that already read SOTP!J134=752.
+const g2Citation = byCode('模型底层没有独立目标价。', { citations: [{ materialId: 'm1', version: 1, locator: 'SOTP!J134', value: 752, role: 'output' }] }, 'G2');
+assert.equal(g2Citation[0].severity, 'error');
+assert.deepEqual(byCode('没有目标价变化，维持原值。', {}, 'G2'), []);
+// G3: deviation question + broker target only is incomplete.
+const a2 = '券商目标价 520 港元，较现价 418.4 港元有约 24% 上行空间。';
+const g3 = byCode(a2, { userAsksDeviation: true }, 'G3');
+assert.ok(g3.length >= 1);
+assert.equal(g3[0].severity, 'warning');
+// An answer that self-labels a deviation section supplies the context itself.
+assert.ok(byCode('## 目标价与现价偏离\n\n券商目标价 520。', {}, 'G3').length >= 1);
+// A3: model target + live price + upside is clean.
+const a3 = '模型目标价 752 港元 vs 现价 418.4 港元，空间约 +79.7%；驱动来自 SOTP 分部重估。';
+assert.deepEqual(lintAnswer(a3, { userAsksDeviation: true }).filter(x => ['gap_id_as_cell', 'target_missing_claim', 'deviation_no_model_price'].includes(x.rule)), []);
+// A failed live quote is acceptable only when it is stated as unverified.
+const unverifiedPrice = '模型目标价 752 港元 vs 现价未获取（westock_query 失败），空间未获取。';
+assert.deepEqual(byCode(unverifiedPrice, { userAsksDeviation: true }, 'G3'), []);
+// A context-known target counts when the answer quotes it without the label.
+assert.deepEqual(byCode('752 港元 vs 现价 418.4 港元，空间约 +79.7%。', { userAsksDeviation: true, modelTargetPrice: 752 }, 'G3'), []);
+console.log('target deviation lint G1-G3 passed');
