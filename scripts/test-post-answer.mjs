@@ -273,3 +273,21 @@ console.log('F5 post-answer ledger and selfaudit passed');
 
 const bgF5={automated:true,session:{messages:[],async prompt(text){this.messages.push({role:'user',content:text});},async sendCustomMessage(){assert.fail('background session must not inject context');}}};
 await runWithPostAnswer(bgF5,'后台检查');assert.equal(bgF5.session.messages.length,1);
+
+// DT-8: opt-in checklist enables a bounded missing_section correction; default is unchanged.
+const checklistRecords=[];
+const checklistSession={messages:[],sessionManager:{appendCustomEntry:(_t,d)=>checklistRecords.push(d)},
+  async prompt(){this.messages.push({role:'assistant',stopReason:'stop',content:this.messages.length?'# 结论\n内容。\n\n# 风险\n已列。':'# 结论\n内容。'});},
+};
+const checklistEntry={id:'s',ctx:{},session:checklistSession};
+await runWithPostAnswer(checklistEntry,'问题',{requiredSections:['结论','风险']});
+assert.equal(checklistSession.messages.length,2,'checklist enables exactly one correction');
+assert.ok(checklistRecords[0].findings.some(f=>f.rule==='missing_section'));
+assert.equal(checklistEntry.answerLint.correctionCount,1);
+assert.equal(checklistEntry.answerLint.findings.length,0);
+const noChecklist={messages:[],async prompt(){this.messages.push({role:'assistant',stopReason:'stop',content:'# 结论\n内容。'});}};
+const noChecklistEntry={id:'s',ctx:{},session:noChecklist};
+await runWithPostAnswer(noChecklistEntry,'问题');
+assert.equal(noChecklist.messages.length,1,'no checklist keeps the old single-pass behavior');
+assert.equal(noChecklistEntry.answerLint.findings.length,0);
+console.log('DT-8 checklist passed');

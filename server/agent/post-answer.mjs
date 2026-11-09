@@ -23,6 +23,13 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     const turn = entry.session.messages.filter(m => m.role === 'user' && !m.peInternal && !m.customType).length + 1;
     try { await recordUserClaims(entry.ctx?.root, entry.id, text, { turn }); } catch { /* never block the turn */ }
     const context = await buildTurnContext({ question: text, root: entry.ctx?.root, sessionId: entry.id });
+    // DT-8: opt-in delivery checklist only. Empty/absent keeps old behavior.
+    const requiredSections = Array.isArray(options.requiredSections)
+      ? options.requiredSections
+      : Array.isArray(entry.requiredSections) ? entry.requiredSections : null;
+    const lintContext = requiredSections?.length
+      ? { ...(entry.answerLintContext || {}), requiredSections }
+      : entry.answerLintContext;
     const unsubscribe = entry.session.subscribe?.(event => {
       if (event.type === 'tool_execution_start') toolCalls.push({ id: event.toolCallId, name: event.toolName, args: event.args, success: false });
       if (event.type === 'tool_execution_end') {
@@ -48,7 +55,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           const result = messages.find(r => r.role === 'toolResult' && r.toolCallId === c.id);
           scanned.push({ name: c.name, args: c.arguments, success: Boolean(result) && result.isError === false });
         }
-        const findings = [...lintAnswer(answer, entry.answerLintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
+        const findings = [...lintAnswer(answer, lintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
         const data = {
           version: 1, turnId, timestamp: new Date().toISOString(),
           findings, stats: answerStats(answer), correctionCount, continuationCount,

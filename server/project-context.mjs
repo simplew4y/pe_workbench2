@@ -11,7 +11,7 @@ import { openStore } from "../store.mjs";
 import { WorkbookStore } from "../lib/workbook-store.mjs";
 import { ExcelPreviewStore } from "../lib/excel-preview.mjs";
 import { createModelWhatifTool } from "../lib/model-whatif-tool.mjs";
-import { createCalcTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
+import { createCalcTool, createRatioTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
 import { createWorkbookTraceTool } from "../lib/workbook-trace-tool.mjs";
 import { createValidateStateTool } from "../lib/validate-state-tool.mjs";
@@ -176,7 +176,7 @@ export function createProjectManager({
       previews,
       pdfs,
       asr,
-      tools: [createCalcTool(), createUnitConvertTool(), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
+      tools: [createCalcTool(), createRatioTool(), createUnitConvertTool(), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
     };
     ctx.trace = createTraceService({
       store,

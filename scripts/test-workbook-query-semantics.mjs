@@ -23,8 +23,19 @@ s=w.create_sheet('Plain'); s['A1']='数值'; s['B1']=123; w.save(sys.argv[1])`,f
  const graph=indexGraph(JSON.parse(parsed.stdout));
  for(const ref of ['Discount PE!H33',"'Discount PE'!H33",'Discount PE!G33:H33']) assert.ok(queryGraph(graph,ref).cells.some(c=>c.ref==='Discount PE!H33'),ref);
  const missing=queryGraph(graph,'Missing Sheet!H33'); assert.equal(missing.isError,true); assert.match(formatResult(missing),/未找到工作表/); assert.ok(missing.availableSheets.includes('Discount PE'));
+ // DT-5 M1: missing sheet is an explicit miss with a named-sheet coverage flag.
+ assert.equal(missing.miss,true); assert.match(missing.missReason,/未找到工作表/); assert.equal(missing.coverage.namedSheetsOk,false); assert.ok(missing.coverage.sheetsSearched.length===0);
+ const missingCell=queryGraph(graph,'Discount PE!Z999');
+ // DT-5 M2: missing address is a miss with a non-empty coverage note.
+ assert.equal(missingCell.miss,true); assert.equal(missingCell.coverage.namedSheetsOk,true); assert.ok(missingCell.coverage.note.length>0); assert.match(formatResult(missingCell),/未找到/);
  assert.equal(queryGraph(graph,'Discount PE!Z999').isError,true);
  assert.equal(queryGraph(graph,'C2',{sheet:'Discount PE'}).isError,true, 'an address on another sheet must not hide a scoped miss');
+ // DT-5 M3: normal hit is not a miss.
+ const normalHit=queryGraph(graph,'Money!C2');
+ assert.notEqual(normalHit.miss,true); assert.equal(normalHit.exact,true); assert.equal(normalHit.coverage.namedSheetsOk,true);
+ // An in-sheet address miss may fall back to labels, but only as degraded results.
+ const degraded=queryGraph(graph,'Discount PE!H33 估值');
+ assert.equal(degraded.degraded,true); assert.equal(degraded.miss,false); assert.equal(degraded.exact,false); assert.ok(degraded.cells.length>0); assert.ok(degraded.cells.every(c=>!c.exact)); assert.match(formatResult(degraded),/降级/);
  const hbm=queryGraph(graph,'HBM',{maxCells:40});
  const margin=hbm.cells.find(c=>c.ref==='Segments!C2'), share=hbm.cells.find(c=>c.ref==='Segments!C4');
  assert.ok(margin.sectionPath.includes('毛利率')); assert.ok(share.sectionPath.includes('收入占比')); assert.equal(margin.unit,'%'); assert.equal(margin.display_unit,'%'); assert.equal(margin.period,'2025E'); assert.equal(share.period,'FY26');

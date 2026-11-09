@@ -86,3 +86,31 @@ for (const basis of ["history", "model_breakpoint", "operating_constraint"]) {
   assert.equal(validateState(state).ok, true);
   assert.doesNotMatch(codes(validateState(state)), /THRESHOLD_BASIS_(?:MISSING|INVALID)/);
 }
+// DT-7 F1: explicit pending still requires a calibration plan.
+state = fixture();
+state.falsifiers[0].threshold_status = "pending";
+state.falsifiers[0].threshold_basis = "pending";
+state.falsifiers[0].status = "unknown";
+assert.match(codes(validateState(state)), /CALIBRATION_PLAN_MISSING/);
+// Missing status is normalized (and warned about), never silently ignored.
+state = fixture();
+state.falsifiers[0].threshold_basis = "history";
+assert.match(codes(validateState(state)), /THRESHOLD_STATUS_MISSING/);
+assert.equal(state.falsifiers[0].threshold_status, undefined, "validator does not mutate caller state");
+state = fixture();
+state.falsifiers[0].threshold_status = "made_up";
+assert.match(codes(validateState(state)), /THRESHOLD_STATUS_INVALID/);
+// DT-7 F2: a threshold justified only by this model's forecast growth is flagged.
+state = fixture();
+state.falsifiers[0].threshold_status = "pending";
+state.falsifiers[0].threshold_basis = "model_breakpoint";
+state.falsifiers[0].threshold = "仅依据本模型预测增速";
+state.falsifiers[0].calibration_plan = "待校准";
+state.falsifiers[0].status = "unknown";
+assert.match(codes(validateState(state)), /THRESHOLD_MODEL_ONLY/);
+// DT-7 F3: calibrated + history basis does not trigger the new warning.
+state = fixture();
+state.falsifiers[0].threshold_status = "calibrated";
+state.falsifiers[0].threshold_basis = "history";
+assert.doesNotMatch(codes(validateState(state)), /THRESHOLD_MODEL_ONLY|THRESHOLD_STATUS_(?:MISSING|INVALID)/);
+console.log("validate-state DT-7: passed");

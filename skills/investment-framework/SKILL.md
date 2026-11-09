@@ -101,6 +101,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 - `drivers`：只列公式直接操作数，每项都要有 `assumption_id`；`assumption_ids` 再补间接依赖。
 - 有 `multiple` 驱动时必须写 `multiple_basis` + `multiple_period`，如 `11x 2026E ARR`。10x 是输入，458 是输出；不要把 `10x → 11x` 写成“目标价 +10%”，也不要把 ARR 倍数简称“PE”。
 - `status` / `superseded_by`：`current` 或 `superseded`。多方法并列时不合成加权目标价；报告写清哪个是基准、哪个是对照、为什么。
+- **比率硬规则**：报告占比/增速/倍数前必须调用 `ratio` 或 `calc`，禁止心算；以 NAV 为分母的占比必须声明 `valuation_basis`（`pre_discount` / `post_discount` / `other`）并在旁注展示。
 
 **方法切换（硬规则）**：DCF → ARR 倍数法这类变化不是“目标价更新”，不能把两个值写成 `1560 → 320`。按下面做：
 
