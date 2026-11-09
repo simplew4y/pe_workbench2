@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { buildTurnContext, classifyQuestion, checkTurnTools } from '../lib/turn-context.mjs';
 const cases = { assumption: '解释 assumption 毛利率假设', sensitivity: '敏感性 what if 提高10%', evidence: 'forecast 预测已验证吗', ticker: '有没有代码 Cover', threshold: '失效条件阈值 falsifier', correction: '更正后自查', dependency: 'capex 不进入估值吗' };
 for (const [kind, question] of Object.entries(cases)) assert(classifyQuestion(question).includes(kind));
+// Target/deviation questions get the matching hard constraints in the injected protocol.
+assert(classifyQuestion('目标价较现价偏离这么多').includes('target'));
+const targetContext = await buildTurnContext({ question: '目标价较现价偏离这么多', ledger: null });
+assert.match(targetContext.content, /G\*.*缺口/);
+assert.match(targetContext.content, /workbook_trace/);
+assert.match(targetContext.content, /westock_query/);
+assert.match(targetContext.content, /首句/);
 const context = await buildTurnContext({ question: Object.values(cases).join(' '), now: new Date('2026-03-31T16:00:00Z'), ledger: { facts: [{id:'A1',value:65,unit:'%',period:'2026Q1'}], corrections:[{from:'旧值',to:'新值',note:'已核'}], open:['待核'] } });
 assert.match(context.content, /2026-04-01.*星期三/);
 assert.match(context.content, /Q2.*进行中/);
