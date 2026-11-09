@@ -10,6 +10,7 @@ import path from "node:path";
 
 import { newRunId } from "../../lib/agent-protocol/ids.mjs";
 import { extractPresentation } from "../../lib/contracts/index.mjs";
+import { validCitations } from "../../lib/contracts/citation.mjs";
 import { resultText, toolDetail } from "./snapshot.mjs";
 
 export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, onRunSettled = () => {} }) {
@@ -89,6 +90,21 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
             /* live error placeholder still works */
           }
         }
+        // Citations are separate from the rich presentation: trace/calc tools
+        // have no card schema but their cell references must survive refresh.
+        const rawCitations = event.result?.details?.citations;
+        const citations = Array.isArray(rawCitations) ? validCitations(rawCitations) : [];
+        if (Array.isArray(rawCitations)) {
+          try {
+            entry.ctx.store.saveToolCitations?.({
+              toolCallId: event.toolCallId,
+              threadId: entry.id,
+              citations,
+            });
+          } catch {
+            /* live message still renders; a refresh will fall back to plain text */
+          }
+        }
         bus.broadcast(entry, {
           type: "tool.completed",
           id: event.toolCallId,
@@ -96,6 +112,7 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
           status: event.isError ? "error" : "done",
           detail: toolDetail(entry.ctx, event.toolName, args),
           output: resultText(event.result).slice(0, 4000),
+          ...(citations.length ? { citations } : {}),
           ...(presentation ? { presentation } : {}),
           ...(presentationError ? { presentationError } : {}),
         });

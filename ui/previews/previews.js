@@ -1491,9 +1491,12 @@ function gotoXlsxCell(raw) {
   const x = previewState.xlsx;
   if (!x) return;
   const text = String(raw || '').trim();
-  const match = text.match(/^(?:(.+?)!)?\$?([A-Z]{1,3})\$?(\d+)$/i);
+  // Accept Sheet!A1, Sheet!A1:B2 (jump to the anchor) and quoted sheet names.
+  const match = text.match(/^(?:(.+?)!)?\$?([A-Z]{1,3})\$?(\d+)(?::\$?[A-Z]{1,3}\$?\d+)?$/i);
   if (!match) return;
-  const sheetName = match[1] || null;
+  const sheetName = match[1]
+    ? match[1].replace(/^'(.*)'$/, (_, name) => name.replace(/''/g, "'"))
+    : null;
   const col = xlsxColIndex(match[2]);
   const row = Number(match[3]);
   if (sheetName && sheetName !== x.sheetName) {

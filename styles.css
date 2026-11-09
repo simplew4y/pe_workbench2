@@ -178,6 +178,10 @@ svg{display:block}
 .file-inline:hover{border-color:var(--line-2);background:var(--surface)}
 .file-inline svg{color:var(--muted)}
 .file-inline span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cell-cite{display:inline-flex;align-items:center;gap:3px;padding:0 4px;border:1px solid var(--line-2);border-radius:4px;background:var(--surface-2);color:#3C5A6B;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;line-height:1.45;vertical-align:baseline;cursor:pointer;transition:border-color .14s,background .14s}
+.cell-cite:hover{border-color:#B7B0A0;background:var(--surface)}
+.cell-cite:focus-visible{outline:2px solid var(--blue-fg);outline-offset:1px}
+.cell-ref-unverified{border-bottom:1px dashed #B9B3A7;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;cursor:help}
 
 .thread-empty{min-height:100%;display:grid;place-items:center;text-align:center}
 .thread-empty[hidden]{display:none}

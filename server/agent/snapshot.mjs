@@ -104,9 +104,15 @@ export function snapshotMessages(session, ctx, entry = null) {
     if (message.role === "toolResult") results.set(message.toolCallId, message);
   }
   const presentations = new Map();
+  const citationsByCall = new Map();
   if (entry) {
     for (const record of ctx.store.listToolPresentations({ threadId: entry.id })) {
       presentations.set(record.toolCallId, record);
+    }
+    for (const record of ctx.store.listToolCitations?.({ threadId: entry.id }) || []) {
+      if (Array.isArray(record.citations) && record.citations.length) {
+        citationsByCall.set(record.toolCallId, record.citations);
+      }
     }
   }
 
@@ -232,12 +238,14 @@ export function snapshotMessages(session, ctx, entry = null) {
         }
       }
       current.segments.push({ type: "tool" });
+      const citations = citationsByCall.get(block.id) || [];
       current.tools.push({
         id: block.id,
         name: block.name,
         detail: toolDetail(ctx, block.name, block.arguments || {}),
         status: result ? (result.isError ? "error" : "done") : "done",
         output: result ? resultText(result).slice(0, 4000) : "",
+        ...(citations.length ? { citations } : {}),
         ...(presentation ? { presentation } : {}),
         ...(presentationError ? { presentationError } : {}),
       });

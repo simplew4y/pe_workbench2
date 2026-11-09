@@ -482,11 +482,13 @@ function handleServerEvent(ev) {
         tool.status = ev.status;
         tool.detail = ev.detail || tool.detail;
         tool.output = ev.output || '';
+        if (Array.isArray(ev.citations)) tool.citations = ev.citations;
         if (ev.presentation) tool.presentation = ev.presentation;
         if (ev.presentationError) tool.presentationError = ev.presentationError;
       } else {
         state.live.tools.push({
           id: ev.id, name: ev.name, detail: ev.detail, status: ev.status, output: ev.output || '',
+          ...(Array.isArray(ev.citations) && ev.citations.length ? { citations: ev.citations } : {}),
           ...(ev.presentation ? { presentation: ev.presentation } : {}),
           ...(ev.presentationError ? { presentationError: ev.presentationError } : {}),
         });
@@ -646,6 +648,16 @@ async function init() {
     if (f) referenceMaterials([f], { closeDialog: true });
   });
   threadEl.addEventListener('click', e => {
+    const cellCite = e.target.closest('[data-cell-cite]');
+    if (cellCite) {
+      const version = Number(cellCite.dataset.version);
+      openFile(
+        cellCite.dataset.materialId,
+        Number.isInteger(version) && version > 0 ? version : undefined,
+        cellCite.dataset.locator || undefined,
+      );
+      return;
+    }
     const approvalAction = e.target.closest('[data-approval-action]');
     if (approvalAction) {
       const id = approvalAction.dataset.approvalId;

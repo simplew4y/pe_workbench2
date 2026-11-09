@@ -599,6 +599,18 @@ export class Store {
         primary key (workspace_id, tool_call_id)
       );
 
+      -- Citations are a separate durable side channel because tools such as
+      -- workbook_trace and unit_convert have no presentation card of their own.
+      -- A refresh must still be able to rebuild the clickable references.
+      create table if not exists tool_citations (
+        tool_call_id text not null,
+        workspace_id text not null,
+        thread_id text not null,
+        citations_json text not null,
+        created_at text not null,
+        primary key (workspace_id, tool_call_id)
+      );
+
       -- A model write is blocked until a human approves the exact proposal.
       create table if not exists approval_requests (
         id text primary key,
@@ -629,6 +641,7 @@ export class Store {
       create index if not exists idx_notifications_created on notifications(workspace_id, created_at desc);
       create index if not exists idx_agent_events_thread on agent_events(workspace_id, thread_id, ordinal);
       create index if not exists idx_tool_presentations_thread on tool_presentations(workspace_id, thread_id, created_at desc);
+      create index if not exists idx_tool_citations_thread on tool_citations(workspace_id, thread_id, created_at desc);
       create index if not exists idx_approvals_thread on approval_requests(workspace_id, thread_id, created_at desc);
       create index if not exists idx_approvals_status on approval_requests(workspace_id, status, created_at desc);
       create index if not exists idx_approvals_tracking on approval_requests(tracking_id);
@@ -916,6 +929,77 @@ export class Store {
            where workspace_id = ? order by created_at asc limit ?`,
         ).all(this.projectId, Math.max(1, Math.min(1000, Number(limit) || 500)));
     return rows.map((row) => this.toolPresentationRecord(row));
+  }
+
+  /* ---------- tool citations (durable UI side channel) ---------- */
+
+  saveToolCitations({ toolCallId, threadId, citations = [], createdAt = nowIso() }) {
+    if (!toolCallId || !threadId) {
+      throw new Error("saveToolCitations requires toolCallId and threadId");
+    }
+    this.db.prepare(
+      `insert into tool_citations (
+         tool_call_id, workspace_id, thread_id, citations_json, created_at
+       ) values (?, ?, ?, ?, ?)
+       on conflict (workspace_id, tool_call_id) do update set
+         thread_id = excluded.thread_id,
+         citations_json = excluded.citations_json,
+         created_at = excluded.created_at`,
+    ).run(
+      String(toolCallId),
+      this.projectId,
+      String(threadId),
+      JSON.stringify(Array.isArray(citations) ? citations : []),
+      createdAt,
+    );
+    return this.getToolCitations(toolCallId);
+  }
+
+  toolCitationRecord(row) {
+    let citations = [];
+    try {
+      const parsed = row.citations_json ? JSON.parse(row.citations_json) : [];
+      if (Array.isArray(parsed)) citations = parsed;
+    } catch {
+      citations = [];
+    }
+    return {
+      toolCallId: row.tool_call_id,
+      workspaceId: row.workspace_id,
+      threadId: row.thread_id,
+      citations,
+      createdAt: row.created_at,
+    };
+  }
+
+  getToolCitations(toolCallId) {
+    const row = this.db.prepare(
+      `select * from tool_citations where workspace_id = ? and tool_call_id = ?`,
+    ).get(this.projectId, String(toolCallId));
+    return row ? this.toolCitationRecord(row) : null;
+  }
+
+  listToolCitations({ threadId = null, toolCallIds = null, limit = 500 } = {}) {
+    if (Array.isArray(toolCallIds)) {
+      if (!toolCallIds.length) return [];
+      const placeholders = toolCallIds.map(() => "?").join(",");
+      const rows = this.db.prepare(
+        `select * from tool_citations
+         where workspace_id = ? and tool_call_id in (${placeholders})`,
+      ).all(this.projectId, ...toolCallIds.map(String));
+      return rows.map((row) => this.toolCitationRecord(row));
+    }
+    const rows = threadId
+      ? this.db.prepare(
+          `select * from tool_citations
+           where workspace_id = ? and thread_id = ?
+           order by created_at asc limit ?`,
+        ).all(this.projectId, String(threadId), Math.max(1, Math.min(1000, Number(limit) || 500)))
+      : this.db.prepare(
+          `select * from tool_citations
+           where workspace_id = ? order by created_at asc limit ?`,
+        ).all(this.projectId, Math.max(1, Math.min(1000, Number(limit) || 500)));
+    return rows.map((row) => this.toolCitationRecord(row));
   }
 
   /* ---------- approval requests ---------- */

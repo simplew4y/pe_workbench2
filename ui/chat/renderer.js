@@ -11,6 +11,7 @@ import { approvalsShelfHTML } from "../approvals/approvals.js";
 import { renderToolPresentation } from "../tool-renderers/registry.js";
 import { sanitizeMarkdown } from "../previews/previews.js";
 import { renderFrameworkPresentation } from "./presentation.js";
+import { linkCitations } from "./cell-citations.js";
 import { runtime } from "../runtime.js";
 
 const fileById = (id) => selectors.fileById(id);
@@ -288,9 +289,12 @@ async function hydrateReports(root = threadEl) {
 function messageHTML(m) {
   const highlightBudget = { remaining: 4 };
   const isUser = m.role === 'user';
-  const body = isUser
+  let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
     : (renderFrameworkPresentation(m.analysisState, { highlightBudget, turnStartedAt: m.turnStartedAt, pendingMerge: typeof state !== 'undefined' && (state.pendingMerges || []).some(a => a.path === m.analysisStatePath) }) || renderMarkdownHTML(m.text || '', '', highlightBudget));
+  const citations = (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
+  // The vm-based renderer test intentionally omits the module binding.
+  if (typeof linkCitations === 'function' && citations.length) body = linkCitations(body, citations);
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '', highlightBudget });
   const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}">
@@ -312,10 +316,16 @@ function scheduleThread(scroll = true) {
   requestAnimationFrame(() => { renderScheduled = false; renderThread(scroll); });
 }
 
+function citationsFromTools(tools = []) {
+  return tools.flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
+}
+
 function liveMessageHTML() {
   const live = state.live;
   const hasContent = Boolean(live.text || live.tools.length);
   const status = esc(liveStatusText());
+  const citations = citationsFromTools(live.tools);
+  const liveBody = live.text ? renderMarkdownHTML(live.text, '') : '';
   const inlineStatus = live.tools.length
     ? ''
     : `<div class="live-status" id="liveStatusHost"><span class="live-dot"></span><span id="liveStatus" aria-live="polite">${status}</span>${hasContent ? '' : '<span class="typing"><i></i><i></i><i></i></span>'}</div>`;
@@ -323,7 +333,7 @@ function liveMessageHTML() {
       <span class="msg-avatar">${icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
-        <div class="msg-body md-preview" id="liveBody"${live.text ? '' : ' hidden'}>${live.text ? renderMarkdownHTML(live.text, '') : ''}</div>
+        <div class="msg-body md-preview" id="liveBody"${live.text ? '' : ' hidden'}>${live.text ? (citations.length ? linkCitations(liveBody, citations) : liveBody) : ''}</div>
         ${inlineStatus}
         <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
       </div>
@@ -338,7 +348,9 @@ function updateLiveMessage() {
   const body = liveArticle.querySelector('#liveBody');
   if (body) {
     if (live.text) {
-      const html = renderMarkdownHTML(live.text, '');
+      const markdown = renderMarkdownHTML(live.text, '');
+      const citations = citationsFromTools(live.tools);
+      const html = citations.length ? linkCitations(markdown, citations) : markdown;
       if (body.innerHTML !== html) body.innerHTML = html;
       body.hidden = false;
     } else {
