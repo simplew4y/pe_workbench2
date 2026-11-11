@@ -1,0 +1,1 @@
+{"case":"R03","stage":"deterministic_chat_context","provider":"deepseek","indexModel":"deepseek-flash","answerModel":null,"latencyMs":531,"status":"PASS","payloadSafe":true,"clarificationInjected":true,"factIds":["E-A-REV-2023","E-A-REV-2024","E-B-REV-2023","E-B-REV-2024"]}
