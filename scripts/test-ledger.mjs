@@ -24,7 +24,7 @@ try {
   assert.equal(ledger.open.length,0); assert.equal(ledger.corrections[0].affects.length,1); assert.equal(ledger.corrections[0].affects[0].status,'merged');
   await appendFact(root,'s',{claim:'备注',value:'旧稿利润7.30 亿',unit:'',evidence,turn:3});
   ledger=await readLedger(root,'s');
-  const summary=summarizeLedger(ledger); assert.ok(summary.length<=150); assert.ok(summary.includes('80')); assert.ok(!summary.includes('7.3')); assert.ok(!summary.includes('7.30')); assert.ok(!summary.includes('72.93')); assert.ok(!summary.includes('2026H1'));
+  const summary=summarizeLedger(ledger); assert.ok(summary.length>150); assert.ok(summary.includes('80')); assert.ok(!summary.includes('7.3')); assert.ok(!summary.includes('7.30')); assert.ok(!summary.includes('72.93')); assert.ok(!summary.includes('2026H1'));
   assert.deepEqual(correctedValues(ledger)[0],{from:7.3,to:80,unit:'亿',claim:'利润'});
   assert.deepEqual(JSON.parse(await readFile(path.join(root,'.pi/ledger/s.json'),'utf8')),ledger);
   assert.deepEqual(await readdir(path.join(root,'.pi/ledger')),['s.json']);

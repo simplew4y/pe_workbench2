@@ -5,7 +5,7 @@ import {
   validateCitation,
   validateCitations,
 } from "../lib/contracts/citation.mjs";
-import { citationLookup, collectCitationsFromToolCalls } from "../lib/citations.mjs";
+import { citationLookup, collectCitationsFromToolCalls, rehydrateCitations } from "../lib/citations.mjs";
 import { formatResult, indexGraph, queryGraph } from "../lib/workbook-query.mjs";
 import { traceGraph } from "../lib/workbook-trace.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
@@ -150,4 +150,12 @@ assert.equal(collected.length, queryOut.details.citations.length + 1);
 assert.equal(collected.some((citation) => citation.id === hitCitation.id), true);
 assert.equal(collected.some((citation) => citation.role === "derived_unit"), true);
 console.log("session citation aggregation passed");
+const locked={materialId:'mat-1',version:3,locator:'Model!A1',value:100,display_unit:'亿元'};
+const restored=rehydrateCitations({register:{facts:[{status:'current',citation:locked}]},answer:'收入为100亿元。',thisTurnCitations:[]});
+assert.equal(restored.length,1);
+assert.equal(rehydrateCitations({register:{facts:[{status:'stale_source',citation:locked}]},answer:'收入为100亿元。'}).length,0);
+assert.equal(rehydrateCitations({register:{facts:[{status:'current',citation:locked}]},answer:'收入为101亿元。'}).length,0);
+assert.equal(rehydrateCitations({register:{facts:[{status:'current',citation:locked}]},answer:'收入为100亿元。',currentVersions:{'mat-1':4}}).length,0);
+assert.equal(rehydrateCitations({register:{facts:[{status:'current',citation:{value:100}}]},answer:'收入为100亿元。'}).length,0);
+console.log('citation rehydration R11-R13 passed');
 console.log("citations: passed");

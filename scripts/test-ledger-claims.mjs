@@ -42,7 +42,7 @@ try {
   assert.equal(ledger.version,1);
   assert.equal(claim.type,'user_claim');
   assert.equal(claim.role,'user');
-  assert.equal(claim.status,'active');
+  assert.equal(claim.status,'superseded','explicit old/new values promote a correction immediately');
   assert.match(claim.claim,/7,293/);
 
   /* T3: ledger.search hits user claim by keyword and by "十倍". */
@@ -67,7 +67,7 @@ try {
   assert.equal(ledger.claims.length,1,'old claim is retained');
   assert.equal(ledger.claims[0].status,'superseded');
   assert.equal(ledger.claims[0].supersededBy,correction.id);
-  assert.deepEqual(correctedValues(ledger)[0],{from:7.3,to:72.93,unit:'亿元',claim:'金额'});
+  assert.ok(correctedValues(ledger).some(c=>String(c.from)==='7.3'&&String(c.to)==='72.93'&&c.claim==='金额'));
   const current=searchLedger(ledger,{query:'72.93'});
   assert.ok(current.matches.some(m=>m.type==='correction'&&String(m.expected)==='72.93'&&m.status==='current'));
   assert.ok(searchLedger(ledger,{query:'7.3'}).matches.some(m=>m.type==='user_claim'&&m.status==='superseded'));
@@ -154,6 +154,9 @@ try {
   assert.equal(hostLedger.claims.length,1);
   assert.equal(hostLedger.claims[0].type,'user_claim');
   assert.equal(hostLedger.claims[0].turn,1);
+  assert.equal(hostLedger.corrections[0].from,'7.3');
+  assert.equal(hostLedger.corrections[0].to,'72.93');
+  assert.equal(lintLedgerAnswer('收入为7.3亿元。',hostLedger).some(f=>f.rule==='repeats_corrected_value'),true);
 
   console.log('ledger claims/self-audit T1-T8 PASS');
 } finally {

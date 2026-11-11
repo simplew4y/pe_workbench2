@@ -66,6 +66,12 @@ try {
   assert.ok(Array.isArray(result.details.warnings));
   assert.match(result.content[0].text, /warning：[\s\S]*DERIVED_MODEL_INPUT/);
   assert.deepEqual(result.details.errors, []);
+  assert.deepEqual(result.details.verifiedFacts,[]);
+  const example=JSON.parse(fs.readFileSync(new URL('../skills/investment-framework/assets/analysis-state.example.json',import.meta.url),'utf8'));
+  fs.writeFileSync(path.join(tmp, "analysis-state.json"),JSON.stringify(example));
+  const projected=await createValidateStateTool({workspace:tmp}).execute('project',{path:'analysis-state.json'});
+  assert.equal(projected.details.ok,true);
+  assert.equal(projected.details.verifiedFacts.find(f=>f.claim==='base target_price').value,92);
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 console.log("validate-state warnings: passed");
 // Pending only relaxes the threshold/pairing case, never unrelated invalid fields.

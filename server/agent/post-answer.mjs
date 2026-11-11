@@ -4,7 +4,8 @@ import { readLedger } from '../../lib/ledger.mjs';
 import { recordUserClaims } from '../../lib/claim-detect.mjs';
 import { randomUUID } from 'node:crypto';
 import { lintAnswer, lintLedgerAnswer, answerStats, asksDeviationQuestion, contextModelTarget } from '../../lib/answer-lint.mjs';
-import { collectCitationsFromToolCalls } from '../../lib/citations.mjs';
+import { collectCitationsFromToolCalls, rehydrateCitations } from '../../lib/citations.mjs';
+import { markStaleVersions, registerToolResult } from '../../lib/fact-register.mjs';
 import { textOfContent } from './snapshot.mjs';
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
@@ -18,6 +19,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     let aborted = false;
     let continuationPrefix = "";
     const toolCalls = entry.turnToolCalls = [];
+    const registrationJobs = [];
     const turnBoundary = entry.session.messages.length;
     entry.transcriptBoundary = turnBoundary;
     // Explicit user corrections become append-only claims before the model responds.
@@ -39,7 +41,11 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       if (event.type === 'tool_execution_start') toolCalls.push({ id: event.toolCallId, name: event.toolName, args: event.args, success: false });
       if (event.type === 'tool_execution_end') {
         const call = toolCalls.findLast(c => c.id === event.toolCallId);
-        if (call) { call.success = event.isError === false && event.result?.isError !== true; call.details = event.result?.details; }
+        if (call) {
+          call.success = event.isError === false && event.result?.isError !== true;
+          call.details = event.result?.details; call.result=event.result;
+          if(call.success) registrationJobs.push(registerToolResult(entry.ctx?.root,entry.id,call,{turn}).catch(()=>[]));
+        }
       }
       if (event.type === 'agent_settled' && event.aborted) aborted = true;
     });
@@ -59,12 +65,20 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         for (const m of messages) for (const c of Array.isArray(m.content) ? m.content : []) {
           if (c.type !== 'toolCall') continue;
           const result = messages.find(r => r.role === 'toolResult' && r.toolCallId === c.id);
-          scanned.push({ name: c.name, args: c.arguments, success: Boolean(result) && result.isError === false });
+          scanned.push({ id:c.id, name: c.name, args: c.arguments, success: Boolean(result) && result.isError === false, details:result?.details, result });
         }
-        const turnCitations = collectCitationsFromToolCalls([...toolCalls, ...scanned]);
+        for(const call of scanned) if(call.success) registrationJobs.push(registerToolResult(entry.ctx?.root,entry.id,call,{turn}).catch(()=>[]));
+        await Promise.all(registrationJobs);
+        const thisTurnCitations = collectCitationsFromToolCalls([...toolCalls, ...scanned]);
+        const currentVersions={...(entry.materialVersions||{})};
+        for(const c of thisTurnCitations) if(c.materialId&&c.version) currentVersions[c.materialId]=c.version;
+        await markStaleVersions(entry.ctx?.root,entry.id,currentVersions).catch(()=>0);
+        const refreshedLedger=await readLedger(entry.ctx?.root, entry.id);
+        const turnCitations = rehydrateCitations({register:refreshedLedger,answer,thisTurnCitations,currentVersions});
         entry.citationIndex = turnCitations;
-        const lintContext = { ...baseLintContext, citations: turnCitations, ...(priorCitations.length ? { priorCitations } : {}) };
-        const findings = [...lintAnswer(answer, lintContext), ...lintLedgerAnswer(answer, await readLedger(entry.ctx?.root, entry.id)), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
+        const lintContext = { ...baseLintContext, question:text, citations: turnCitations, ...(priorCitations.length ? { priorCitations } : {}) };
+        const locatorFindings=lintAnswer(answer,lintContext).filter(f=>f.rule==='unverified_locator');
+        const findings = [...lintAnswer(answer, lintContext), ...lintLedgerAnswer(answer, refreshedLedger,{...lintContext,locatorFindings,toolCalls:[...toolCalls,...scanned]}), ...checkTurnTools({ answer, routes: context.routes, toolCalls: [...toolCalls, ...scanned] })];
         const data = {
           version: 1, turnId, timestamp: new Date().toISOString(),
           findings, stats: answerStats(answer), correctionCount, continuationCount,
@@ -75,7 +89,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         entry.session.sessionManager?.appendCustomEntry('pe_answer_lint', data);
         entry.answerLint = data;
         const nonIncomplete = findings.filter(item => item.rule !== 'incomplete');
-        const numericRules = new Set(['unit_conversion', 'magnitude', 'percent_change', 'inconsistent_value', 'repeats_corrected_value']);
+        const numericRules = new Set(['unit_conversion', 'magnitude', 'percent_change', 'inconsistent_value', 'repeats_corrected_value','unsourced_number','orphaned_number','stale_price']);
         const locatorOnly = nonIncomplete.length > 0 && nonIncomplete.every(item => item.rule === 'unverified_locator');
         const label = nonIncomplete.some(item => numericRules.has(item.rule)) && nonIncomplete.every(item => numericRules.has(item.rule))
           ? '数值待核'
@@ -86,7 +100,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         broadcast({ type: 'answer.lint', ...data, label });
         const errors = findings.filter(item => item.severity === 'error' && item.rule !== 'incomplete');
         const incomplete = findings.some(item => item.rule === 'incomplete');
-        const unverified = findings.filter(item => item.rule === 'unverified_locator');
+        const unverified = findings.filter(item => item.rule === 'unverified_locator' || item.rule === 'orphaned_number');
         let prompt;
         const targetErrors = errors.filter(item => item.code === 'G1' || item.code === 'G2');
         if (targetErrors.length && correctionCount < 1) {
@@ -95,6 +109,10 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           const knownTarget = contextModelTarget(lintContext);
           const targetHint = knownTarget !== null ? `本会话/状态已有模型目标价 ${knownTarget}；` : '';
           prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）与 westock_query 现价重写首句，格式“模型目标价 <值> vs 现价 <值>，空间 ≈ <X>%”；G1/G2 只是缺口 ID，禁止写成单元格，禁止用“没有独立目标价单元格/先纠正前提/无法精确回答”挡掉；券商目标价只作对照。不要说明修正过程。`;
+        } else if (unverified.length && correctionCount < 1) {
+          correctionCount++;
+          continuationPrefix = "";
+          prompt = `以下单元格引用没有本轮工具 citations 支撑：\n${unverified.map(item => `${item.excerpt}`).join('\n')}\n删除无效坐标，或标明“未核验”。若该数字没有其他出处，同时删除/替换该数字为登记中的当前值，或标明未核验。不得只删坐标后留下失去唯一出处的裸数字。`;
         } else if (errors.length && correctionCount < 1) {
           correctionCount++;
           continuationPrefix = "";
@@ -103,10 +121,6 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           continuationCount++;
           continuationPrefix = answer;
           prompt = '上一条回答在句中截断，请从断点继续补完，不要重复已写内容';
-        } else if (unverified.length && correctionCount < 1) {
-          correctionCount++;
-          continuationPrefix = "";
-          prompt = `以下单元格引用没有本轮工具 citations 支撑：\n${unverified.map(item => `${item.excerpt}`).join('\n')}\n请只修正引用：删除这些坐标，或明确标注“未核验”；不要改动任何数字、单位、结论或格式。`;
         } else break;
         if (aborted) break;
         boundary = entry.session.messages.length;

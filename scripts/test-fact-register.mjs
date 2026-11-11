@@ -1,0 +1,43 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { appendFact, readLedger } from '../lib/ledger.mjs';
+import { registerFact, registerToolResult, isFactExpired, markStaleVersions, WESTOCK_FACT_TTL_MS } from '../lib/fact-register.mjs';
+import { lintLedgerAnswer } from '../lib/answer-lint.mjs';
+
+const root=await fs.mkdtemp(path.join(os.tmpdir(),'fact-register-'));
+const bind={company:'ACME',metric:'revenue',line:'Revenue',period:'FY2025',unit:'亿元',currency:'CNY'};
+try {
+  await appendFact(root,'s',{claim:'legacy',value:'10',unit:'亿元',period:'FY2025',turn:1,evidence:{type:'tool',ref:'old'}});
+  let l=await readLedger(root,'s'); assert.equal(l.version,1); assert.equal(l.facts.length,1);
+  const base={binding:bind,unit:'亿元',period:'FY2025',source:'workbook'};
+  await registerFact(root,'s',{...base,value:'90',citation:{materialId:'m',version:1,locator:'S!A1',value:90}});
+  await registerFact(root,'s',{...base,value:'95'});
+  l=await readLedger(root,'s');
+  assert.equal(l.facts.find(f=>f.value==='90').status,'superseded');
+  assert.equal(l.facts.find(f=>f.value==='95').status,'current');
+  await registerFact(root,'s',{...base,value:'96',source:'pdf'});
+  l=await readLedger(root,'s'); assert.equal(l.facts.find(f=>f.value==='95').status,'conflict'); assert.equal(l.facts.find(f=>f.value==='96').status,'conflict');
+  const citation={materialId:'m',version:2,locator:'S!A1',value:100,display_unit:'亿元'};
+  const written=await registerToolResult(root,'s',{name:'workbook_query',success:true,details:{citations:[citation]}});
+  assert.equal(written[0].citation.version,2);
+  const project=await registerToolResult(root,'s',{name:'validate_state',success:true,details:{ok:true,verifiedFacts:[{claim:'base target_price',value:92,unit:'元/股',period:'2027E',binding:{company:'ACME',metric:'target_price',line:'V1',period:'2027E',unit:'元/股'}}]}});
+  assert.equal(project[0].source,'analysis-state');assert.equal(project[0].scope,'project');
+  const derived=await registerToolResult(root,'s',{name:'unit_convert',success:true,details:{value:'72.93',unit:'亿元',citations:[{id:'d1',materialId:'m',version:2,locator:'S!A1',value:'72.93',derivedFrom:['src1']}]}});
+  assert.equal(derived[0].value,'72.93');assert.deepEqual(derived[0].citation.derivedFrom,['src1']);
+  await markStaleVersions(root,'s',{m:3});
+  assert.equal((await readLedger(root,'s')).facts.find(f=>f.citation?.version===2).status,'stale_source');
+  assert.equal(WESTOCK_FACT_TTL_MS,86400000);
+  assert.equal(isFactExpired({source:'westock',fetchedAt:'2026-11-10T10:00:00Z'},new Date('2026-11-11T02:05:00Z')),true);
+  const before=(await readLedger(root,'s')).facts.length;
+  await registerToolResult(root,'s',{name:'westock_query',success:false,details:{quotes:[{ticker:'sh600519',price:426,currency:'CNY',fetched_at:'2026-11-11T02:05:00Z'}]}});
+  assert.equal((await readLedger(root,'s')).facts.length,before);
+  const lintLedger={facts:[{value:'100',unit:'亿元',status:'current',binding:{metric:'revenue',period:'FY2025',unit:'亿元'}}],corrections:[]};
+  assert.ok(lintLedgerAnswer('收入基数为90亿元。',lintLedger).some(f=>f.rule==='unsourced_number'),'C02 unsourced base is 90亿');
+  const yesterday={facts:[{value:418,unit:'港元',source:'westock',fetchedAt:'2026-11-10T02:00:00Z',status:'current'}],corrections:[]};
+  assert.ok(lintLedgerAnswer('现价为418港元。',yesterday,{now:new Date('2026-11-11T02:05:00Z')}).some(f=>f.rule==='stale_price'));
+  const orphan=lintLedgerAnswer('收入为90亿元，见 Model!Z99。',lintLedger,{locatorFindings:[{rule:'unverified_locator',excerpt:'Model!Z99'}]});
+  assert.ok(orphan.some(f=>f.rule==='orphaned_number'));
+} finally { await fs.rm(root,{recursive:true,force:true}); }
+console.log('fact register tests passed');

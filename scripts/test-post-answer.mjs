@@ -257,6 +257,7 @@ const {mkdtemp:mkF5,rm:rmF5}=await import('node:fs/promises');
 const {tmpdir:tmpF5}=await import('node:os');
 const {join:joinF5}=await import('node:path');
 const {appendCorrection:correctF5}=await import('../lib/ledger.mjs');
+const {readLedger:readF5}=await import('../lib/ledger.mjs');
 const rootF5=await mkF5(joinF5(tmpF5(),'post-ledger-'));
 try {
  const nudgesF5=[];
@@ -268,6 +269,10 @@ try {
  await runWithPostAnswer(eF5,'更正期间');assert.equal(nudgesF5.length,1);assert.match(nudgesF5[0],/当前值 1H27/);assert.equal(eF5.answerLint.findings.length,0);
  const auditF5={messages:[],sessionManager:{appendCustomEntry(){}},async prompt(t){this.messages.push({role:'assistant',stopReason:'stop',content:'全部正确。'});},async sendCustomMessage(m,o){if(o.triggerTurn)this.messages.push({role:'assistant',stopReason:'stop',content:'待检索。'});}};
  const eaF5={id:'s',ctx:{root:rootF5},session:auditF5};await runWithPostAnswer(eaF5,'自查前文');assert.ok(eaF5.answerLint.findings.some(f=>f.rule==='missing_transcript_search'));
+ const autoListeners=new Set();
+ const autoSession={messages:[],sessionManager:{appendCustomEntry(){}},subscribe(fn){autoListeners.add(fn);return()=>autoListeners.delete(fn);},async prompt(){for(const fn of autoListeners)fn({type:'tool_execution_start',toolCallId:'auto1',toolName:'workbook_query',args:{}});for(const fn of autoListeners)fn({type:'tool_execution_end',toolCallId:'auto1',isError:false,result:{details:{citations:[{id:'auto-cite',materialId:'mat-auto',version:1,locator:'Model!A1',value:90,display_unit:'亿元',role:'revenue'}]}}});this.messages.push({role:'assistant',stopReason:'stop',content:'收入为90亿元。'});}};
+ const autoEntry={id:'auto',ctx:{root:rootF5},session:autoSession};await runWithPostAnswer(autoEntry,'收入是多少');
+ const autoLedger=await readF5(rootF5,'auto');assert.equal(autoLedger.facts.length,1);assert.equal(autoLedger.facts[0].status,'current');assert.equal(autoLedger.facts[0].citation.locator,'Model!A1');
 } finally {await rmF5(rootF5,{recursive:true,force:true});}
 console.log('F5 post-answer ledger and selfaudit passed');
 
@@ -292,8 +297,7 @@ assert.equal(noChecklist.messages.length,1,'no checklist keeps the old single-pa
 assert.equal(noChecklistEntry.answerLint.findings.length,0);
 console.log('DT-8 checklist passed');
 
-// CELL-CITE L3: unverified locator gets at most one bounded correction and the
-// prompt must protect the numbers.
+// CELL-CITE L3: locator repair must deal with any number orphaned by deletion.
 let locatorCalls = 0;
 const locatorPrompts = [];
 const locatorSession = {
@@ -310,7 +314,8 @@ assert.equal(locatorCalls, 2, 'one correction, never a loop');
 assert.equal(locatorEntry.answerLint.correctionCount, 1);
 assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'unverified_locator').length, 1);
 assert.match(locatorPrompts[1], /未核验/);
-assert.match(locatorPrompts[1], /不要改动任何数字/);
+assert.match(locatorPrompts[1], /同时删除\/替换该数字/);
+assert(!locatorPrompts[1].includes('不要改动任何数字'));
 // A verified locator is not corrected.
 let verifiedCalls = 0;
 const verifiedSession = {
