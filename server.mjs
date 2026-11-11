@@ -10,8 +10,8 @@ import { createWorkbench } from "./server/create-app.mjs";
 
 const config = await loadConfig();
 
-if (!config.fakeAgent && !process.env.DEEPSEEK_API_KEY) {
-  console.error("DEEPSEEK_API_KEY is not set (put it in .env.local or the environment)");
+if (!config.fakeAgent && !process.env[config.modelKeyName]) {
+  console.error(`${config.modelKeyName} is not set (put it in .env.local or the environment)`);
   process.exit(1);
 }
 if (!config.fakeAgent && !config.model) {

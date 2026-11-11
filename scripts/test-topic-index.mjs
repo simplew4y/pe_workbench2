@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {topicRetrievalCases, topicLedgerFixture as fixture} from './fixtures/topic-retrieval.mjs';
+import {fixtureMessages, topicRetrievalCases, topicLedgerFixture as fixture} from './fixtures/topic-retrieval.mjs';
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import os from 'node:os'; import path from 'node:path';
 import {readLedger,appendFact} from '../lib/ledger.mjs';
@@ -8,6 +8,8 @@ import {registerFact} from '../lib/fact-register.mjs';
 import {buildTurnContext} from '../lib/turn-context.mjs';
 import {upsertTopicFromFacts,validateTopicProposal,retrieveTopics,expandTopics,defaultLocate,updateTopicsFromFacts} from '../lib/topic-index.mjs';
 import {createLedgerTool} from '../lib/ledger-tool.mjs';
+import {getModel, registerApiProvider, resetApiProviders} from '@earendil-works/pi-ai/compat';
+import {locateChatTopics, recentTopicDialogue} from '../server/agent/topic-locator.mjs';
 const root=await mkdtemp(path.join(os.tmpdir(),'topic-index-'));
 try {
  await mkdir(path.join(root,'.pi','ledger'),{recursive:true});
@@ -49,6 +51,33 @@ try {
   const expanded=expandTopics({ledger:fixture,selection:result});
   assert.deepEqual(expanded.facts.map(f=>f.id).sort(), [...expected.factIds].sort(), `${id} expansion`);
   assert(!Object.hasOwn(selection,'difference')&&!JSON.stringify(selection).includes('差额为'), `${id} locator must not calculate`);
+ }
+ const multiMetric = topicRetrievalCases.find(({id}) => id === 'R01');
+ const metrics = ['营业收入', '归母净利润'];
+ const model = getModel('openrouter', 'nvidia/nemotron-3.5-lightning:free');
+ const stream = () => ({
+  async result() {
+   return {content: [{type: 'text', text: JSON.stringify({
+    topicIds: ['W01', 'W02'],
+    parsed: {company: 'A 公司', metric: metrics, periods: [2024, '2023']},
+    clarification: {needed: false, missing: []},
+   })}]};
+  },
+ });
+ registerApiProvider({api: model.api, stream, streamSimple: stream});
+ try {
+  const selection = await retrieveTopics({
+   ledger: fixture,
+   question: multiMetric.question,
+   history: recentTopicDialogue(fixtureMessages(multiMetric.history)),
+   locator: input => locateChatTopics(model, input),
+  });
+  assert.deepEqual(selection.parsed.metric, metrics);
+  assert.deepEqual(selection.parsed.periods, ['2024', '2023']);
+  const expanded = expandTopics({ledger: fixture, selection});
+  assert.deepEqual(expanded.facts.map(fact => fact.id).sort(), [...multiMetric.expected.factIds].sort());
+ } finally {
+  resetApiProviders();
  }
  console.log('topic index passed');
 } finally {await rm(root,{recursive:true,force:true});}

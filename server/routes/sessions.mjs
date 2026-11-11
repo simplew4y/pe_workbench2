@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 
 export async function handleSessions({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
-  const { sessions, bus, broadcast, nowIso, ALLOWED_MODELS, getModel, makeTitle } = app;
+  const { sessions, bus, broadcast, nowIso, ALLOWED_MODELS, config, makeTitle } = app;
   const pathname = url.pathname;
   if (pathname === "/api/sessions" && req.method === "GET") {
     return json(res, 200, await sessions.listSessions(ctx));
@@ -99,7 +99,7 @@ export async function handleSessions({ req, res, url, app, ctx }) {
       const body = await readJson(req);
       const requested = String(body.model || "");
       if (!ALLOWED_MODELS.has(requested)) return json(res, 400, { error: "unsupported model" });
-      const next = getModel("deepseek", requested);
+      const next = config.resolveModel(requested);
       if (!next) return json(res, 400, { error: "model not found" });
       await entry.session.setModel(next);
       entry.modelId = requested;

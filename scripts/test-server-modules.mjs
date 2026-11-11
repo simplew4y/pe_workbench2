@@ -74,6 +74,18 @@ await run("config import does not start schedulers", async () => {
   assert.ok(config.toolNames.includes("read"));
 });
 
+await run("config pins a specific OpenRouter model for chat and retrieval", async () => {
+  const id = "baidu/ernie-5.5-flash-preview:free";
+  const config = await loadConfig({ env: { PI_OPENROUTER_MODELS: id } });
+  assert.equal(config.modelKeyName, "OPENROUTER_API_KEY");
+  assert.equal(config.model.provider, "openrouter");
+  assert.equal(config.model.id, id);
+  assert.deepEqual(config.indexModel, config.model);
+  assert.deepEqual([...config.allowedModels], [id]);
+  assert.equal(config.resolveModel("openrouter/free"), undefined);
+  assert.deepEqual(config.modelPayload({ model: id, reasoning: { effort: "none" } }, config.model), { model: id });
+});
+
 await run("event bus is project scoped", () => {
   const bus = createEventBus();
   const sent = [];

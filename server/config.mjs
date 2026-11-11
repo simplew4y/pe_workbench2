@@ -35,9 +35,33 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   const storageRoot = path.resolve(env.WORKBENCH_STORAGE_ROOT || root);
   const projectsDir = path.resolve(env.WORKBENCH_PROJECTS_DIR || path.join(storageRoot, "projects"));
   const defaultProjectRoot = path.join(projectsDir, DEFAULT_PROJECT_ID);
-  const modelId = env.PI_MODEL || "deepseek-flash";
-  const allowedModels = new Set(["deepseek-v4-pro", "deepseek-flash"]);
-  const indexModelId = allowedModels.has(env.PI_INDEX_MODEL || "deepseek-flash") ? (env.PI_INDEX_MODEL || "deepseek-flash") : "deepseek-flash";
+  const deepSeekModels = new Set(["deepseek-v4-pro", "deepseek-flash"]);
+  const openRouterModels = (env.PI_OPENROUTER_MODELS || "").split(",").map(id => id.trim()).filter(Boolean);
+  if (openRouterModels.some(id => !/^[\w.-]+\/[\w.-]+:free$/.test(id))) {
+    throw new Error("PI_OPENROUTER_MODELS requires explicit :free model IDs");
+  }
+  const modelProvider = openRouterModels.length ? "openrouter" : "deepseek";
+  const modelId = openRouterModels[0] || env.PI_MODEL || "deepseek-flash";
+  const allowedModels = openRouterModels.length ? new Set(openRouterModels) : deepSeekModels;
+  const resolveModel = id => {
+    if (modelProvider === "deepseek") return getModel("deepseek", id);
+    if (!allowedModels.has(id)) return undefined;
+    return getModel("openrouter", id) ?? {
+      ...getModel("openrouter", "openrouter/free"),
+      id,
+      name: id,
+      input: ["text"],
+    };
+  };
+  const indexModelId = openRouterModels.length
+    ? modelId
+    : deepSeekModels.has(env.PI_INDEX_MODEL) ? env.PI_INDEX_MODEL : "deepseek-flash";
+  // Free endpoints vary in whether reasoning can be disabled. Keep the exact model ID on the request.
+  const modelPayload = modelProvider === "openrouter" ? (payload, model) => {
+    if (model?.provider !== "openrouter") return payload;
+    const { reasoning, ...request } = payload;
+    return request;
+  } : undefined;
   const workbookQuery = env.WORKBOOK_QUERY !== "0";
   const pdfRead = env.PDF_READ !== "0";
   const westockQuery = env.WESTOCK_QUERY !== "0";
@@ -60,7 +84,7 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   if (asrEnabled) toolNames.push("asr_read");
 
   const fakeAgent = env.PI_FAKE_AGENT === "1";
-  const model = fakeAgent ? null : getModel("deepseek", modelId);
+  const model = fakeAgent ? null : resolveModel(modelId);
 
   return Object.freeze({
     root,
@@ -75,7 +99,12 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
     port: Number(env.PORT || 8080),
     host: env.HOST || "127.0.0.1",
     modelId,
+    modelProvider,
+    modelKeyName: modelProvider === "openrouter" ? "OPENROUTER_API_KEY" : "DEEPSEEK_API_KEY",
+    modelPayload,
+    resolveModel,
     indexModelId,
+    indexModel: resolveModel(indexModelId),
     allowedModels,
     model,
     fakeAgent,

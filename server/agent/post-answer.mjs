@@ -31,7 +31,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     const ledgerBefore=await readLedger(entry.ctx?.root,entry.id);
     const correctionIds=(ledgerBefore?.facts||[]).filter(f=>f.source==='user_correction'&&f.turn===turn&&f.status==='current').map(f=>f.id);
     if(correctionIds.length) await updateTopicsFromFacts(entry.ctx?.root,entry.id,{factIds:correctionIds}).catch(()=>[]);
-    const locator = input => locateChatTopics(entry.indexModelId, input);
+    const locator = input => locateChatTopics(entry.indexModel, input, entry.modelPayload);
     const context = await buildTurnContext({ question: text, history:priorDialogue, root: entry.ctx?.root, sessionId: entry.id, locator:ledgerBefore?.topics?.length?locator:undefined });
     // DT-8: opt-in delivery checklist only. Empty/absent keeps old behavior.
     const requiredSections = Array.isArray(options.requiredSections)
@@ -81,7 +81,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         for(const c of thisTurnCitations) if(c.materialId&&c.version) currentVersions[c.materialId]=c.version;
         await markStaleVersions(entry.ctx?.root,entry.id,currentVersions).catch(()=>0);
         const refreshedLedger=await readLedger(entry.ctx?.root, entry.id);
-        if(registered.length) await updateTopicsFromFacts(entry.ctx?.root,entry.id,{factIds:registered.map(f=>f.id),proposer:async({topic,facts})=>indexJson(entry.indexModelId,`根据已核事实提出一个用于检索的主题标题、摘要和 binding。摘要不得添加事实数字，只描述指标和期间。严格 JSON 输出 {"title":"...","summary":"...","binding":{...}}。候选主题:${JSON.stringify(topic)}\n已核事实:${JSON.stringify(facts.map(f=>({id:f.id,claim:f.claim,binding:f.binding,period:f.period})))}`)}).catch(()=>[]);
+        if(registered.length) await updateTopicsFromFacts(entry.ctx?.root,entry.id,{factIds:registered.map(f=>f.id),proposer:async({topic,facts})=>indexJson(entry.indexModel,`根据已核事实提出一个用于检索的主题标题、摘要和 binding。摘要不得添加事实数字，只描述指标和期间。严格 JSON 输出 {"title":"...","summary":"...","binding":{...}}。候选主题:${JSON.stringify(topic)}\n已核事实:${JSON.stringify(facts.map(f=>({id:f.id,claim:f.claim,binding:f.binding,period:f.period})))}`,entry.modelPayload)}).catch(()=>[]);
         const turnCitations = rehydrateCitations({register:refreshedLedger,answer,thisTurnCitations,currentVersions});
         entry.citationIndex = turnCitations;
         const lintContext = { ...baseLintContext, question:text, citations: turnCitations, ...(priorCitations.length ? { priorCitations } : {}) };

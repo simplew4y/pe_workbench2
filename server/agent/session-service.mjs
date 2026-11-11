@@ -158,6 +158,16 @@ export function createSessionService({
         customTools: ctx.tools.concat(sessionTools),
       });
       session = created.session;
+      if (config.modelPayload) {
+        const stream = session.agent.streamFunction;
+        session.agent.streamFunction = (model, context, options) => stream(model, context, {
+          ...options,
+          onPayload: async (payload, requestModel) => {
+            const transformed = await options?.onPayload?.(payload, requestModel);
+            return config.modelPayload(transformed ?? payload, requestModel);
+          },
+        });
+      }
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
@@ -176,7 +186,8 @@ export function createSessionService({
       toolArgs: new Map(),
       title: session.sessionName || titleFromMessages(session),
       modelId: config.modelId,
-      indexModelId: config.indexModelId || 'deepseek-flash',
+      indexModel: config.indexModel,
+      modelPayload: config.modelPayload,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       unsubscribe: null,

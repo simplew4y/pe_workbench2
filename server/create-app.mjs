@@ -12,8 +12,6 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 
-import { getModel } from "@earendil-works/pi-ai/compat";
-
 import { loadConfig } from "./config.mjs";
 import {
   json,
@@ -588,7 +586,6 @@ async function handleApi(req, res, url) {
     tracking,
     watch,
     http: { json, readBody, readJson, sendText, MIME },
-    getModel,
     MODEL_ID,
     makeTitle,
     ALLOWED_MODELS,

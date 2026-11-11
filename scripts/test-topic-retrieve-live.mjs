@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,9 +10,11 @@ import { retrieveAndExpand } from '../lib/topic-index.mjs';
 import { locateChatTopics, recentTopicDialogue } from '../server/agent/topic-locator.mjs';
 import { fixtureMessages, topicLedgerFixture, topicRetrievalCases } from './fixtures/topic-retrieval.mjs';
 
-const { indexModelId: model } = await loadConfig();
-const provider = 'deepseek';
+const { indexModel, modelPayload } = await loadConfig();
+const { id: model, provider } = indexModel;
 const key = getEnvApiKey(provider);
+const intervalMs = Number(process.env.TOPIC_RETRIEVAL_INTERVAL_MS || 0);
+if (!Number.isFinite(intervalMs) || intervalMs < 0) throw new Error('Invalid TOPIC_RETRIEVAL_INTERVAL_MS');
 
 function sorted(items) {
   return [...items].sort();
@@ -42,7 +45,7 @@ async function runCase({ history, question, expected }, root, sessionId) {
     return {
       status: 'SKIPPED',
       topicIds: [], selectedMetrics: [], company: null, periods: [], clarification: null, factIds: [],
-      error: { kind: 'missing_credentials', message: 'No DeepSeek API key configured' },
+      error: { kind: 'missing_credentials', message: `No ${provider} API key configured` },
     };
   }
   await updateLedger(root, sessionId, ledger => Object.assign(ledger, structuredClone(topicLedgerFixture)));
@@ -55,10 +58,14 @@ async function runCase({ history, question, expected }, root, sessionId) {
     history: recentTopicDialogue(fixtureMessages(history)),
     locator: async input => {
       try {
-        rawSelection = await locateChatTopics(model, input);
+        rawSelection = await locateChatTopics(indexModel, input, modelPayload);
         return rawSelection;
       } catch (error) {
-        locatorError = { kind: error.code || 'locator_error', message: error.message.replaceAll(key, '[redacted]') };
+        locatorError = {
+          kind: error.code || 'locator_error',
+          message: error.message.replaceAll(key, '[redacted]'),
+          ...(error.modelOutput ? { modelOutput: error.modelOutput.replaceAll(key, '[redacted]') } : {}),
+        };
         throw error;
       }
     },
@@ -86,6 +93,7 @@ const root = await mkdtemp(path.join(os.tmpdir(), 'workbench-topic-live-'));
 try {
   for (let attempt = 1; attempt <= 3; attempt++) {
     for (const testCase of topicRetrievalCases) {
+      if (key && intervalMs && (attempt > 1 || testCase !== topicRetrievalCases[0])) await delay(intervalMs);
       const started = performance.now();
       let result;
       try {

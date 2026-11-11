@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getEnvApiKey, getModel, registerApiProvider } from '@earendil-works/pi-ai/compat';
+import { getEnvApiKey, registerApiProvider } from '@earendil-works/pi-ai/compat';
 import { loadConfig } from '../server/config.mjs';
 import { createWorkbench } from '../server/create-app.mjs';
 import { snapshotMessages, textOfContent } from '../server/agent/snapshot.mjs';
@@ -93,16 +93,16 @@ try {
     WEB_FETCH: '0',
   };
   config = { ...await loadConfig({ env }), agentDir: path.join(storageRoot, 'agent') };
-  const key = getEnvApiKey('deepseek', env);
+  const key = getEnvApiKey(config.modelProvider, env);
   if (!deterministic && !key) {
-    result = { status: 'SKIPPED', error: { kind: 'missing_credentials', message: 'No DeepSeek API key configured' } };
+    result = { status: 'SKIPPED', error: { kind: 'missing_credentials', message: `No ${config.modelProvider} API key configured` } };
   } else {
     // Pi's live SDK resolves provider credentials from the current process environment.
-    if (!deterministic && !getEnvApiKey('deepseek')) process.env.DEEPSEEK_API_KEY = key;
+    if (!deterministic && !getEnvApiKey(config.modelProvider)) process.env[config.modelKeyName] = key;
     let locatorPrompt;
     let injectedContext;
     if (deterministic) {
-      const { api } = getModel('deepseek', config.indexModelId);
+      const { api } = config.indexModel;
       const stream = (_model, context) => {
         locatorPrompt = context.messages.at(-1).content;
         const text = JSON.stringify({
@@ -121,7 +121,7 @@ try {
     if (!created.ok) throw new Error(`Session creation returned HTTP ${created.status}`);
     const { id } = await created.json();
     const entry = app.live.get(id);
-    const historyModel = getModel('deepseek', config.modelId);
+    const historyModel = config.resolveModel(config.modelId);
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     const messages = fixtureMessages(history).map(message => ({
       ...message,
@@ -160,7 +160,8 @@ try {
         && prompt.includes('assistant: A 公司为 [金额略]，B 公司为 [金额略]。')
         && !/R03|120\s*亿元|80\s*亿元/.test(prompt)
         && !topicLedgerFixture.facts.some(fact => prompt.includes(fact.id));
-      const clarificationInjected = injectedContext?.includes('需要澄清：company') ?? false;
+      const clarificationInjected = injectedContext?.includes('需要澄清：company。'
+        + '本轮只向用户询问待澄清项，并等待确认。确认前不要给出候选项的结果，也不要调用工具计算。') ?? false;
       const passed = payloadSafe && clarificationInjected
         && JSON.stringify(factIds.sort()) === JSON.stringify([...expected.factIds].sort());
       result = { status: passed ? 'PASS' : 'FAIL', payloadSafe, clarificationInjected, factIds, scorerChecks: checkScorer() };
@@ -188,13 +189,13 @@ try {
 }
 
 if (result.error) {
-  const key = getEnvApiKey('deepseek');
+  const key = config && getEnvApiKey(config.modelProvider);
   if (key) result.error.message = result.error.message.replaceAll(key, '[redacted]');
 }
 console.log(JSON.stringify({
   case: 'R03',
   stage: deterministic ? 'deterministic_chat_context' : 'live_chat_answer',
-  provider: 'deepseek',
+  provider: config?.modelProvider,
   indexModel: config?.indexModelId,
   answerModel: deterministic ? null : config?.modelId,
   latencyMs: Math.round(performance.now() - started),
