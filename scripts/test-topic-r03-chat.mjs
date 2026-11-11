@@ -1,12 +1,72 @@
+import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { getEnvApiKey, getModel, registerApiProvider } from '@earendil-works/pi-ai/compat';
 import { loadConfig } from '../server/config.mjs';
 import { createWorkbench } from '../server/create-app.mjs';
-import { textOfContent } from '../server/agent/snapshot.mjs';
+import { snapshotMessages, textOfContent } from '../server/agent/snapshot.mjs';
 import { updateLedger } from '../lib/ledger.mjs';
 import { fixtureMessages, topicLedgerFixture, topicRetrievalCases } from './fixtures/topic-retrieval.mjs';
+
+// A direct choice of companies or a question identifying the referent satisfies R03.
+const companyChoice = '(?:A(?:公司)?(?:还是|或)B(?:公司)?|B(?:公司)?(?:还是|或)A(?:公司)?)';
+const request = '请(?:问|确认(?:一下)?|明确|说明|告诉我)[:：]?';
+const pronoun = '(?:(?:(?:您|你)?(?:说的|问的|指的)|这里的)?它)';
+const refersTo = '(?:是指|指的是|指|是)';
+const referent = `(?:${pronoun}${refersTo}|(?:您|你)(?:${refersTo}|是说|说的是|问的是|想问的是)|${refersTo})`;
+const explicitClarification = new RegExp(`^(?:(?:${request})?${referent}(?:哪(?:一)?家(?:公司)?|${companyChoice})|${request}${companyChoice})[呢吗]?[？?]?$`, 'i');
+const directChoice = new RegExp(`^${companyChoice}[呢]?[？?]$`, 'i');
+const reportedAmount = /(?:\d[\d,.]*|[零一二两三四五六七八九十百千][零一二两三四五六七八九十百千万亿]*)\s*(?:%|％|个?百分点|(?:万亿|千亿|百亿|十亿|亿|千万|百万|万)?元|亿|倍)/;
+const reportedDifference = /(?:多了|少了|增(?:加|长)|减少|下降|上升|下滑|差额|差值|差了|相差|同比)\s*(?:了|是|为|[:：=])?\s*[+−-]?\d|\d+(?:\.\d+)?\s*[+−–*/÷×=-]\s*\d/;
+
+function scoreAnswer(messages) {
+  const turn = messages.slice(messages.findLastIndex(message => message.role === 'user') + 1);
+  const answers = turn.filter(message => message.role === 'assistant');
+  const answer = answers.flatMap(message => [message.processText, message.text]).filter(Boolean).join('\n\n');
+  const toolCalls = answers.flatMap(message => (message.tools || []).map(tool => tool.name));
+  const asked = answers.some(message => {
+    const clauses = message.text.match(/[^,，。！？?!\n；;]+[？?]?/g) || [];
+    return clauses.some(clause => {
+      const normalized = clause.replace(/[\s“”"'「」*]/g, '');
+      return explicitClarification.test(normalized) || directChoice.test(normalized);
+    });
+  });
+  const calculated = reportedAmount.test(answer) || reportedDifference.test(answer)
+    || toolCalls.some(name => ['calc', 'ratio', 'model_whatif'].includes(name));
+  return { status: asked && !calculated ? 'PASS' : 'FAIL', asked, calculated, answer, toolCalls };
+}
+
+function checkScorer() {
+  const history = [
+    { role: 'user', content: 'A 和 B 两家公司的营收？' },
+    { role: 'assistant', content: [{ type: 'text', text: 'A 为 120 亿元，B 为 80 亿元。' }] },
+    { role: 'user', content: '它比前一年多了多少？' },
+  ];
+  const assistant = text => ({ role: 'assistant', content: [{ type: 'text', text }] });
+  const ask = assistant('您说的“它”是指 A 公司还是 B 公司？');
+  const calculate = assistant('A 公司比前一年多了 20 亿元。');
+  const correction = { role: 'custom', customType: 'pe_answer_correct', content: '请重答。' };
+  const tool = name => ({ role: 'assistant', content: [{ type: 'toolCall', id: `fixture-${name}`, name, arguments: {} }] });
+  const score = (...messages) => scoreAnswer(snapshotMessages({ messages: [...history, ...messages] }, { root: '/' }));
+  const cases = [
+    ['explicit_company_choice', [ask], true, false, 'PASS'],
+    ['explicit_referent_question', [assistant('请问，您指的是哪家公司？我会按亿元回答。')], true, false, 'PASS'],
+    ['direct_company_choice', [assistant('A 公司还是 B 公司？')], true, false, 'PASS'],
+    ['question_naming_both_companies', [assistant('A 公司和 B 公司都增长了吗？')], false, false, 'FAIL'],
+    ['choice_about_growth_instead_of_referent', [assistant('A 公司还是 B 公司增长了？')], false, false, 'FAIL'],
+    ['question_about_company_growth', [assistant('哪家公司增长了？')], false, false, 'FAIL'],
+    ['calculation_before_correction', [calculate, correction, ask], true, true, 'FAIL'],
+    ['calculation_in_visible_process', [calculate, tool('ledger_search'), correction, ask], true, true, 'FAIL'],
+    ['calculation_tool_before_clarification', [tool('calc'), ask], true, true, 'FAIL'],
+    ['unitless_calculation', [assistant('A 公司比前一年多了 20。'), correction, ask], true, true, 'FAIL'],
+  ];
+  return cases.map(([name, messages, asked, calculated, status]) => {
+    const result = score(...messages);
+    assert.deepEqual({ asked: result.asked, calculated: result.calculated, status: result.status }, { asked, calculated, status }, name);
+    return name;
+  });
+}
 
 const deterministic = process.argv.includes('--deterministic');
 const { history, question, expected } = topicRetrievalCases.find(item => item.id === 'R03');
@@ -103,20 +163,20 @@ try {
       const clarificationInjected = injectedContext?.includes('需要澄清：company') ?? false;
       const passed = payloadSafe && clarificationInjected
         && JSON.stringify(factIds.sort()) === JSON.stringify([...expected.factIds].sort());
-      result = { status: passed ? 'PASS' : 'FAIL', payloadSafe, clarificationInjected, factIds };
+      result = { status: passed ? 'PASS' : 'FAIL', payloadSafe, clarificationInjected, factIds, scorerChecks: checkScorer() };
     } else {
+      const state = await fetch(`${url}/api/sessions/${id}/state`, { signal: AbortSignal.timeout(10_000) });
+      if (!state.ok) throw new Error(`Chat state returned HTTP ${state.status}`);
+      const assessment = scoreAnswer((await state.json()).messages);
       const answer = entry.session.messages.slice(messages.length).findLast(message => message.role === 'assistant');
       if (!answer || answer.stopReason !== 'stop') {
-        result = { status: 'FAIL', error: { kind: 'answer_provider_error', message: answer?.errorMessage || answer?.stopReason || 'No assistant answer' } };
+        result = {
+          ...assessment,
+          status: 'FAIL',
+          error: { kind: 'answer_provider_error', message: answer?.errorMessage || answer?.stopReason || 'No assistant answer' },
+        };
       } else {
-        const text = textOfContent(answer.content);
-        const toolCalls = entry.turnToolCalls.map(call => call.name);
-        const namesBothCompanies = /\bA\b/.test(text) && /\bB\b/.test(text);
-        const asksForCompany = /哪(?:一)?家(?:公司)?/.test(text);
-        const asksQuestion = /[？?]|请.{0,8}(?:确认|指明|说明|告诉)/.test(text);
-        const asked = asksQuestion && (namesBothCompanies || asksForCompany);
-        const calculated = /\d+(?:\.\d+)?\s*(?:亿元|万元|元|%|％)/.test(text) || toolCalls.some(name => ['calc', 'ratio'].includes(name));
-        result = { status: asked && !calculated ? 'PASS' : 'FAIL', answer: text, toolCalls };
+        result = assessment;
       }
     }
   }
