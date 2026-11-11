@@ -37,6 +37,7 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   const defaultProjectRoot = path.join(projectsDir, DEFAULT_PROJECT_ID);
   const modelId = env.PI_MODEL || "deepseek-flash";
   const allowedModels = new Set(["deepseek-v4-pro", "deepseek-flash"]);
+  const indexModelId = allowedModels.has(env.PI_INDEX_MODEL || "deepseek-flash") ? (env.PI_INDEX_MODEL || "deepseek-flash") : "deepseek-flash";
   const workbookQuery = env.WORKBOOK_QUERY !== "0";
   const pdfRead = env.PDF_READ !== "0";
   const westockQuery = env.WESTOCK_QUERY !== "0";
@@ -74,6 +75,7 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
     port: Number(env.PORT || 8080),
     host: env.HOST || "127.0.0.1",
     modelId,
+    indexModelId,
     allowedModels,
     model,
     fakeAgent,

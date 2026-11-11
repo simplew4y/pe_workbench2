@@ -176,6 +176,7 @@ export function createSessionService({
       toolArgs: new Map(),
       title: session.sessionName || titleFromMessages(session),
       modelId: config.modelId,
+      indexModelId: config.indexModelId || 'deepseek-flash',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       unsubscribe: null,
