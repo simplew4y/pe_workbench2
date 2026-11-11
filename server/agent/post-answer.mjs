@@ -7,15 +7,8 @@ import { lintAnswer, lintLedgerAnswer, answerStats, asksDeviationQuestion, conte
 import { collectCitationsFromToolCalls, rehydrateCitations } from '../../lib/citations.mjs';
 import { markStaleVersions, registerToolResult } from '../../lib/fact-register.mjs';
 import { textOfContent } from './snapshot.mjs';
-import { getModel, completeSimple } from '@earendil-works/pi-ai/compat';
-import { retrieveTopics, updateTopicsFromFacts } from '../../lib/topic-index.mjs';
-
-function textResult(message) { return Array.isArray(message?.content) ? message.content.filter(x=>x.type==='text').map(x=>x.text).join('') : String(message?.content||''); }
-async function indexJson(modelId,prompt) {
-  const result=await completeSimple(getModel('deepseek',modelId||'deepseek-flash'),{messages:[{role:'user',content:prompt}]},{temperature:0});
-  const raw=textResult(result).replace(/^```(?:json)?\s*|\s*```$/g,'');
-  return JSON.parse(raw);
-}
+import { indexJson, locateChatTopics, recentTopicDialogue } from './topic-locator.mjs';
+import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
   if (entry.automated) return entry.session.prompt(text, options);
@@ -34,11 +27,11 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     // Explicit user corrections become append-only claims before the model responds.
     const turn = entry.session.messages.filter(m => m.role === 'user' && !m.peInternal && !m.customType).length + 1;
     try { await recordUserClaims(entry.ctx?.root, entry.id, text, { turn }); } catch { /* never block the turn */ }
-    const priorDialogue=entry.session.messages.slice(0,turnBoundary).filter(m=>['user','assistant'].includes(m.role)).slice(-12).map(m=>`${m.role}: ${textOfContent(m.content).slice(0,1200)}`).join('\n');
+    const priorDialogue = recentTopicDialogue(entry.session.messages.slice(0, turnBoundary));
     const ledgerBefore=await readLedger(entry.ctx?.root,entry.id);
     const correctionIds=(ledgerBefore?.facts||[]).filter(f=>f.source==='user_correction'&&f.turn===turn&&f.status==='current').map(f=>f.id);
     if(correctionIds.length) await updateTopicsFromFacts(entry.ctx?.root,entry.id,{factIds:correctionIds}).catch(()=>[]);
-    const locator=async input=>indexJson(entry.indexModelId,`只根据问题、近期对话和主题标题/摘要定位。禁止输出事实数字、计算结果。严格输出 JSON：{"topicIds":[],"parsed":{"company":null,"metric":null,"periods":[]},"clarification":{"needed":false,"missing":[]}}\n问题:${input.question}\n历史:${input.history}\n主题:${JSON.stringify(input.topics)}`);
+    const locator = input => locateChatTopics(entry.indexModelId, input);
     const context = await buildTurnContext({ question: text, history:priorDialogue, root: entry.ctx?.root, sessionId: entry.id, locator:ledgerBefore?.topics?.length?locator:undefined });
     // DT-8: opt-in delivery checklist only. Empty/absent keeps old behavior.
     const requiredSections = Array.isArray(options.requiredSections)

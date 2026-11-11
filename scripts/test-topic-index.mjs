@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {topicRetrievalCases, topicLedgerFixture as fixture} from './fixtures/topic-retrieval.mjs';
 import {mkdtemp,rm,mkdir,writeFile} from 'node:fs/promises';
 import os from 'node:os'; import path from 'node:path';
 import {readLedger,appendFact} from '../lib/ledger.mjs';
@@ -34,24 +35,20 @@ try {
  const sliceOnly={facts:[],topics:[]};assert.equal((await buildTurnContext({question:'未命中主题',ledger:sliceOnly,locator:async()=>({topicIds:[],parsed:{},clarification:{needed:false,missing:[]}})})).content.includes('777'),false);
  const fullLedgerLint=lintLedgerAnswer('已核数值为 777 亿。',fullRegister);assert(!fullLedgerLint.some(f=>f.rule==='unsourced_number'));
  assert(lintLedgerAnswer('金额为 90 亿。',{facts:[]}).some(f=>f.rule==='unsourced_number'));
- const fixtures=[['E-A-REV-2024','A 公司','营业收入','2024',120],['E-A-REV-2023','A 公司','营业收入','2023',100],['E-A-PARENT-2024','A 公司','归母净利润','2024',15],['E-A-PARENT-2023','A 公司','归母净利润','2023',12],['E-A-TOTAL-2024','A 公司','合并净利润','2024',17],['E-A-TOTAL-2023','A 公司','合并净利润','2023',14],['E-B-REV-2024','B 公司','营业收入','2024',80],['E-B-REV-2023','B 公司','营业收入','2023',50]];
- const topics=[['W01','A 公司：2024 年与 2023 年营业收入及业务规模对比',['E-A-REV-2024','E-A-REV-2023'],'营业收入'],['W02','A 公司：2024 年与 2023 年归属于母公司股东的净利润',['E-A-PARENT-2024','E-A-PARENT-2023'],'归母净利润'],['W03','A 公司：2024 年与 2023 年合并净利润，包含子公司其他股东对应的收益',['E-A-TOTAL-2024','E-A-TOTAL-2023'],'合并净利润'],['W04','B 公司：2024 年与 2023 年营业收入及业务规模对比',['E-B-REV-2024','E-B-REV-2023'],'营业收入']].map(([id,title,factIds,metric])=>({id,title,summary:title,factIds,qaRefs:[],binding:{company:title[0]==='A'?'A 公司':'B 公司',metrics:[metric],periods:['2024','2023']},status:'current'}));
- const fixture={topics,facts:fixtures.map(([id,company,metric,period,value])=>({id,claim:metric,value,unit:'亿元',period,binding:{company,metric,period,unit:'亿元'},status:'current'}))};
- const dialogues=[
- ['R01','帮我看看 A 公司 2024 年的年报。\n已定位到这份年报。','2024 年和 2023 年，分别做了多少钱的生意？扣掉各种开销和税，算到这家公司自己股东头上的收益又有多少？',['W01','W02'],['E-A-REV-2024','E-A-REV-2023','E-A-PARENT-2024','E-A-PARENT-2023'],false,''],
- ['R02','A 公司 2024 年做了多少钱的生意？\n120 亿元。\n换成 B 公司，同一年呢？\n80 亿元。','那前一年呢？',['W04'],['E-B-REV-2023'],false,'2023'],
- ['R03','把 A 和 B 公司 2024 年做了多少钱的生意放一起看看。\nA 公司为 120 亿元，B 公司为 80 亿元。','它比前一年多了多少？',['W01','W04'],['E-A-REV-2024','E-A-REV-2023','E-B-REV-2024','E-B-REV-2023'],true,''],
- ['R04','A 公司 2024 年做了多少钱的生意？\n120 亿元。\n那扣掉开销后，算到它自己股东头上的收益呢？\n15 亿元。\n再看 B 公司，2024 年做了多少钱的生意？\n80 亿元。','回到最开始那家公司，还是最开始问的生意规模，2024 年和 2023 年差多少？',['W01'],['E-A-REV-2024','E-A-REV-2023'],false,'营业收入']
- ];
- for(const [id,history,question,expectedNodes,expectedFacts,clarify,metric] of dialogues){
-  const selection=defaultLocate({question,history,topics:fixture.topics});assert.deepEqual(selection.topicIds.sort(),expectedNodes.slice().sort(),`${id} node selection`);
-  assert.equal(selection.clarification.needed,clarify,id);assert.deepEqual(selection.clarification.missing,clarify?['company']:[],id);
-  if(id==='R01'){assert.deepEqual(selection.parsed.periods,['2024','2023']);assert.deepEqual(fixture.topics.filter(t=>selection.topicIds.includes(t.id)).map(t=>t.binding.metrics[0]).sort(),['营业收入','归母净利润'].sort());}
-  if(id==='R03'){assert.equal(selection.parsed.metric,'营业收入');assert.deepEqual(selection.parsed.periods,['2024','2023']);assert.equal(selection.parsed.company,null);}
-  if(metric)assert(metric.split('与').every(part=>JSON.stringify(selection.parsed).includes(part)),`${id} parse: ${JSON.stringify(selection.parsed)}`);
-  const result=await retrieveTopics({ledger:fixture,question,history});const expanded=expandTopics({ledger:fixture,selection:result});
-  assert.deepEqual(expanded.facts.map(f=>f.id).sort(),expectedFacts.slice().sort(),`${id} expansion`);
-  assert(!Object.hasOwn(selection,'difference')&&!JSON.stringify(selection).includes('差额为'),`${id} locator must not calculate`);
+ for (const {id,history,question,expected} of topicRetrievalCases) {
+  const selection=defaultLocate({question,history,topics:fixture.topics});
+  assert.deepEqual(selection.topicIds.sort(), [...expected.topicIds].sort(), `${id} node selection`);
+  assert.deepEqual(selection.clarification, expected.clarification, id);
+  assert.equal(selection.parsed.company, expected.company, id);
+  assert.deepEqual(selection.parsed.periods, expected.periods, id);
+  if (id === 'R01') {
+   assert.deepEqual(fixture.topics.filter(t=>selection.topicIds.includes(t.id)).map(t=>t.binding.metrics[0]).sort(), ['营业收入','归母净利润'].sort());
+  }
+  if (id === 'R03' || id === 'R04') assert.equal(selection.parsed.metric, '营业收入', id);
+  const result=await retrieveTopics({ledger:fixture,question,history});
+  const expanded=expandTopics({ledger:fixture,selection:result});
+  assert.deepEqual(expanded.facts.map(f=>f.id).sort(), [...expected.factIds].sort(), `${id} expansion`);
+  assert(!Object.hasOwn(selection,'difference')&&!JSON.stringify(selection).includes('差额为'), `${id} locator must not calculate`);
  }
  console.log('topic index passed');
 } finally {await rm(root,{recursive:true,force:true});}
