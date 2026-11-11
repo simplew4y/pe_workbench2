@@ -39,5 +39,7 @@ try {
   assert.ok(lintLedgerAnswer('现价为418港元。',yesterday,{now:new Date('2026-11-11T02:05:00Z')}).some(f=>f.rule==='stale_price'));
   const orphan=lintLedgerAnswer('收入为90亿元，见 Model!Z99。',lintLedger,{locatorFindings:[{rule:'unverified_locator',excerpt:'Model!Z99'}]});
   assert.ok(orphan.some(f=>f.rule==='orphaned_number'));
+  const sourced=lintLedgerAnswer('收入为100亿元，见 Model!Z99。',lintLedger,{locatorFindings:[{rule:'unverified_locator',excerpt:'Model!Z99'}]});
+  assert.equal(sourced.some(f=>f.rule==='orphaned_number'),false,'registered number is not orphaned by a bad locator');
 } finally { await fs.rm(root,{recursive:true,force:true}); }
 console.log('fact register tests passed');

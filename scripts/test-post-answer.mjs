@@ -260,6 +260,11 @@ const {appendCorrection:correctF5}=await import('../lib/ledger.mjs');
 const {readLedger:readF5}=await import('../lib/ledger.mjs');
 const rootF5=await mkF5(joinF5(tmpF5(),'post-ledger-'));
 try {
+ const answerOnly={id:'answer-only',ctx:{root:rootF5},session:{messages:[],sessionManager:{appendCustomEntry(){}},async prompt(){this.messages.push({role:'assistant',stopReason:'stop',content:'收入为90亿元。'});}}};
+ await runWithPostAnswer(answerOnly,'收入情况');
+ const answerOnlyLedger=await readF5(rootF5,'answer-only');
+ assert.equal(answerOnlyLedger.facts.length,0,'R3 answer text alone never creates verified facts');
+ assert.ok(answerOnly.answerLint.findings.some(f=>f.rule==='unsourced_number'));
  const nudgesF5=[];
  const sF5={messages:[],sessionManager:{appendCustomEntry(){}},
   async prompt(t){this.messages.push({role:'user',content:t});await correctF5(rootF5,'s',{claim:'期间',from:'2026H1',to:'1H27',evidence:{type:'user',ref:'turn 1'},turn:1});this.messages.push({role:'assistant',stopReason:'stop',content:'期间为2026H1。'});},
@@ -305,7 +310,7 @@ const locatorSession = {
   async prompt(text) {
     locatorPrompts.push(text);
     locatorCalls++;
-    this.messages.push({ role: 'assistant', stopReason: 'stop', content: '收入见 Fake!B2。' });
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: '收入为90亿元，见 Fake!B2。' });
   },
 };
 const locatorEntry = { id: 'locator', ctx: {}, session: locatorSession };
@@ -313,6 +318,8 @@ await runWithPostAnswer(locatorEntry, '问题');
 assert.equal(locatorCalls, 2, 'one correction, never a loop');
 assert.equal(locatorEntry.answerLint.correctionCount, 1);
 assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'unverified_locator').length, 1);
+assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'orphaned_number').length, 1);
+assert.equal(locatorEntry.answerLint.correctionCount, 1, 'orphaned numeric answer auto-corrects at most once');
 assert.match(locatorPrompts[1], /未核验/);
 assert.match(locatorPrompts[1], /同时删除\/替换该数字/);
 assert(!locatorPrompts[1].includes('不要改动任何数字'));

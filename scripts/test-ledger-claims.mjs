@@ -158,6 +158,14 @@ try {
   assert.equal(hostLedger.corrections[0].to,'72.93');
   assert.equal(lintLedgerAnswer('收入为7.3亿元。',hostLedger).some(f=>f.rule==='repeats_corrected_value'),true);
 
+  /* C03: the corrected value becomes a verified source while the old value stays blocked. */
+  const c03=await temp('ledger-c03-');
+  await recordUserClaims(c03,'s','写成了7053亿元，应为70534亿元',{turn:1});
+  const c03Ledger=await readLedger(c03,'s');
+  assert.ok(c03Ledger.facts.some(f=>f.source==='user_correction'&&String(f.value)==='70534'&&f.unit==='亿元'));
+  assert.equal(lintLedgerAnswer('收入为70534亿元。',c03Ledger).some(f=>f.rule==='unsourced_number'),false);
+  assert.ok(lintLedgerAnswer('收入当前为7053亿元。',c03Ledger).some(f=>f.rule==='repeats_corrected_value'));
+
   console.log('ledger claims/self-audit T1-T8 PASS');
 } finally {
   await Promise.all(roots.map(root=>rm(root,{recursive:true,force:true})));
