@@ -101,10 +101,10 @@ await test('T14/T26/T28 revision transaction + outbox failure leaves old publica
  const state={subject:{company:'ACME'}};
  assert.throws(()=>memory.commitFramework({framework_id:'F',expected_revision:0,state,report:'r',fact_refs:[{fact_id:'missing',fact_version:1,role:'verified'}]}));
  assert.equal(memory.framework('F',1),null);
- memory.commitFramework({framework_id:'F',expected_revision:0,state,report:'revenue100 margin20%',fact_refs});
+ memory.commitFramework({framework_id:'F',expected_revision:0,state,report:'本期数字详见事实引用',fact_refs});
  assert.equal(memory.published('F').status,'not_found');
  memory.exportPending();assert.equal(memory.published('F').revision,1);
- memory.commitFramework({framework_id:'F',expected_revision:1,state,report:'revision2',fact_refs});
+ memory.commitFramework({framework_id:'F',expected_revision:1,state,report:'更新后的报告',fact_refs});
  const failed=memory.exportPending({beforePublish:()=>{throw new Error('simulated crash');}});
  assert.equal(failed[0].status,'pending');assert.equal(memory.published('F').revision,1);
  memory.exportPending();assert.equal(memory.published('F').revision,2);
@@ -202,7 +202,7 @@ await test('T20 failure distinct from not found, registered-only coverage',()=>{
 });
 await test('Tools expose scoped contracts and guarded error outcomes',()=>{
  const names=createFactMemoryTools({memory}).map(t=>t.name);
- assert.deepEqual(names,['fact_query','fact_bind','fact_correct','fact_calculate','framework_commit']);
+ assert.deepEqual(names,['fact_query','fact_bind','fact_correct','fact_calculate','framework_audit','framework_commit']);
 });
 console.log(`fact-memory: ${count} deterministic acceptance groups passed`);
 } finally {db.close();fs.rmSync(root,{recursive:true,force:true});}

@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
+import {FactMemory} from '../lib/fact-memory/store.mjs';
+import {auditFrameworkNumbers,numericTokens,inventoryState} from '../lib/fact-memory/framework-bindings.mjs';
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'pe-bindings-'));const db=new DatabaseSync(':memory:');
+const memory=new FactMemory({store:{db,projectId:'p',workspace:root}});
+const identity={entity:'ACME',metric:'revenue',period:'2024',scope:'consolidated',basis_type:'actual',scenario:'',currency:'CNY'};
+const capture=(metric,value,other={})=>memory.capture('s',{id:metric,name:'workbook_query',success:true,details:{sha256:'sha',citations:[{materialId:'m',version:1,locator:`S!${metric==='revenue'?'A':'B'}1`,company:'ACME',metric,period:'2024',scope:'consolidated',basis_type:'actual',scenario:'',currency:'CNY',value,display_unit:'百万元',...other}]}})[0];
+try {
+ const percentUnknown=capture('gross_margin',0.2,{display_unit:'%',currency:''});assert.equal(percentUnknown.quality,'needs_review');assert.ok(percentUnknown.review_reasons.includes('excel_percentage_encoding_unknown'));
+ const revenue=capture('revenue',100),assets=capture('assets',100),forecast=capture('forecast_revenue',110,{basis_type:'forecast'});
+ const binding={path:'/financials/0/value',fact_id:revenue.fact_id,fact_version:1,identity,unit:'百万元',role:'verified'};
+ const state={subject:{company:'ACME'},financials:[{metric:'revenue',period:'2024',scope:'consolidated',basis_type:'actual',value:100,unit:'百万元'}],numeric_bindings:[binding]};
+ const report='收入数据：{{fact:/financials/0/value}}。';
+ let audit=auditFrameworkNumbers({memory,state,report});assert.equal(audit.ok,true,JSON.stringify(audit.errors));assert.ok(audit.rendered_report.includes('100 百万元'));assert.ok(audit.rendered_report.includes('[CNY]'));assert.equal(audit.coverage.bound_fields,1);
+ memory.commitFramework({framework_id:'F',expected_revision:0,state,report});memory.exportPending();
+ const published=memory.published('F');assert.equal(published.numeric_validation,'bound_fields_and_report_tokens');assert.equal(published.state.numeric_coverage.unbound_numbers,0);assert.ok(published.report.includes(revenue.fact_id));
+ const reject=(mutate,code,customReport=report)=>{const draft=structuredClone(state);mutate(draft);const result=auditFrameworkNumbers({memory,state:draft,report:customReport});assert.equal(result.ok,false);assert.ok(result.errors.some(e=>e.code===code),JSON.stringify(result.errors));assert.throws(()=>memory.commitFramework({framework_id:'bad',expected_revision:0,state:draft,report:customReport}),/numeric_binding_validation_failed/);assert.equal(memory.framework('bad',1),null);};
+ reject(s=>{s.numeric_bindings=[];},'unbound_state_number');
+ reject(s=>{s.financials[0].value=99;},'binding_value_or_unit_mismatch');
+ reject(s=>{s.numeric_bindings[0].fact_id=assets.fact_id;s.numeric_bindings[0].identity.metric='assets';},'state_metric_mismatch');
+ reject(s=>{s.subject.company='Beta';},'state_entity_mismatch');
+ reject(s=>{s.numeric_bindings[0].identity.currency='USD';},'binding_identity_mismatch');
+ reject(s=>{s.financials[0].unit='%';},'binding_value_or_unit_mismatch');
+ reject(s=>{s.financials[0].period='2023';},'state_period_mismatch');
+ reject(s=>{s.financials[0].basis_type='forecast';},'state_basis_type_mismatch');
+ reject(()=>{},'unbound_report_number','收入999百万元');
+ reject(()=>{},'unbound_report_number','收入９９９元');
+ reject(s=>{s.source_ids=[{amount:999}];},'unbound_state_number');
+ reject(s=>{s.period={value:999};},'unbound_state_number');
+ reject(()=>{},'unbound_report_number','EV100');
+ reject(()=>{},'unbound_report_number','A100元');
+ reject(()=>{},'unknown_report_binding','{{fact:/unknown}}');
+ reject(s=>{s.financials[0].other=20;},'unbound_state_number');
+ reject(s=>{s.numeric_bindings.push({...binding});},'duplicate_binding');
+ const stringState=structuredClone(state);stringState.financials[0].value='100';assert.equal(auditFrameworkNumbers({memory,state:stringState,report}).ok,true);
+ const prose={subject:{company:'ACME'},note:'营业收入为100百万元。'};const [field]=inventoryState(prose);assert.equal(field.value,'100');prose.numeric_bindings=[{...binding,path:'/note',start:field.start,end:field.end}];
+ assert.equal(auditFrameworkNumbers({memory,state:prose,report:`{{fact:/note#${field.start}:${field.end}}}`}).ok,true);
+ for(const [text,code] of [['revenue 100 USD billion','binding_value_or_unit_mismatch'],['EBITDA 100百万元','prose_metric_mismatch'],['revenue USD 100','prose_currency_mismatch'],['revenue $100','prose_currency_mismatch']]) {
+  const p={note:text};const [n]=inventoryState(p);p.numeric_bindings=[{...binding,path:'/note',start:n.start,end:n.end}];
+  const r=auditFrameworkNumbers({memory,state:p,report:''});assert.equal(r.ok,false);assert.ok(r.errors.some(e=>e.code===code),JSON.stringify(r.errors));
+ }
+ const percent=structuredClone(state);percent.financials[0]={metric:'forecast_revenue',period:'2024',basis_type:'forecast',value:110,unit:'百万元'};percent.numeric_bindings=[{...binding,fact_id:forecast.fact_id,identity:{...identity,metric:'forecast_revenue',basis_type:'forecast'}}];
+ assert.ok(auditFrameworkNumbers({memory,state:percent,report}).rendered_report.includes('预测'));
+ assert.equal(numericTokens('2024年，2024-11-12，参考 SRC1、V2。').length,0);
+ assert.ok(numericTokens('收入2024元').some(n=>n.raw==='2024'));
+ assert.ok(numericTokens('EPS5.2元').some(n=>n.raw==='5.2'));
+ console.log('PASS framework numeric field/prose bindings, full identities, unit/currency/period gates, templated rendering, transaction rollback and source-linked snapshots');
+} finally {db.close();fs.rmSync(root,{recursive:true,force:true});}

@@ -191,3 +191,9 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
 每次状态、观点、估值或预警变化都同步 `presentation` 与报告执行摘要，沿用 investment-framework 的字段契约。结论→需人工复核→核心驱动→敏感性→进入跟踪的失效条件→估值依据→报告链接；review_items≤3，key_drivers≤3（含 0–1 权重），highlights 优先 1–2 处（通常 verdict + 一条 R*）、最多 4 个且只引用已有 ID；最后一次交付必须 write 完整 analysis-state.json，禁止只用 edit/edits。删除失效引用，保留复现值/自建情景/当前判断身份，模型时点未核不得凭 Spot 推断日期。
 
 多期条件维护 required_periods 和 observations（期间+数值）；单期预警、接近阈值和数据不足不能写成已确认触发，也不能进入 triggered_falsifier_ids。校验 warning 的原因码应落实到复核项，不用“校验通过”替代投资判断。监测模式不改报告规则仍适用，但状态内 presentation 必须同步。完成后 write 写完整状态以捕获同轮展示，并调用 validate_state。
+
+### 数字绑定与发布
+
+框架每个业务数字字段在 `numeric_bindings` 中登记 JSON pointer、精确 fact_id/fact_version、完整 identity、unit 和 role。正文中的数字还须提供 start/end 字符偏移。绑定不得把已核值重新标成另一指标、期间、币种或实际/预测。未知事实用 needs_review 并写明 reason；假设/历史也须明确标记。
+报告使用 `{{fact:/financials/0/value}}`（正文片段用 `{{fact:/note#起始:结束}}`），宿主从已核绑定渲染数字、含义和引用。先用 `framework_audit` 得到缺失/错误路径，修复后再 `framework_commit`。提交会在事务中重验；不能把附上参考文献视作正文数字已核。日期/编号是元数据例外，研究结论的逻辑不在自动验证范围。
+PDF 只有显式主体/期间/口径/实际预测/单位与对齐表头可以自动提取；脚注、括号、跨页缺表头和扫描不推测。Excel 数值型百分比缺少百分数编码信息时保留待核，不能把 0.2% 与 20% 混用。
