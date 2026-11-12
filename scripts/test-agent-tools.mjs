@@ -79,6 +79,23 @@ async function main() {
       assert.match(result.content[0].text, /结果：通过/);
     });
 
+    await test("draft without counter evidence preserves internal warnings and stage checks", async () => {
+      const draft = structuredClone(example);
+      draft.stage = "draft";
+      draft.theses[0].counter_ids = [];
+      await fsp.writeFile(path.join(workspace, legalRel), JSON.stringify(draft));
+      const result = await validateTool.execute("call-draft", { path: legalRel });
+      assert.equal(result.details.ok, true);
+      assert.ok(result.details.warnings.some(item => item.includes("COUNTER_EVIDENCE_MISSING")));
+      assert.equal(result.details.warningCount, result.details.warnings.length);
+      draft.stage = "reviewed";
+      await fsp.writeFile(path.join(workspace, legalRel), JSON.stringify(draft));
+      const reviewed = await validateTool.execute("call-reviewed", { path: legalRel });
+      assert.equal(reviewed.details.ok, false);
+      assert.ok(reviewed.details.errors.some(item => item.includes("必须有反面证据")));
+      await fsp.writeFile(path.join(workspace, legalRel), exampleText);
+    });
+
     await test("illegal analysis-state.json returns structured errors", async () => {
       const broken = structuredClone(example);
       broken.evidence[0].source_ids = ["SRC404"];

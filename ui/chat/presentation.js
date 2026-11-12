@@ -18,7 +18,7 @@ export function renderFrameworkPresentation(state, { asOf = Date.now(), turnStar
     return `<span class="hl-${review ? 'review' : 'decision'}">${review ? '需复核：' : '关键判断：'}${esc(text)}</span>`;
   };
   const section = (name, body, cls='') => `<section class="framework-section ${cls}"><h3>${name}</h3>${body}</section>`;
-  const table = (heads, body) => `<div class="framework-table"><table><thead><tr>${heads.map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${body || `<tr><td colspan="${heads.length}">暂无记录</td></tr>`}</tbody></table></div>`;
+  const table = (heads, body) => `<div class="framework-table"><table><thead><tr>${heads.map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
   const valuation = rows(state.valuations).find(v => v.id === p.verdict.valuation_id && v.status !== 'superseded');
   const market = state.market || {};
   const modelPrice = valuation?.value;
@@ -53,5 +53,13 @@ export function renderFrameworkPresentation(state, { asOf = Date.now(), turnStar
     return `<tr><td>${mark(f.id,f.statement ?? f.metric)}</td><td>${esc(f.threshold)}</td><td>${esc(f.observed)}</td><td><span class="falsifier-status is-${status[0]}">${status[1]}</span></td><td>${esc(f.action)}</td></tr>`;
   }).join('');
   const valuations = rows(state.valuations).filter(v=>v.status!=='superseded').map(v=>`<li><strong>${mark(v.id,`${v.value ?? '待核'} ${v.unit ?? ''}`)}</strong> · ${esc(v.method)}<br>${esc(v.formula)}<br><span class="framework-meta">${esc(v.limitations)}</span></li>`).join('');
-  return `<section class="framework-presentation" aria-label="投资框架执行摘要">${section('结论',verdict,'verdict-card')}${section('需人工复核',`<ul class="framework-reviews">${reviews || '<li>暂无复核项</li>'}</ul>`,'review-card')}${section('核心驱动',`<ul>${drivers || '<li>暂无记录</li>'}</ul>`)}${section('敏感性',table(['基线','扰动','结果','固定条件 / 局限'],sensitivity))}${section('进入跟踪的失效条件',table(['条件','阈值','观察值','状态','行动'],falsifiers))}${section('估值依据',`<ul>${valuations || '<li>暂无记录</li>'}</ul>`)}</section>`;
+  const sections = [
+    section('结论',verdict,'verdict-card'),
+    reviews ? section('需人工复核',`<ul class="framework-reviews">${reviews}</ul>`,'review-card') : '',
+    drivers ? section('核心驱动',`<ul>${drivers}</ul>`) : '',
+    sensitivity ? section('敏感性',table(['基线','扰动','结果','固定条件 / 局限'],sensitivity)) : '',
+    falsifiers ? section('进入跟踪的失效条件',table(['条件','阈值','观察值','状态','行动'],falsifiers)) : '',
+    valuations ? section('估值依据',`<ul>${valuations}</ul>`) : '',
+  ];
+  return `<section class="framework-presentation" aria-label="投资框架执行摘要">${sections.join('')}</section>`;
 }
