@@ -197,3 +197,5 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
 框架每个业务数字字段在 `numeric_bindings` 中登记 JSON pointer、精确 fact_id/fact_version、完整 identity、unit 和 role。正文中的数字还须提供 start/end 字符偏移。绑定不得把已核值重新标成另一指标、期间、币种或实际/预测。未知事实用 needs_review 并写明 reason；假设/历史也须明确标记。
 报告使用 `{{fact:/financials/0/value}}`（正文片段用 `{{fact:/note#起始:结束}}`），宿主从已核绑定渲染数字、含义和引用。先用 `framework_audit` 得到缺失/错误路径，修复后再 `framework_commit`。提交会在事务中重验；不能把附上参考文献视作正文数字已核。日期/编号是元数据例外，研究结论的逻辑不在自动验证范围。
 PDF 只有显式主体/期间/口径/实际预测/单位与对齐表头可以自动提取；脚注、括号、跨页缺表头和扫描不推测。Excel 数值型百分比缺少百分数编码信息时保留待核，不能把 0.2% 与 20% 混用。
+
+旧台账需要迁移时先 `fact_maintenance action=preview_legacy`，确认批次 SHA 后显式 import_legacy；所有导入只能待核。不要批量重写旧 JSON 或把导入当取数核验。需要撤销导入用 rollback_legacy 精确批次，保留源文件/历史/后续更正；检索索引故障可 rebuild_index，不能把索引重建当数据恢复。

@@ -202,7 +202,7 @@ await test('T20 failure distinct from not found, registered-only coverage',()=>{
 });
 await test('Tools expose scoped contracts and guarded error outcomes',()=>{
  const names=createFactMemoryTools({memory}).map(t=>t.name);
- assert.deepEqual(names,['fact_query','fact_bind','fact_correct','fact_calculate','framework_audit','framework_commit']);
+ assert.deepEqual(names,['fact_query','fact_bind','fact_correct','fact_calculate','fact_maintenance','framework_audit','framework_commit']);
 });
 console.log(`fact-memory: ${count} deterministic acceptance groups passed`);
 } finally {db.close();fs.rmSync(root,{recursive:true,force:true});}
