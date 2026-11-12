@@ -71,7 +71,9 @@ try {
   fs.writeFileSync(path.join(tmp, "analysis-state.json"),JSON.stringify(example));
   const projected=await createValidateStateTool({workspace:tmp}).execute('project',{path:'analysis-state.json'});
   assert.equal(projected.details.ok,true);
-  assert.equal(projected.details.verifiedFacts.find(f=>f.claim==='base target_price').value,92);
+  assert.deepEqual(projected.details.verifiedFacts,[]);
+  assert.equal(projected.details.factVerification,'not_performed');
+  assert.equal(projected.details.candidateFacts.find(f=>f.claim==='base target_price').value,92);
 } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 console.log("validate-state warnings: passed");
 // Pending only relaxes the threshold/pairing case, never unrelated invalid fields.

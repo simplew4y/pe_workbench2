@@ -9,10 +9,27 @@ description: 跟踪运行专用。读取 analysis-state.json 与投资框架报�
 
 宿主会在跟踪运行时把目标文件、基线版本和结果 JSON 路径传给你。先读 [运行契约](references/run-contract.md) 和 [更新规则](references/update-rules.md)。
 
+
+## 项目数字事实与版本化交付
+
+宿主提供 `fact_query` / `fact_bind` / `fact_calculate` / `fact_correct` / `framework_commit` 时：
+
+- SQLite 项目事实库是数字与证据的持久化登记；`analysis-state.json` 是框架快照，Markdown 是可读视图。旧文件保持兼容，不据此自动升级为已核事实。
+- 先用 `fact_query` 按主体、指标、期间、口径、实际/预测/假设及情景查数；`ambiguous` 要明确身份，`retrieval_failed` 不能说成未披露，`stale` 不能当现值。
+- Excel/PDF 工具成功返回后，宿主会持久化结构化证据。看 `factMemory.status` 确认保存结果；仅包含本次实际读取范围，不代表全部文件数字均已登记。
+- `source_checked` 仅表示结构化来源支持该取数与身份；公式缓存、缺少主体/口径、PDF 文本语义尚未核实的记录保留 `needs_review`。`fact_bind` 可补身份候选，但不能自行宣布核验通过。
+- 计算使用固定 `fact_id` 与 `fact_version` 的 `fact_calculate`。支持 ratio/add/subtract/multiple；跨币种或期间不静默计算，复杂模型仍走既有工具和审批。
+- 明确更正时用 `fact_correct` 指定事实 ID、预期版本与完整身份。新值是待核用户主张；修改工作模型或已有研究产物仍走原审批。
+- 新版框架先写草稿并 `validate_state`，再 `framework_commit` 固定引用版本。使用返回的 `exports/fact-memory/<framework_id>/rN/` 交付路径。`pending` 是导出待完成，不是已发布；用 retry_export 重试，不重复新建修订。
+- 当前提交只验证事实引用版本及 JSON/报告一致导出，`numeric_validation=references_only`。它没有验证报告每一处数字或状态里每个字段与引用逐一对应，不能说“全文事实已核验”。
+- 不直接写 `.pi/ledger`、事实库文件或 `exports/fact-memory` 发布目录。已发布视图损坏需报告，不逆向覆盖事实。
+- 后台任务保留 `run_id`，仅登记待核候选，不自动变成已核事实，不自动发布新框架。
+
+
 ## 输入
 
 - 目标报告：`exports/.../投资框架报告.md`（唯一允许原位更新的文件）。
-- 状态文件：同目录的 `analysis-state.json`（事实源）。
+- 状态文件：同目录的 `analysis-state.json`（框架快照）。
 - 新数据：财务、行情、行业、公告；每条记录来源和日期。
 - 基线：`revision`、`tracking.data_cutoff`、上次 `thesis_status`。
 

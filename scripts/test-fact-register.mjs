@@ -23,7 +23,7 @@ try {
   const written=await registerToolResult(root,'s',{name:'workbook_query',success:true,details:{citations:[citation]}});
   assert.equal(written[0].citation.version,2);
   const project=await registerToolResult(root,'s',{name:'validate_state',success:true,details:{ok:true,verifiedFacts:[{claim:'base target_price',value:92,unit:'元/股',period:'2027E',binding:{company:'ACME',metric:'target_price',line:'V1',period:'2027E',unit:'元/股'}}]}});
-  assert.equal(project[0].source,'analysis-state');assert.equal(project[0].scope,'project');
+  assert.deepEqual(project,[], 'structure validation cannot register verified facts');
   const derived=await registerToolResult(root,'s',{name:'unit_convert',success:true,details:{value:'72.93',unit:'亿元',citations:[{id:'d1',materialId:'m',version:2,locator:'S!A1',value:'72.93',derivedFrom:['src1']}]}});
   assert.equal(derived[0].value,'72.93');assert.deepEqual(derived[0].citation.derivedFrom,['src1']);
   await markStaleVersions(root,'s',{m:3});

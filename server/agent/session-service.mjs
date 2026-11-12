@@ -1,3 +1,4 @@
+import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/tools.mjs';
 /**
  * Session lifecycle and persistence.
  *
@@ -77,9 +78,18 @@ export function createSessionService({
     if (typeof candidate !== "string" || !candidate) return null;
     const root = path.resolve(ctx.root);
     const absolute = path.resolve(root, candidate);
+    let realParent=absolute;
+    while(!fs.existsSync(realParent) && realParent!==path.dirname(realParent)) realParent=path.dirname(realParent);
+    const real=fs.realpathSync(realParent),realRoot=fs.realpathSync(root);
+    const resolved=path.resolve(real,path.relative(realParent,absolute));
+    const allowedSkill=["read","grep","find","ls"].includes(toolName) && absolute.startsWith(config.skillsDir+path.sep) && resolved.startsWith(fs.realpathSync(config.skillsDir)+path.sep);
+    if (!allowedSkill && resolved!==realRoot && !resolved.startsWith(realRoot+path.sep)) return {block:true,reason:'路径不能通过符号链接离开当前项目'};
     const inside = absolute === root || absolute.startsWith(root + path.sep);
     if (inside) {
-      const rel = path.relative(root, absolute).split(path.sep).join("/");
+      const rel = path.relative(realRoot, resolved).split(path.sep).join("/");
+      if (["write", "edit"].includes(toolName) && /^(?:\.pi\/(?:ledger|fact-memory|topics)(?:\/|$)|exports\/fact-memory(?:\/|$))/.test(rel)) {
+        return {block:true,reason:"事实库、台账与已发布视图只能通过受控工具写入"};
+      }
       // The prepared working model must only change through the approval path.
       // Blocking direct write/edit keeps a prompt-injected agent from bypassing
       // backup, recalculation and human review.
@@ -131,7 +141,10 @@ export function createSessionService({
     if (/^\[盯\]/.test(restoredName) && !writeRoots) writeRoots = [".watch/"];
     let session;
     let entry;
-    const sessionTools = automated || writeRoots ? [] : [
+    const metadata=()=>({session_id:session?.sessionId || id || '',run_id:entry?.localRunId || '',turn:session?.messages?.filter(m=>m.role==='user'&&!m.peInternal&&!m.customType).length || 0,actor:automated||writeRoots?'automation':'agent'});
+    const memoryTools=ctx.factMemory ? createFactMemoryTools({memory:ctx.factMemory,getMetadata:metadata}) : [];
+    const sessionTools = automated || writeRoots ? memoryTools.filter(t=>t.name==='fact_query') : [
+      ...memoryTools,
       createLedgerTool({ctx, getSessionId: () => session.sessionId,
         getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
         broadcast: event => bus.broadcastGlobal(event, ctx.id),
@@ -155,7 +168,7 @@ export function createSessionService({
         sessionManager,
         resourceLoader: loader,
         tools: [...config.toolNames, ...sessionTools.map(t => t.name)],
-        customTools: ctx.tools.concat(sessionTools),
+        customTools: ctx.tools.map(t=>withFactCapture(t,ctx.factMemory,metadata)).concat(sessionTools),
       });
       session = created.session;
       if (config.modelPayload) {
