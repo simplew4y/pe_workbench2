@@ -5,7 +5,7 @@ import {
   validateCitation,
   validateCitations,
 } from "../lib/contracts/citation.mjs";
-import { citationLookup, collectCitationsFromToolCalls, rehydrateCitations } from "../lib/citations.mjs";
+import { citationLookup, citationsFromTrace, collectCitationsFromToolCalls, rehydrateCitations } from "../lib/citations.mjs";
 import { formatResult, indexGraph, queryGraph } from "../lib/workbook-query.mjs";
 import { traceGraph } from "../lib/workbook-trace.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
@@ -66,6 +66,30 @@ for (const locator of ["Model!A2", "Model!A1", "Model!B1"]) assert.ok(traceLocat
 assert.equal(traceOut.details.citations.every((citation) => citation.materialId === "mat-1"), true);
 assert.equal(traceOut.details.citations.every((citation) => citation.toolCallId === "tc-trace"), true);
 console.log("C1b trace citations passed");
+
+/* C1c: a scanned blank in a range is a locator-only citation, so the rectangle can be verified. */
+{
+  const rangeDoc = {
+    sheets: [{ name: "Model" }],
+    cells: [
+      ["Model!B2", null, 1, 2, 2, "a", ""],
+      ["Model!C2", null, 2, 2, 3, "b", ""],
+      ["Model!C3", null, 4, 3, 3, "d", ""],
+    ],
+    edges: [],
+  };
+  const ranged = traceGraph(rangeDoc, { cell: "Model!B2:C3" });
+  const rangeCitations = citationsFromTrace(ranged, { id: "mat-1", version: 3 }, { toolCallId: "tc-range" });
+  const blank = rangeCitations.find((citation) => citation.locator === "Model!B3");
+  assert.ok(blank, "a scanned empty cell must keep its locator");
+  assert.equal(blank.value ?? null, null);
+  assert.equal(blank.materialId, "mat-1");
+  assert.ok(validateCitation(blank).ok, "an empty-cell citation must satisfy the contract");
+  for (const locator of ["Model!B2", "Model!C2", "Model!C3"]) {
+    assert.ok(rangeCitations.some((citation) => citation.locator === locator), locator);
+  }
+  console.log("C1c range empty citation passed");
+}
 
 /* C2: a miss has no clickable citation and never invents a locator. */
 const missWorkbooks = { queryMaterial: async () => ({ ...queryGraph(graph, "Model!Z9"), text: "未找到" }) };

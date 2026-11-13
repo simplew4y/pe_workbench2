@@ -155,6 +155,60 @@ const unverifiedCount = (html) => (html.match(/cell-ref-unverified/g) || []).len
   const rendered = linkCitations("<p>收入见 Model!A1。</p>", message.tools[0].citations);
   assert.equal(buttonCount(rendered), 1);
 }
+/* U8: a range is clickable when every cell inside it was returned. */
+{
+  const cells = ["B2", "C2", "B3", "C3"].map((coord) => cite(`Model!${coord}`));
+  const covered = linkCitations("<p>区域 Model!B2:C3。</p>", cells);
+  assert.equal(buttonCount(covered), 1);
+  assert.equal(unverifiedCount(covered), 0);
+  assert.match(covered, /data-locator="Model!B2:C3"/);
+  assert.match(covered, />Model!B2:C3<\/button>/);
+  const missing = cells.filter((item) => item.locator !== "Model!C3");
+  const partial = linkCitations("<p>区域 Model!B2:C3。</p>", missing);
+  assert.equal(buttonCount(partial), 0);
+  assert.equal(unverifiedCount(partial), 1);
+  const columnLetters = (index) => {
+    let current = index;
+    let letters = "";
+    while (current > 0) {
+      const remainder = (current - 1) % 26;
+      letters = String.fromCharCode(65 + remainder) + letters;
+      current = Math.floor((current - 1) / 26);
+    }
+    return letters;
+  };
+  const wide = Array.from({ length: 201 }, (_, index) => cite(`Model!${columnLetters(index + 1)}1`));
+  const tooWide = linkCitations(`<p>Model!A1:${columnLetters(201)}1</p>`, wide);
+  assert.equal(unverifiedCount(tooWide), 1, "a rectangle above 200 cells stays unverified");
+}
+console.log("cell cite render U8 range coverage passed");
+
+/* U9: bare cells inherit the sheet only when the completed locator was returned. */
+{
+  const cited = ["N35", "N36", "N38", "H27"].map((coord) => cite(`Discount PE!${coord}`));
+  const sentence = linkCitations("<p>Discount PE!N35、N36、N38、H27。</p>", cited);
+  assert.equal(buttonCount(sentence), 4);
+  assert.match(sentence, /data-locator="Discount PE!N36"/);
+  assert.match(sentence, />N36<\/button>/);
+  const dropped = cited.filter((item) => item.locator !== "Discount PE!N36");
+  const gap = linkCitations("<p>Discount PE!N35、N36、N38、H27。</p>", dropped);
+  assert.equal(buttonCount(gap), 3);
+  assert.match(gap, /、N36、/);
+  assert.ok(!gap.includes("N36</span>"), "a missing bare cell stays plain text");
+  const split = linkCitations(
+    "<p><code>Discount PE!N35</code>、<code>N36</code>、<code>N38</code>、<code>H27</code></p>",
+    cited,
+  );
+  assert.equal(buttonCount(split), 4);
+  assert.match(split, /data-locator="Discount PE!H27"/);
+  const alone = linkCitations("<p>见 N36。</p>", cited);
+  assert.equal(buttonCount(alone), 0);
+  const prose = linkCitations("<p>收入见 Model!A1，成本见 Model!Z99。</p>", [cite("Model!A1")]);
+  assert.equal(buttonCount(prose), 1);
+  assert.equal(unverifiedCount(prose), 1);
+}
+console.log("cell cite render U9 bare list passed");
+
 console.log("cell cite render U1-U6 passed");
 
 /* U7: the durable bridge validates and stores citations even without a card. */
