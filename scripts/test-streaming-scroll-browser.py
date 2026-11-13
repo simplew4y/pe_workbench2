@@ -64,6 +64,56 @@ with sync_playwright() as pw:
     }""")
     assert abs(follow['bottom']) <= 1, follow
 
+    slight = page.evaluate(r"""async () => {
+        thread.scrollTop -= 24;
+        const before = metrics();
+        state.live.text += '\n\nSmall upward scroll';
+        renderer.scheduleThread(); await frame();
+        return {before, after:metrics()};
+    }""")
+    assert slight['after']['top'] == slight['before']['top'], slight
+
+    page.evaluate("renderer.renderThread(true)")
+    page.mouse.move(400, 180)
+    page.mouse.wheel(0, -12)
+    wheel = page.evaluate(r"""async () => {
+        await frame();
+        const before = metrics();
+        state.live.text += '\n\nAfter wheel'; renderer.scheduleThread(); await frame();
+        return {before, after:metrics()};
+    }""")
+    assert wheel['before']['bottom'] > 1, wheel
+    assert wheel['before']['top'] == wheel['after']['top'], wheel
+
+    page.evaluate("renderer.renderThread(true)")
+    thumb = page.evaluate("""() => {
+        const r = thread.getBoundingClientRect();
+        const h = Math.max(20, thread.clientHeight ** 2 / thread.scrollHeight);
+        return {x:r.right-4, y:r.top+thread.clientHeight-h/2};
+    }""")
+    page.mouse.move(thumb['x'], thumb['y'])
+    page.mouse.down()
+    page.mouse.move(thumb['x'], thumb['y']-16, steps=8)
+    drag = page.evaluate(r"""async () => {
+        await frame();
+        const before = metrics();
+        state.live.text += '\n\nDuring scrollbar drag';
+        renderer.resetLive(); renderer.renderThread('follow'); await frame();
+        return {before, after:metrics()};
+    }""")
+    page.mouse.up()
+    # Native thumb movement varies by browser; holding the scrollbar must pause
+    # following even before its scroll offset changes.
+    assert drag['after']['bottom'] > drag['before']['bottom'], drag
+    assert drag['before']['top'] == drag['after']['top'], drag
+
+    resumed = page.evaluate(r"""async () => {
+        thread.scrollTop = thread.scrollHeight; await frame();
+        state.live.text += '\n\nFollow resumed'; renderer.scheduleThread(); await frame();
+        return metrics();
+    }""")
+    assert abs(resumed['bottom']) <= 1, resumed
+
     paused = page.evaluate(r"""async () => {
         // Simulate scrolling after scheduling but before the frame is rendered.
         renderer.scheduleThread();
@@ -129,5 +179,17 @@ with sync_playwright() as pw:
     assert overflow['before']['width'] == overflow['after']['width'], overflow
     assert overflow['sameX'], overflow
     assert abs(overflow['after']['bottom']) <= 1, overflow
-    print(json.dumps({"firstToken":first,"readerPosition":paused,"completion":settled,"markdown":markdown,"scrollbarWidthStable":overflow["sameX"],"result":"PASS"}))
+    shrink = page.evaluate(r"""async () => {
+        thread.scrollTop = 120; await frame();
+        state.messages = [];
+        state.live.text = 'Short snapshot';
+        renderer.resetLive(); renderer.renderThread('follow'); await frame();
+        const before = metrics();
+        state.live.text += '\n\nNew paragraph.\n\n'.repeat(40);
+        renderer.scheduleThread(); await frame();
+        return {before,after:metrics()};
+    }""")
+    assert shrink['before']['top'] == 0, shrink
+    assert shrink['after']['top'] == 0, shrink
+    print(json.dumps({"firstToken":first,"readerPosition":paused,"completion":settled,"markdown":markdown,"scrollbarWidthStable":overflow["sameX"],"slightUp":slight,"wheel":wheel,"scrollbarDrag":drag,"result":"PASS"}))
     browser.close()

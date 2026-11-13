@@ -13,6 +13,7 @@ import { sanitizeMarkdown } from "../previews/previews.js";
 import { renderFrameworkPresentation } from "./presentation.js";
 import { linkCitations } from "./cell-citations.js";
 import { runtime } from "../runtime.js";
+import { getThreadScroll } from "./thread-scroll.js";
 
 const fileById = (id) => selectors.fileById(id);
 const latest = (file) => selectors.latest(file);
@@ -337,6 +338,7 @@ function patchLiveChildren(parent, next) {
 let renderScheduled = false;
 let scheduledScroll = false;
 let liveArticle = null;
+let threadScroll = null;
 let retainedLive = null;
 function scheduleThread(scroll = 'follow') {
   // A later request in the same frame must not lose its scroll intent.
@@ -438,13 +440,8 @@ function pendingMergesBadgeHTML() {
 }
 
 function renderThread(scroll = false) {
-  // Measure BEFORE changing the DOM: a large delta can move the bottom far away.
-  const previousTop = threadEl.scrollTop;
-  const follow = scroll === true || scroll === 'follow'
-    && threadEl.scrollHeight - previousTop - threadEl.clientHeight <= 48;
-  const restoreScroll = () => {
-    threadEl.scrollTop = follow ? threadEl.scrollHeight : previousTop;
-  };
+  threadScroll ||= getThreadScroll(threadEl);
+  const restoreScroll = threadScroll.capture(scroll);
   const messages = state.messages;
   const showLive = state.streaming || retainedLive === state.live;
   if (!messages.length && !showLive) {
@@ -455,6 +452,7 @@ function renderThread(scroll = false) {
         <div><div class="empty-mark">${icon('spark', 17)}</div><p class="empty-title">还没有消息</p></div>
       </div>`;
     liveArticle = null;
+    threadScroll.reset();
     renderTraceHitl();
     void hydrateReports(threadEl);
     return;

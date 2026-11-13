@@ -69,7 +69,7 @@ async function send() {
     if (state.agentTransport !== 'copilotkit' || !runtime.pilot) {
       state.streaming = false;
       syncStop();
-      renderThread(true);
+      renderThread('follow');
       toast('CopilotKit 试点未就绪，请检查构建或关闭试点参数');
       return;
     }
@@ -78,7 +78,7 @@ async function send() {
     } catch (error) {
       state.streaming = false;
       syncStop();
-      renderThread(true);
+      renderThread('follow');
       toast(error.message || '发送失败');
     }
     return;
@@ -97,7 +97,7 @@ async function send() {
   } catch (error) {
     state.streaming = false;
     syncStop();
-    renderThread(true);
+    renderThread('follow');
     toast(error.message || '发送失败');
   }
 }
