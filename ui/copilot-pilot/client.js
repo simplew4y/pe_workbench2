@@ -211,7 +211,7 @@ export class CopilotPilotClient {
         state.streaming = true;
         state.live = { text: "", tools: [], startedAt: Date.now() };
         runtime.syncStop?.();
-        renderThread(true);
+        renderThread('follow');
       },
       onTextMessageStartEvent: () => {
         if (!this.#acceptStreamEvent()) return;
@@ -530,7 +530,7 @@ export class CopilotPilotClient {
       this.awaitingReconnect = false;
       state.streaming = false;
       runtime.syncStop?.();
-      renderThread(true);
+      renderThread('follow');
     }
   }
 

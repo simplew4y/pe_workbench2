@@ -1,3 +1,4 @@
+import { getThreadScroll } from "../chat/thread-scroll.js";
 /**
  * Chat-side HITL for the model trace: one judgment, then one confirmation.
  *
@@ -239,7 +240,7 @@ function mount(el, { reveal = false } = {}) {
   const thread = threadEl;
   if (!thread) return;
   const wasShown = el.isConnected && !el.hidden;
-  const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 96;
+  const restoreScroll = getThreadScroll(thread).capture(reveal ? true : 'follow');
   let inner = thread.querySelector(".thread-inner");
   if (!inner) {
     inner = document.createElement("div");
@@ -250,11 +251,8 @@ function mount(el, { reveal = false } = {}) {
   if (empty) empty.hidden = true;
   el.hidden = false;
   if (el.parentElement !== inner || inner.lastElementChild !== el) inner.appendChild(el);
-  // Follow the number, not the scrollbar: only pull the view down when the
-  // reader is already at the end of the conversation (or on first load).
-  if (reveal || !wasShown && (nearBottom || thread.scrollTop <= 0)) {
-    thread.scrollTop = thread.scrollHeight;
-  }
+  // Automatic trace updates share the transcript's paused/following state.
+  if (reveal || !wasShown) restoreScroll();
 }
 
 function hide() {

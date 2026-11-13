@@ -458,7 +458,7 @@ function handleServerEvent(ev) {
       renderSessions();
       renderAllChrome();
       runtime.resetLive?.();
-      renderThread(true);
+      renderThread('follow');
       window.NextActions?.refresh?.();
       break;
     case 'run.started':
@@ -466,7 +466,7 @@ function handleServerEvent(ev) {
       state.streaming = true;
       syncStop();
       window.NextActions?.refresh?.();
-      renderThread(true);
+      renderThread('follow');
       break;
     case 'assistant.delta':
       state.live.text += ev.delta || '';
