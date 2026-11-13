@@ -112,6 +112,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         const errors = findings.filter(item => item.severity === 'error' && item.rule !== 'incomplete');
         const incomplete = findings.some(item => item.rule === 'incomplete');
         const unverified = findings.filter(item => item.rule === 'unverified_locator' || item.rule === 'orphaned_number');
+        const facingAnswer = '界面把最后一次工具调用之后的文字当作回答，此前的文字放进过程。先完成需要的修改，再写出直接回答用户原问题的完整回答。回答用文件名指代本轮生成的报告或用户上传的材料。';
         let prompt;
         const targetErrors = errors.filter(item => item.code === 'G1' || item.code === 'G2');
         if (targetErrors.length && correctionCount < 1) {
@@ -119,15 +120,15 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           continuationPrefix = "";
           const knownTarget = contextModelTarget(lintContext);
           const targetHint = knownTarget !== null ? `本会话/状态已有模型目标价 ${knownTarget}；` : '';
-          prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）与 westock_query 现价重写首句，格式“模型目标价 <值> vs 现价 <值>，空间 ≈ <X>%”；G1/G2 只是缺口 ID，禁止写成单元格，禁止用“没有独立目标价单元格/先纠正前提/无法精确回答”挡掉；券商目标价只作对照。不要说明修正过程。`;
+          prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）与 westock_query 现价重写首句，格式“模型目标价 <值> vs 现价 <值>，空间 ≈ <X>%”；G1/G2 只是缺口 ID，禁止写成单元格，禁止用“没有独立目标价单元格/先纠正前提/无法精确回答”挡掉；券商目标价只作对照。${facingAnswer}`;
         } else if (unverified.length && correctionCount < 1) {
           correctionCount++;
           continuationPrefix = "";
-          prompt = `以下单元格引用没有本轮工具 citations 支撑：\n${unverified.map(item => `${item.excerpt}`).join('\n')}\n删除无效坐标，或标明“未核验”。若该数字没有其他出处，同时删除/替换该数字为登记中的当前值，或标明未核验。不得只删坐标后留下失去唯一出处的裸数字。`;
+          prompt = `以下单元格引用没有本轮工具 citations 支撑：\n${unverified.map(item => `${item.excerpt}`).join('\n')}\n在面向用户的回答里删除这些无效坐标，或在坐标旁标明“未核验”。若该数字没有其他出处，同时删除/替换该数字为登记中的当前值，或标明未核验。不得只删坐标后留下失去唯一出处的裸数字。\n${facingAnswer}`;
         } else if (errors.length && correctionCount < 1) {
           correctionCount++;
           continuationPrefix = "";
-          prompt = `请调用所需工具（数值用 calc，单位换算用 unit_convert，负向依赖用 workbook_trace mode=path，自查先 transcript_search 并读台账）核验以下问题，并给出修正后的完整回答，不要说明修正过程：\n${errors.map(item => `${item.message}：${item.excerpt}；应为 ${item.expected}`).join('\n')}`;
+          prompt = `请调用所需工具（数值用 calc，单位换算用 unit_convert，负向依赖用 workbook_trace mode=path，自查先 transcript_search 并读台账）核验以下问题，并给出修正后的完整回答：\n${errors.map(item => `${item.message}：${item.excerpt}；应为 ${item.expected}`).join('\n')}\n${facingAnswer}`;
         } else if (incomplete && continuationCount < 1) {
           continuationCount++;
           continuationPrefix = answer;
