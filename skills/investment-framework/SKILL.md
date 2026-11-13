@@ -169,7 +169,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 4. 人工再查三件事：**最大驱动是否在 `attribution` 里？有没有把不进入公式的 A 写成目标价变化原因？报告有没有把不同方法写成一条目标价序列？**
    - **数字自查（十倍错）硬规则**：先 `transcript_search`（同时返回台账 `ledgerMatches`）→ 列出候选人（可空，写「未发现候选人」）→ 金额逐条 `unit_convert`/`calc`（百万元 ÷ 100 = 亿元）→ 输出 `角色 | 主张 | 应为 | 依据` 表。未检索不得写「全部正确 / 没有十倍错误」；允许「核对 N 条后均与单元格一致」。用户口述「写成了/应为/有人写成」先记 `ledger_record kind=claim`，确认后 `kind=correction`。
 5. `stage` 设为 `draft` 或 `reviewed`。`reviewed` 要求每个 active 观点都有失效条件和反证。
-6. 回复给结论摘要 + 两个路径（报告、状态），不要逐字贴报告。
+6. 回复给结论摘要和报告名称，可提示在右侧「产出」中查看。用户明确索要文件系统路径时再提供。
 
 ## 补建状态（已有报告但没有 analysis-state.json）
 
@@ -210,7 +210,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 - `highlights`: 优先只标 1–2 处（通常 `verdict` + 最关键的一条 `R*`），最多四个去重 ID；只引用已有状态记录、verdict 或 review_items，不得另塞文本、数字或 HTML。卡片渲染时会把对应那一两句标成红色并附“关键判断 / 需复核”标签，不能用颜色独自表达方向。
 - 敏感性、进入跟踪的失效条件、估值依据分别直接读取 `sensitivities`、`falsifiers`、`valuations`，不在 presentation 另抄数字。
 
-回复与报告执行摘要严格依次：**结论 → 需人工复核 → 核心驱动 → 敏感性 → 进入跟踪的失效条件 → 估值依据 → 报告链接**。结论与复核优先控制在首屏，摘要约 250–400 中文字符；细节留报告。删掉“已完成/已充分掌握”等自述、对象计数、重复交付说明和推销尾句。报告全文默认折叠。不要另用行内 style 标红；若 Markdown 里需要强调，必须写成 HTML：`<span class="hl-decision">关键判断：……</span>` 或 `<span class="hl-review">需复核：……</span>`（合计不超过两处，优先一处结论句），禁止把 `hl-decision` / `hl-review` 当纯文本前缀。优先依赖 presentation.highlights，由结论卡自动标红。
+回复与报告执行摘要严格依次：**结论 → 需人工复核 → 核心驱动 → 敏感性 → 进入跟踪的失效条件 → 估值依据**。结论与复核优先控制在首屏，摘要约 250–400 中文字符；细节留报告。删掉“已完成/已充分掌握”等自述、对象计数、重复交付说明和推销尾句。报告全文默认折叠。不要另用行内 style 标红；若 Markdown 里需要强调，必须写成 HTML：`<span class="hl-decision">关键判断：……</span>` 或 `<span class="hl-review">需复核：……</span>`（合计不超过两处，优先一处结论句），禁止把 `hl-decision` / `hl-review` 当纯文本前缀。优先依赖 presentation.highlights，由结论卡自动标红。
 
 失效条件必须区分已确认触发、单期预警、接近阈值、数据不足。多期规则填写 `required_periods`（正整数）与 `observations: [{period: "2026Q1", value: -1}]`；单一观察值或重复同一期不能证明连续多期触发。无法确认连续期间和完整复合条件时保持 warning/unknown，不能写 triggered。warnings 含原因码，须按根因写复核项，不得把基线缺失解释成已核实。
 

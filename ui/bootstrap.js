@@ -26,7 +26,7 @@ import {
 import { initTraceHitl, renderTraceHitl } from './trace/hitl.js';
 import { closeStreams, openAgentStream, openGlobalStream } from './events/streams.js';
 import {
-  renderThread, scheduleThread, syncLiveTicker, resetLive, clearCaches, mdToHtml,
+  renderThread, scheduleThread, syncLiveTicker, retainLiveUntilSnapshot, resetLive, clearCaches, mdToHtml,
 } from './chat/renderer.js';
 import {
   renderAttachments, syncReferenceButton, syncComposer, autosize, addFiles, send,
@@ -505,6 +505,7 @@ function handleServerEvent(ev) {
       break;
     }
     case 'run.settled':
+      retainLiveUntilSnapshot();
       state.streaming = false;
       syncStop();
       window.NextActions?.refresh?.();

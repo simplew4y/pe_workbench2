@@ -124,12 +124,21 @@ with sync_playwright() as pw:
         return {before, after:metrics()};
     }""")
     assert paused['after']['top'] == paused['before']['top'], paused
-    settled = page.evaluate(r"""() => {
+    settled = page.evaluate(r"""async () => {
+        thread.scrollTop = 1300;
         const before = metrics();
+        state.live.text += '\n\nFinal delta';
+        renderer.scheduleThread();
+        renderer.retainLiveUntilSnapshot();
+        state.streaming = false;
+        await frame();
+        const pending = metrics();
         state.messages.push({role:'assistant',text:state.live.text});
-        state.streaming = false; renderer.resetLive(); renderer.renderThread('follow');
-        return {before,after:metrics()};
+        renderer.resetLive(); renderer.renderThread('follow');
+        return {before,pending,after:metrics()};
     }""")
+    assert settled['pending']['live'] is not None, settled
+    assert settled['pending']['top'] == settled['before']['top'], settled
     assert settled['before']['top'] == settled['after']['top'], settled
 
     markdown = page.evaluate(r"""async () => {

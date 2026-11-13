@@ -27,6 +27,78 @@ function locatorRegExp(flags = "g") {
 }
 
 const CELL_PART = new RegExp(`^(${CELL})(?::(${CELL}))?$`);
+const COORD_PART = /^([A-Z]{1,3})(\d{1,7})$/;
+// A traced area stops at 200 cells. A larger rectangle cannot have been fully returned.
+const RANGE_CELL_CAP = 200;
+
+function columnIndex(letters) {
+  let index = 0;
+  for (const char of letters) index = index * 26 + (char.charCodeAt(0) - 64);
+  return index;
+}
+
+function columnLetters(index) {
+  let current = index;
+  let letters = "";
+  while (current > 0) {
+    const remainder = (current - 1) % 26;
+    letters = String.fromCharCode(65 + remainder) + letters;
+    current = Math.floor((current - 1) / 26);
+  }
+  return letters;
+}
+
+function parseCoord(coord) {
+  const match = String(coord || "").match(COORD_PART);
+  if (!match) return null;
+  return { col: columnIndex(match[1]), row: Number(match[2]), coord: match[1] + match[2] };
+}
+
+/**
+ * A range token is verified when this turn already cited every cell inside it.
+ * The returned citation keeps the anchor cell's material and version, but its
+ * locator stays the range so the preview opens the written start cell.
+ */
+function coveredRangeCitation(locator, lookup) {
+  if (!lookup?.get) return null;
+  const bang = locator.indexOf("!");
+  if (bang <= 0) return null;
+  const sheet = locator.slice(0, bang);
+  const body = locator.slice(bang + 1);
+  const colon = body.indexOf(":");
+  if (colon <= 0) return null;
+  const start = parseCoord(body.slice(0, colon));
+  const end = parseCoord(body.slice(colon + 1));
+  if (!start || !end) return null;
+  const rowLo = Math.min(start.row, end.row);
+  const rowHi = Math.max(start.row, end.row);
+  const colLo = Math.min(start.col, end.col);
+  const colHi = Math.max(start.col, end.col);
+  const count = (rowHi - rowLo + 1) * (colHi - colLo + 1);
+  if (count < 2 || count > RANGE_CELL_CAP) return null;
+  for (let row = rowLo; row <= rowHi; row += 1) {
+    for (let col = colLo; col <= colHi; col += 1) {
+      const key = `${sheet}!${columnLetters(col)}${row}`.toLowerCase();
+      if (!lookup.get(key)) return null;
+    }
+  }
+  const anchor = lookup.get(`${sheet}!${start.coord}`.toLowerCase());
+  if (!anchor?.materialId) return null;
+  const version = Number(anchor.version);
+  return {
+    materialId: anchor.materialId,
+    ...(Number.isInteger(version) && version >= 1 ? { version } : {}),
+    locator,
+  };
+}
+
+function resolveNormalized(token, normalized, lookup) {
+  const exact = lookup?.get?.(normalized.toLowerCase());
+  if (exact) return { raw: token, locator: normalized, citation: exact };
+  const covered = coveredRangeCitation(normalized, lookup);
+  if (covered) return { raw: token, locator: normalized, citation: covered };
+  return null;
+}
 
 /** Strip quotes and absolute markers; return a canonical display locator. */
 export function normalizeLocator(raw) {
@@ -81,9 +153,8 @@ export function resolveLocatorToken(raw, lookup = null) {
   const token = match[0];
   let normalized = normalizeLocator(token);
   if (!normalized) return null;
-  if (lookup?.has?.(normalized.toLowerCase())) {
-    return { raw: token, locator: normalized, citation: lookup.get(normalized.toLowerCase()) };
-  }
+  const exact = resolveNormalized(token, normalized, lookup);
+  if (exact) return exact;
   // A long prose prefix ("revenue in Discount PE!H33") is not part of the
   // sheet name. Retry with the trailing two words when the full key is
   // unknown; this keeps the unverified marker tight without guessing a cell.
@@ -94,10 +165,8 @@ export function resolveLocatorToken(raw, lookup = null) {
     const shortSheet = words.slice(-2).join(" ");
     const shortLocator = `${shortSheet}${normalized.slice(bang)}`;
     const shortRaw = `${shortSheet}${token.slice(token.indexOf("!"))}`;
-    if (lookup?.has?.(shortLocator.toLowerCase())) {
-      return { raw: shortRaw, locator: shortLocator, citation: lookup.get(shortLocator.toLowerCase()) };
-    }
-    return { raw: shortRaw, locator: shortLocator, citation: null };
+    return resolveNormalized(shortRaw, shortLocator, lookup)
+      || { raw: shortRaw, locator: shortLocator, citation: null };
   }
   return { raw: token, locator: normalized, citation: null };
 }

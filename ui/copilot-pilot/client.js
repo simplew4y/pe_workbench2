@@ -11,7 +11,7 @@ import { CopilotKitCore } from "@copilotkit/core";
 
 import { state } from "../state/store.js";
 import { runtime } from "../runtime.js";
-import { renderThread, scheduleThread } from "../chat/renderer.js";
+import { renderThread, retainLiveUntilSnapshot, scheduleThread } from "../chat/renderer.js";
 import { toast } from "../shared/toast.js";
 import { api } from "../api/client.js";
 import { attachAgentSubscriptions, attachCoreSubscriptions } from "./subscriptions.js";
@@ -737,6 +737,7 @@ export class CopilotPilotClient {
     this.#resetReconnect();
     this.acceptEvents = false;
     this.activeRunId = null;
+    retainLiveUntilSnapshot();
     state.streaming = false;
     runtime.syncStop?.();
     // Keep the live DOM until the snapshot (or fallback) replaces it. Removing

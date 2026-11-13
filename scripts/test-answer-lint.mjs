@@ -66,6 +66,12 @@ assert.deepEqual(locatorFindings('收入见 Model!Z99（未核验）。', [cite(
 // L3: quoted sheets and ranges normalise to the same citation.
 assert.deepEqual(locatorFindings("收入见 'Discount PE'!H33。", [cite('Discount PE!H33')]), []);
 assert.deepEqual(locatorFindings('区域 Model!A1:B2。', [cite('Model!A1:B2')]), []);
+// A range is verified when every cell inside it was returned, and stays a warning when one is missing.
+const rectangle = ['A1', 'B1', 'A2', 'B2'].map((coord) => cite(`Model!${coord}`));
+assert.deepEqual(locatorFindings('区域 Model!A1:B2。', rectangle), []);
+assert.equal(locatorFindings('区域 Model!A1:B2。', rectangle.slice(0, 3)).length, 1);
+// Bare coordinates are not locators, so a shorthand list does not raise L2.
+assert.deepEqual(locatorFindings('见 Discount PE!N35、N36。', [cite('Discount PE!N35')]), []);
 // L4: prose without a coordinate never reports; missing citations context keeps legacy behavior.
 assert.deepEqual(locatorFindings('收入增长 10%。', []), []);
 assert.deepEqual(locatorFindings('收入见 Model!A1。', undefined), []);

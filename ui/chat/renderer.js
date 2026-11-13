@@ -339,6 +339,7 @@ let renderScheduled = false;
 let scheduledScroll = false;
 let liveArticle = null;
 let threadScroll = null;
+let retainedLive = null;
 function scheduleThread(scroll = 'follow') {
   // A later request in the same frame must not lose its scroll intent.
   if (scroll === true || scheduledScroll !== true && scroll === 'follow') scheduledScroll = scroll;
@@ -442,7 +443,8 @@ function renderThread(scroll = false) {
   threadScroll ||= getThreadScroll(threadEl);
   const restoreScroll = threadScroll.capture(scroll);
   const messages = state.messages;
-  if (!messages.length && !state.streaming) {
+  const showLive = state.streaming || retainedLive === state.live;
+  if (!messages.length && !showLive) {
     const shelf = pendingMergesBadgeHTML() + approvalsShelfHTML();
     threadEl.innerHTML = shelf
       ? `<div class="thread-inner">${shelf}</div>`
@@ -455,7 +457,7 @@ function renderThread(scroll = false) {
     void hydrateReports(threadEl);
     return;
   }
-  if (state.streaming) {
+  if (showLive) {
     if (!liveArticle || !threadEl.contains(liveArticle)) {
       threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${messages.map(messageHTML).join('')}${liveMessageHTML()}</div>`;
       liveArticle = threadEl.querySelector('#liveMsg');
@@ -478,8 +480,13 @@ function renderThread(scroll = false) {
 /* ---------- right panel: inputs / outputs / plans ---------- */
 
 
+export function retainLiveUntilSnapshot() {
+  retainedLive = state.live;
+}
+
 export function resetLive() {
   liveArticle = null;
+  retainedLive = null;
 }
 
 export function clearCaches() {

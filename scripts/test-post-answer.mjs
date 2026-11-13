@@ -322,6 +322,8 @@ assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'or
 assert.equal(locatorEntry.answerLint.correctionCount, 1, 'orphaned numeric answer auto-corrects at most once');
 assert.match(locatorPrompts[1], /未核验/);
 assert.match(locatorPrompts[1], /同时删除\/替换该数字/);
+assert.match(locatorPrompts[1], /最后一次工具调用之后的文字当作回答/);
+assert.match(locatorPrompts[1], /直接回答用户原问题/);
 assert(!locatorPrompts[1].includes('不要改动任何数字'));
 // A verified locator is not corrected.
 let verifiedCalls = 0;
