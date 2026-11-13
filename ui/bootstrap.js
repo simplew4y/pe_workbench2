@@ -568,7 +568,7 @@ async function refreshSnapshot({
     renderSessions();
     renderAllChrome();
     runtime.resetLive?.();
-    renderThread(true);
+    renderThread('follow');
     return snap;
   } catch (error) {
     runtime.resetLive?.();

@@ -739,7 +739,8 @@ export class CopilotPilotClient {
     this.activeRunId = null;
     state.streaming = false;
     runtime.syncStop?.();
-    renderThread(true);
+    // Keep the live DOM until the snapshot (or fallback) replaces it. Removing
+    // it now clamps scrollTop and loses the reader's position inside the reply.
     if (error) {
       this.lastError = error.message || String(error);
       toast(`运行失败：${this.lastError}`);
@@ -769,7 +770,7 @@ export class CopilotPilotClient {
       time: nowHM(),
     });
     state.live = { text: "", tools: [], startedAt: 0 };
-    renderThread(true);
+    renderThread('follow');
   }
 
   #disposeCore() {

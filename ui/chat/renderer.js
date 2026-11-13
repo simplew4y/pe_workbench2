@@ -308,12 +308,46 @@ function messageHTML(m) {
     </article>`;
 }
 
+// Keep matching nodes (including text nodes) alive while Markdown grows.
+// Only structural changes, such as a paragraph becoming a list, replace nodes.
+function patchLiveChildren(parent, next) {
+  const wanted = Array.from(next.childNodes);
+  for (let i = 0; i < wanted.length; i += 1) {
+    const source = wanted[i];
+    const current = parent.childNodes[i];
+    if (!current) {
+      parent.appendChild(source.cloneNode(true));
+    } else if (current.nodeType !== source.nodeType || current.nodeName !== source.nodeName) {
+      current.replaceWith(source.cloneNode(true));
+    } else if (current.nodeType === Node.ELEMENT_NODE) {
+      for (const attr of Array.from(current.attributes)) {
+        if (!source.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+      }
+      for (const attr of Array.from(source.attributes)) {
+        if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+      }
+      patchLiveChildren(current, source);
+    } else if (current.nodeValue !== source.nodeValue) {
+      current.nodeValue = source.nodeValue;
+    }
+  }
+  while (parent.childNodes.length > wanted.length) parent.lastChild.remove();
+}
+
 let renderScheduled = false;
+let scheduledScroll = false;
 let liveArticle = null;
-function scheduleThread(scroll = true) {
+function scheduleThread(scroll = 'follow') {
+  // A later request in the same frame must not lose its scroll intent.
+  if (scroll === true || scheduledScroll !== true && scroll === 'follow') scheduledScroll = scroll;
   if (renderScheduled) return;
   renderScheduled = true;
-  requestAnimationFrame(() => { renderScheduled = false; renderThread(scroll); });
+  requestAnimationFrame(() => {
+    const intent = scheduledScroll;
+    renderScheduled = false;
+    scheduledScroll = false;
+    renderThread(intent);
+  });
 }
 
 function citationsFromTools(tools = []) {
@@ -333,7 +367,7 @@ function liveMessageHTML() {
       <span class="msg-avatar">${icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
-        <div class="msg-body md-preview" id="liveBody"${live.text ? '' : ' hidden'}>${live.text ? (citations.length ? linkCitations(liveBody, citations) : liveBody) : ''}</div>
+        <div class="msg-body md-preview" id="liveBody">${live.text ? (citations.length ? linkCitations(liveBody, citations) : liveBody) : ''}</div>
         ${inlineStatus}
         <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
       </div>
@@ -351,11 +385,13 @@ function updateLiveMessage() {
       const markdown = renderMarkdownHTML(live.text, '');
       const citations = citationsFromTools(live.tools);
       const html = citations.length ? linkCitations(markdown, citations) : markdown;
-      if (body.innerHTML !== html) body.innerHTML = html;
-      body.hidden = false;
+      if (body.innerHTML !== html) {
+        const template = document.createElement('template');
+        template.innerHTML = html;
+        patchLiveChildren(body, template.content);
+      }
     } else {
       if (body.innerHTML) body.innerHTML = '';
-      body.hidden = true;
     }
   }
 
@@ -401,6 +437,13 @@ function pendingMergesBadgeHTML() {
 }
 
 function renderThread(scroll = false) {
+  // Measure BEFORE changing the DOM: a large delta can move the bottom far away.
+  const previousTop = threadEl.scrollTop;
+  const follow = scroll === true || scroll === 'follow'
+    && threadEl.scrollHeight - previousTop - threadEl.clientHeight <= 48;
+  const restoreScroll = () => {
+    threadEl.scrollTop = follow ? threadEl.scrollHeight : previousTop;
+  };
   const messages = state.messages;
   if (!messages.length && !state.streaming) {
     const shelf = pendingMergesBadgeHTML() + approvalsShelfHTML();
@@ -424,14 +467,14 @@ function renderThread(scroll = false) {
       updateLiveMessage();
       renderTraceHitl();
     }
-    if (scroll) threadEl.scrollTop = threadEl.scrollHeight;
+    restoreScroll();
     return;
   }
   threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${messages.map(messageHTML).join('')}</div>`;
   liveArticle = null;
   renderTraceHitl();
   void hydrateReports(threadEl);
-  if (scroll) threadEl.scrollTop = threadEl.scrollHeight;
+  restoreScroll();
 }
 
 /* ---------- right panel: inputs / outputs / plans ---------- */
