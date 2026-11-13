@@ -171,7 +171,7 @@ pe session model <session-id> --model deepseek-flash
 ```
 
 - `session send` 走现有的 `POST /api/sessions/:id/messages`（旧版传输），不是 CopilotKit/AG-UI 协议客户端。
-- `session model` 默认使用 `deepseek-flash`；需要推理模型时显式传 `--model deepseek-v4-pro`。
+- `session model` 只接受 `deepseek-flash`。
 - `--file` 会先调用 `POST /api/upload`，再把返回的项目内相对路径作为 attachments。这与 UI 的附件流程一致。
 - AG-UI run 活跃时服务端返回 409 `ag_ui_run_active`；CLI 原样报错。此时应先用 UI 或等待 run 结束。
 - `--wait` 通过轮询 `GET /api/sessions/:id/state` 判断流式结束。

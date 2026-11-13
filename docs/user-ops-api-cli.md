@@ -59,7 +59,7 @@
 | 订阅全局实时事件 | 页面加载后自动建立 SSE | `GET /api/events`（SSE，项目作用域） | **部分可 CLI**。适合 `pe events tail` 或守护进程；一次性命令价值有限，且要处理重连。 |
 | 发送消息（旧版传输） | 输入框 → 发送，或回车 | `POST /api/sessions/:id/messages`，body `{ text, attachments? }`；`attachments` 是项目内相对路径数组 | **部分可 CLI**。纯文本可脚本化；附件需要先上传并解析路径；回复是异步流，CLI 要等 SSE 或轮询 state；AG-UI run 活跃时此接口返回 409。 |
 | 停止生成 | 输入框右侧停止按钮 | `POST /api/sessions/:id/abort`，无 body | **可 CLI**。动作明确、无参数；在 CopilotKit 模式下 UI 实际调用 `/api/copilotkit/agent/pi/stop/:threadId`。 |
-| 切换当前会话模型 | 顶部模型 chip → 选择模型 | `POST /api/sessions/:id/model`，body `{ model }`，只接受 `deepseek-v4-pro` / `deepseek-flash` | **可 CLI**。枚举值清晰；错误会返回 400。 |
+| 切换当前会话模型 | 顶部模型 chip → 选择模型 | `POST /api/sessions/:id/model`，body `{ model }`，只接受 `deepseek-flash` | **可 CLI**。枚举值清晰；错误会返回 400。 |
 | 查看消息里的工具卡 / 附件 / 审批卡 | 会话流内渲染 | 数据来自 `state` / SSE / `GET /api/approvals`；渲染本身无接口 | **不宜 CLI**。这是展示层组合，CLI 更适合直接输出消息与工具结果 JSON。 |
 
 ---
@@ -318,7 +318,7 @@ pe session new
 pe session show <session-id>
 pe session send <session-id> --text <text> [--file <path> ...] [--wait]
 pe session stop <session-id>
-pe session model <session-id> --model deepseek-v4-pro|deepseek-flash
+pe session model <session-id> --model deepseek-flash
 
 pe material list
 pe material show <material-id>

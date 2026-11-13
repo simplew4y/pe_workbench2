@@ -189,6 +189,13 @@ export function createSessionService({
       return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? undefined;
     };
 
+    if (!config.fakeAgent && config.model) {
+      const currentId = session.model?.id;
+      if (!currentId || !config.allowedModels.has(currentId)) {
+        await session.setModel(config.model);
+      }
+    }
+
     entry = {
       id: session.sessionId,
       sessionTools,
@@ -198,7 +205,7 @@ export function createSessionService({
       clients: new Set(),
       toolArgs: new Map(),
       title: session.sessionName || titleFromMessages(session),
-      modelId: config.modelId,
+      modelId: session.model?.id || config.modelId,
       indexModel: config.indexModel,
       modelPayload: config.modelPayload,
       createdAt: new Date().toISOString(),

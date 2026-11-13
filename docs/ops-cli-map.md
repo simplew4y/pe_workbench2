@@ -33,7 +33,7 @@ pe doctor --json                  # 确认服务可达
 | 打开会话、看消息 | `pe session show <session-id>` |
 | 发送消息（可带附件） | `pe session send <session-id> --text "…" [--file path…] [--wait]` |
 | 停止生成 | `pe session stop <session-id>` |
-| 切换会话模型 | `pe session model <session-id> --model <deepseek-flash\|deepseek-v4-pro>`（默认 flash） |
+| 切换会话模型 | `pe session model <session-id> --model deepseek-flash` |
 | 删除/重命名会话 | **无 API / 无 CLI** |
 
 说明：`session send` 走 `POST /api/sessions/:id/messages`，不是 CopilotKit/AG-UI 客户端。

@@ -35,17 +35,18 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
   const storageRoot = path.resolve(env.WORKBENCH_STORAGE_ROOT || root);
   const projectsDir = path.resolve(env.WORKBENCH_PROJECTS_DIR || path.join(storageRoot, "projects"));
   const defaultProjectRoot = path.join(projectsDir, DEFAULT_PROJECT_ID);
-  const deepSeekModels = new Set(["deepseek-v4-pro", "deepseek-flash"]);
+  const deepSeekModels = new Set(["deepseek-flash"]);
   const openRouterModels = (env.PI_OPENROUTER_MODELS || "").split(",").map(id => id.trim()).filter(Boolean);
   if (openRouterModels.some(id => !/^[\w.-]+\/[\w.-]+:free$/.test(id))) {
     throw new Error("PI_OPENROUTER_MODELS requires explicit :free model IDs");
   }
   const modelProvider = openRouterModels.length ? "openrouter" : "deepseek";
-  const modelId = openRouterModels[0] || env.PI_MODEL || "deepseek-flash";
   const allowedModels = openRouterModels.length ? new Set(openRouterModels) : deepSeekModels;
+  const requestedId = openRouterModels[0] || env.PI_MODEL || "deepseek-flash";
+  const modelId = allowedModels.has(requestedId) ? requestedId : ([...allowedModels][0] || "deepseek-flash");
   const resolveModel = id => {
-    if (modelProvider === "deepseek") return getModel("deepseek", id);
     if (!allowedModels.has(id)) return undefined;
+    if (modelProvider === "deepseek") return getModel("deepseek", id);
     return getModel("openrouter", id) ?? {
       ...getModel("openrouter", "openrouter/free"),
       id,

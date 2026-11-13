@@ -38,7 +38,7 @@ AgentSession  ──  pi-agent-core  ──  pi-ai  ──  https://api.deepseek
 ```
 
 - 每个会话一个 `AgentSession`；事件订阅后转成 SSE 广播。
-- 模型：`deepseek-flash`（默认；可在界面里切到 `deepseek-v4-pro`）。
+- 模型：`deepseek-flash`（线上仅允许该模型，不可切到 `deepseek-v4-pro`）。
 - 工具：`read / write / edit / grep / find / ls`，加上自定义 `workbook_query / workbook_trace / validate_state / pdf_read / asr_read / westock_query / anysearch_search / web_fetch / create_tracking`；**没有启用 bash**。
 - 系统提示：Workbench 人设 + 工作空间约定 + 中文/简洁/Markdown（无表格）。
 
@@ -62,7 +62,7 @@ AgentSession  ──  pi-agent-core  ──  pi-ai  ──  https://api.deepseek
 | GET | `/api/sessions/:id/events` | SSE：snapshot / delta / tool / settled |
 | POST | `/api/sessions/:id/messages` | 发送文本 + 附件路径 |
 | POST | `/api/sessions/:id/abort` | 停止当前运行 |
-| POST | `/api/sessions/:id/model` | 切换模型；默认 `deepseek-flash`，可选 `deepseek-v4-pro` |
+| POST | `/api/sessions/:id/model` | 切换模型；只接受 `deepseek-flash` |
 | GET | `/api/materials` | 工作空间里的真实文件 |
 | POST | `/api/upload` | 上传到 `agent-workspace/uploads/` |
 | GET | `/api/file?path=` | 预览/下载工作空间文件 |

@@ -116,14 +116,14 @@ export const session = {
       },
     },
     model: {
-      summary: "切换会话模型（默认 deepseek-flash，可选 deepseek-v4-pro）",
-      usage: "pe session model <session-id> --model <deepseek-flash|deepseek-v4-pro> [--json]",
+      summary: "切换会话模型（仅 deepseek-flash）",
+      usage: "pe session model <session-id> --model deepseek-flash [--json]",
       options: [{ flags: "--model <model>", desc: "目标模型（默认 deepseek-flash）" }],
       async run({ client, options, args }) {
         const id = requireArg(args, 0, "session-id", "pe session model <session-id> --model <model>");
         const model = requireOpt(options, "model", "pe session model <session-id> --model <model>");
-        if (!["deepseek-flash", "deepseek-v4-pro"].includes(model)) {
-          throw new Error("--model 只接受 deepseek-flash 或 deepseek-v4-pro");
+        if (model !== "deepseek-flash") {
+          throw new Error("--model 只接受 deepseek-flash");
         }
         const result = await client.post(`/api/sessions/${encodeURIComponent(id)}/model`, { model });
         emit({}, result, (data) => keyValues([["模型", data.model]]));
