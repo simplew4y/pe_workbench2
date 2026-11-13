@@ -5,7 +5,9 @@ description: 模型问答与追问，核对假设、口径、敏感性、依赖�
 
 # 模型追问
 
-遵循 `skills/investment-framework/SKILL.md`；宿主每轮通过 `lib/turn-context.mjs` 注入相同协议。
+仅复用 `skills/investment-framework/SKILL.md` 中的取数、证据、计算、口径与核验规则，不继承其报告、analysis-state.json 或 framework_commit 交付要求。宿主每轮通过 `lib/turn-context.mjs` 注入问答协议与文档输出规则。
+
+普通问答和追问直接在聊天中完整回答，不自动保存 QA 报告。仅在用户明确要求文档/导出/保存，或正在执行用户已授权的投资框架交付阶段时才生成所需文件。仅仅提及投资框架、分析已有报告、前一轮生成过框架，不构成本轮生成文档的授权；“只在聊天回答/不要文档”优先。明确要求修改已有文档时只修改该文档，不额外生成一份 QA 报告。
 
 - 假设解释：追公式来源，对齐单位、期间，区分区块内同名指标。
 - 敏感性：沿真正输入传播，调用 model_whatif 或明确「局部」范围；派生数调用 calc。

@@ -11,7 +11,7 @@ import { CopilotKitCore } from "@copilotkit/core";
 
 import { state } from "../state/store.js";
 import { runtime } from "../runtime.js";
-import { renderThread, scheduleThread } from "../chat/renderer.js";
+import { renderThread, retainLiveUntilSnapshot, scheduleThread } from "../chat/renderer.js";
 import { toast } from "../shared/toast.js";
 import { api } from "../api/client.js";
 import { attachAgentSubscriptions, attachCoreSubscriptions } from "./subscriptions.js";
@@ -530,7 +530,7 @@ export class CopilotPilotClient {
       this.awaitingReconnect = false;
       state.streaming = false;
       runtime.syncStop?.();
-      renderThread(true);
+      renderThread('follow');
     }
   }
 
@@ -737,9 +737,11 @@ export class CopilotPilotClient {
     this.#resetReconnect();
     this.acceptEvents = false;
     this.activeRunId = null;
+    retainLiveUntilSnapshot();
     state.streaming = false;
     runtime.syncStop?.();
-    renderThread(true);
+    // Keep the live DOM until the snapshot (or fallback) replaces it. Removing
+    // it now clamps scrollTop and loses the reader's position inside the reply.
     if (error) {
       this.lastError = error.message || String(error);
       toast(`运行失败：${this.lastError}`);
@@ -769,7 +771,7 @@ export class CopilotPilotClient {
       time: nowHM(),
     });
     state.live = { text: "", tools: [], startedAt: 0 };
-    renderThread(true);
+    renderThread('follow');
   }
 
   #disposeCore() {
