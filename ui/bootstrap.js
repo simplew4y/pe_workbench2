@@ -27,7 +27,7 @@ import {
 import { initTraceHitl, renderTraceHitl } from './trace/hitl.js';
 import { closeStreams, openAgentStream, openGlobalStream } from './events/streams.js';
 import {
-  renderThread, scheduleThread, syncLiveTicker, retainLiveUntilSnapshot, resetLive, clearCaches, mdToHtml,
+  renderThread, scheduleThread, retainLiveUntilSnapshot, resetLive, clearCaches, mdToHtml,
 } from './chat/renderer.js';
 import {
   renderAttachments, syncReferenceButton, syncComposer, autosize, addFiles, send,
@@ -605,7 +605,6 @@ async function refreshSnapshot({
 
 function syncStop() {
   $('#stopBtn').hidden = !state.streaming;
-  runtime.syncLiveTicker?.();
 }
 
 /* ---------- wiring ---------- */
@@ -908,7 +907,6 @@ Object.assign(runtime, {
   syncReferenceButton,
   mdToHtml,
   loadFoundation,
-  syncLiveTicker,
   syncStop,
   resetLive,
   clearCaches,

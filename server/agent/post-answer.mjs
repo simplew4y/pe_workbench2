@@ -15,7 +15,6 @@ import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 import { activateQueuedTurn, startTurn, saveTurnDelivery } from './turn-delivery.mjs';
 import { sourceSearchGap } from './transcript-search-recovery.mjs';
 import { adoptedCitations, asksHistoricalSource, answerBlocks, answerGaps, blockingFinding, reportedLocatorEvidence, joinContinuation, verifiedPortion, workbookItemCoverage } from './answer-delivery.mjs';
-import { presentUserAnswer } from '../../ui/chat/user-facing-answer.js';
 import { CONTEXT_BUDGET_FAILURE, isContextBudgetError } from '../../lib/context-budget.mjs';
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
@@ -159,7 +158,7 @@ async function generateAnswer(entry, promptText, options, active) {
       const prefix = continuationPrefix ?? '';
       const joined = message.researchContinuation ? delta : joinContinuation(prefix, delta);
       const noProgress = continuationPrefix !== null && joined.trimEnd() === prefix.trimEnd();
-      const answer = presentUserAnswer(joined);
+      const answer = joined.trim();
       // Also support restored/minimal sessions that expose tool messages but no events.
       const scanned = [];
       const messages = entry.session.messages.slice(turnBoundary);
@@ -274,7 +273,7 @@ async function generateAnswer(entry, promptText, options, active) {
       } else {
         return { status: 'completed', text: answer, citations: adopted };
       }
-      const facingAnswer = '界面把最后一次工具调用之后的文字当作回答，此前的文字放进过程。用户还没有看到这份草稿。这段回答直接回答用户原问题，像第一次作答。不要写核验过程，不要逐项交代检查，不要评价上一稿对错，也不要宣布这是改过的一版。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求的具体事项若仍缺证据，请另起一行写“未核验：具体事项”。';
+      const facingAnswer = '直接回答用户原问题，交付一份独立、完整的回答，保留已有依据的结论与解释。若用户主动要求复核旧答，请说明改了什么以及依据。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求的具体事项若仍缺证据，请另起一行写“未核验：具体事项”。';
       let prompt;
       let customType = 'pe_answer_correct';
       const targetErrors = errors.filter(item => item.code === 'G1' || item.code === 'G2');

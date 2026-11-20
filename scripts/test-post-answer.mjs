@@ -225,7 +225,7 @@ assert.equal(hidden.session.messages.filter(m=>m.role==='user').length,1);
 assert.equal(customRequests[0].message.customType,'pe_turn_context');
 assert.equal(customRequests[0].options.deliverAs,'nextTurn');
 assert.equal(customRequests[1].message.customType,'pe_answer_correct');
-assert.match(customRequests[1].message.content, /用户还没有看到这份草稿/);
+assert.match(customRequests[1].message.content, /保留已有依据的结论与解释/);
 assert.equal(customRequests[1].message.content.includes('给出修正后的完整回答'), false);
 assert.equal(customRequests[1].options.triggerTurn,true);
 assert(customRequests.every(r=>r.message.display===false));
@@ -333,7 +333,7 @@ assert.equal(locatorEntry.answerLint.findings.filter((item) => item.rule === 'or
 assert.equal(locatorEntry.answerLint.correctionCount, 1, 'orphaned numeric answer auto-corrects at most once');
 assert.match(locatorPrompts[1], /未核验/);
 assert.match(locatorPrompts[1], /同时删除\/替换该数字/);
-assert.match(locatorPrompts[1], /最后一次工具调用之后的文字当作回答/);
+assert.match(locatorPrompts[1], /交付一份独立、完整的回答/);
 assert.match(locatorPrompts[1], /直接回答用户原问题/);
 assert(!locatorPrompts[1].includes('不要改动任何数字'));
 // A verified locator is not corrected.
@@ -1189,3 +1189,10 @@ await test('two framework cards keep their own pending corrections as of deliver
   await f.deliver(write(b, '第二份框架更新。'));
   assert.deepEqual(flags(), [[a, true], [b, false], [b, true]]);
 });
+
+const correction = '结论保留。此前说法有误，正确的口径是合并收入。后续仍沿用原假设。';
+const correctionSession = { messages: [], async prompt() {
+  this.messages.push({ role: 'assistant', stopReason: 'stop', content: correction });
+} };
+const deliveredCorrection = await runWithPostAnswer({ session: correctionSession }, '请复核上一轮回答');
+assert.equal(deliveredCorrection.text, correction);

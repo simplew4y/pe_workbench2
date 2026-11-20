@@ -156,7 +156,7 @@ export function lastAssistantText(session) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.role !== "assistant") continue;
-    const text = presentUserAnswer(textOfContent(message.content));
+    const text = textOfContent(message.content).trim();
     if (text) return text;
   }
   return "";

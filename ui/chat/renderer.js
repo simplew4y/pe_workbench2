@@ -12,7 +12,6 @@ import { renderToolPresentation } from "../tool-renderers/registry.js";
 import { sanitizeMarkdown } from "../previews/previews.js";
 import { renderFrameworkPresentation } from "./presentation.js";
 import { linkCitations } from "./cell-citations.js";
-import { presentUserAnswer } from "./user-facing-answer.js";
 import { runtime } from "../runtime.js";
 import { getThreadScroll } from "./thread-scroll.js";
 
@@ -122,8 +121,6 @@ const RUNNING_LABELS = {
   bash: '正在执行命令',
 };
 
-const THINKING_LABELS = ['正在思考', '正在分析问题', '正在梳理资料', '正在核对数据', '正在组织结论', '正在撰写报告'];
-
 function toolLabel(name) {
   return TOOL_LABELS[name] || name;
 }
@@ -137,24 +134,7 @@ function liveStatusText() {
   const running = tools.filter(tool => tool.status === 'running');
   if (running.length) return toolRunningLabel(running[running.length - 1].name);
   if (tools.length) return state.live.text ? '正在整理结论' : '正在核对资料';
-  const started = state.live.startedAt || Date.now();
-  return THINKING_LABELS[Math.floor((Date.now() - started) / 5000) % THINKING_LABELS.length];
-}
-
-function updateLiveStatus() {
-  const el = $('#liveStatus');
-  if (!el) return;
-  const text = liveStatusText();
-  if (el.textContent !== text) el.textContent = text;
-}
-
-let liveTicker = null;
-function syncLiveTicker() {
-  if (state.streaming && !liveTicker) liveTicker = setInterval(updateLiveStatus, 3500);
-  if (!state.streaming && liveTicker) {
-    clearInterval(liveTicker);
-    liveTicker = null;
-  }
+  return state.live.text ? '正在输出回答' : '正在生成回答';
 }
 
 const mdCache = new Map();
@@ -295,7 +275,7 @@ function messageHTML(m, { openGroups } = {}) {
   const cancelled = !isUser && m.status === 'cancelled';
   let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
-    : renderMarkdownHTML(delivered || cancelled ? m.text || '' : presentUserAnswer(m.text || ''), '', highlightBudget);
+    : renderMarkdownHTML(m.text || '', '', highlightBudget);
   const citations = m.citations ?? (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
   // The vm-based renderer test intentionally omits the module binding.
   if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations);
@@ -379,7 +359,7 @@ function liveMessageHTML() {
   const hasContent = Boolean(live.text || live.tools.length);
   const status = esc(liveStatusText());
   const citations = citationsFromTools(live.tools);
-  const shownLive = presentUserAnswer(live.text || '');
+  const shownLive = live.text || '';
   const liveBody = shownLive ? renderMarkdownHTML(shownLive, '') : '';
   const inlineStatus = live.tools.length
     ? ''
@@ -402,7 +382,7 @@ function updateLiveMessage() {
 
   const body = liveArticle.querySelector('#liveBody');
   if (body) {
-    const shownLive = presentUserAnswer(live.text || '');
+    const shownLive = live.text || '';
     if (shownLive) {
       const markdown = renderMarkdownHTML(shownLive, '');
       const citations = citationsFromTools(live.tools);
@@ -528,5 +508,5 @@ export function clearCaches() {
 export {
   fileInline, mdInline, mdToHtml, toolLabel, renderMarkdownHTML, toolRowHTML,
   toolGroupHTML, messageHTML, renderThread, scheduleThread, liveMessageHTML,
-  updateLiveMessage, syncLiveTicker,
+  updateLiveMessage,
 };

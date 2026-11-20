@@ -29,7 +29,7 @@ async function run(messages, second, first = text) {
   return {requests,events,final:await result.result()};
 }
 const rejected = await run(pending);
-assert.equal(rejected.requests,4);
+assert.equal(rejected.requests,3);
 assert.doesNotMatch(JSON.stringify(rejected.events),/999%/);
 assert.match(rejected.final.content[0].text,/尚未保存/);
 const repair = await run(pending,[text,...call("review_research","retry").content]);
@@ -73,14 +73,14 @@ for(const messages of [pending,capped]) {
  const result=await answerCase(messages);
  const text=result.message.content.map(p=>p.text).join('\n');
  assert.match(text,/尚未保存/);assert.match(text,/应观察售价/);
- assert.equal(result.requests,2);assert.equal(result.audits,1);
+ assert.equal(result.requests,1);assert.equal(result.audits,1);
  assert.equal(result.message.usage.input,2,'audit tokens must not inflate SDK context usage');
- assert.equal(result.message.researchUsage.input,5,'billing remains recorded separately');
+ assert.equal(result.message.researchUsage.input,3,'billing remains recorded separately');
  assert.equal(result.message.usage.totalTokens,5,'SDK context size is the last writer request, not cumulative billing');
- assert.equal(result.message.researchUsage.totalTokens,12);
+ assert.equal(result.message.researchUsage.totalTokens,7);
 }
 const unsafe=await answerCase(capped,{draft:'无依据的结论已经完全证实',bad:true});
-assert.equal(unsafe.requests,4);assert.doesNotMatch(JSON.stringify(unsafe.events),/无依据的结论已经完全证实/);
+assert.equal(unsafe.requests,3);assert.doesNotMatch(JSON.stringify(unsafe.events),/无依据的结论已经完全证实/);
 assert.match(unsafe.message.content[0].text,/证据不足/);
 const stillCalls=await answerCase(capped,{tool:true});
 assert.equal(stillCalls.requests,2);assert.equal(stillCalls.message.stopReason,'error','noncompliant provider cannot be marked complete');
@@ -102,7 +102,6 @@ for (const initial of [[user], capped]) {
     const transcript = normalizeContext(context).messages;
     requestTools.push(getCurrentTools(transcript).map(t => t.name));
     const prompt = getCurrentSystemPrompt(transcript);
-    // The compact final-synthesis request has its own prompt and sources.
     if (transcript.some(m => m.sections?.limits)) {
       for (const section of ['初始说明', '原始口径', '新的说明']) assert.ok(prompt.includes(section));
     }
@@ -137,13 +136,13 @@ async function scenario(drafts,verdicts) {
 const valid='模型利润率取决于售价、产品组合与成本。若售价下跌而单位成本未同步下降，利润率假设会承压；应观察成交价、成本与产品结构，现有资料不足以确定具体阈值。';
 const outage={ok:false,status:'unavailable',issues:[{check:'audit',reason:'后台证据核验结果不完整，不能据此认定通过'}]};
 const preserved=await scenario([valid],[outage]);
-assert.equal(preserved.calls,2);assert.match(preserved.result.content[0].text,/模型利润率取决于售价/);
+assert.equal(preserved.calls,1);assert.match(preserved.result.content[0].text,/模型利润率取决于售价/);
 assert.doesNotMatch(preserved.result.content[0].text,/核验结果不完整|本轮分析未完成/);
 const progress=await scenario(['我先重新梳理',valid],[{ok:true,issues:[]}]);
 assert.equal(progress.calls,2);assert.equal(progress.audits,1);assert.match(progress.result.content[0].text,/应观察成交价/);
 const badSentence='良率低于62%必然失效。';
 const scoped=await scenario([valid+'\n\n'+badSentence],[{ok:false,issues:[{check:'threshold_provenance',excerpt:badSentence,reason:'缺少阈值推导依据，具体失效门槛无法确定。'}]}]);
-assert.equal(scoped.calls,4);assert.match(scoped.result.content[0].text,/应观察成交价/);assert.doesNotMatch(scoped.result.content[0].text,/62%必然/);
+assert.equal(scoped.calls,3);assert.match(scoped.result.content[0].text,/应观察成交价/);assert.doesNotMatch(scoped.result.content[0].text,/62%必然/);
 const saved=await scenario(['报告已保存。\n\n'+valid],[outage]);
 assert.match(saved.result.content[0].text,/应观察成交价/);assert.doesNotMatch(saved.result.content[0].text,/报告已保存/);
 for(const sentence of ['报告没有成功保存。','我将把报告保存到文件。','不能声称报告已保存。','报告未保存，下面直接回答。']) assert.deepEqual(answerIssues(sentence,{written:false,previousPartial:new Map()}),[],sentence);
@@ -229,6 +228,24 @@ assert.deepEqual(repairLength.messages[0].content, [], 'a truncating repair cann
 assert.deepEqual([repairLength.record.text, repairLength.requests], [second, ['pe_answer_continue']]);
 const tooShort = await managedResearch([reply('length', ''), reply('length', '')]);
 assert.deepEqual([tooShort.record.status, tooShort.record.text, tooShort.requests], ['failed', '', ['pe_answer_continue']]);
+const shortAnswer = '我先分析结果：原模型每股129元，情景每股142元。本轮维持原预测。';
+const short = await scenario([shortAnswer], [allowed]);
+assert.equal(short.calls, 1);
+assert.equal(short.result.content[0].text, shortAnswer);
+
+for (const isError of [false, true]) {
+  let audits = 0;
+  const messages = [user, call('workbook_query', 'past'), {
+    role: 'toolResult', toolCallId: 'past', toolName: 'workbook_query', isError,
+    content: [{ type: 'text', text: '上一轮工具结果' }],
+  }, { role: 'user', content: '你好' }];
+  const guarded = guardResearchDelivery(scriptedProvider([reply('stop', '你好。')]), {
+    audit: async () => { audits++; return allowed; },
+  });
+  assert.equal((await (await guarded({}, { messages }, {})).result()).content[0].text, '你好。');
+  assert.equal(audits, 0, 'past workbook tools must not turn a greeting into research');
+}
+
 const historical = [user, call('workbook_query', 'old'), {
   role: 'toolResult', toolName: 'workbook_query', toolCallId: 'old', isError: false,
   content: [{ type: 'text', text: '旧回合原始工具数据' }],
@@ -253,13 +270,13 @@ const retry = guardResearchDelivery(() => {
 const normalized = () => ({ messages: originalMessages.map(m =>
   m.role === 'custom' ? { role: 'user', content: m.content } : m) });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 4, 'initial and two repair attempts plus final synthesis');
+assert.equal(callsInTurn, 3, 'initial and two targeted repair attempts');
 originalMessages.push({ role: 'custom', customType: 'pe_answer_correct', content: '内部修订' });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 6, 'internal correction does not replenish the two research repairs');
+assert.equal(callsInTurn, 4, 'internal correction does not replenish the two research repairs');
 originalMessages.push({ role: 'user', content: '请重新解读估值模型。' });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 10, 'new actual user turn restores the two repairs');
+assert.equal(callsInTurn, 7, 'new actual user turn restores the two repairs');
 assert.deepEqual([...new Set(auditedQuestions)], [user.content, '请重新解读估值模型。']);
 const failedThenCorrected = [...pending, { role: 'custom', customType: 'pe_answer_correct', content: '再次回答' }];
 const guardedReceipt = guardResearchDelivery(scriptedProvider([reply('stop', valid), reply('stop', valid)]), {
