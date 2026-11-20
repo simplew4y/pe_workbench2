@@ -42,6 +42,14 @@ for (const messages of [[...pending,user],[...pending,call("write","w"),receipt]
   assert.equal(normal.requests,1);
   assert.equal(normal.events[0].type,"start");
 }
+const commitCall = {role:'assistant',content:[{type:'toolCall',name:'framework_commit',id:'framework',
+  arguments:{framework_id:'main',expected_revision:1}}]};
+const published = {role:'toolResult',toolCallId:'framework',toolName:'framework_commit',isError:false,content:[],
+  details:{framework_id:'main',revision:2,status:'pending',framework:{framework_id:'main',revision:2,status:'published'}}};
+const deliveredReport={type:'text',text:'报告已保存。核心判断仍依赖毛利率假设。'};
+assert.equal((await run([user,commitCall,published],undefined,deliveredReport)).requests,1);
+const olderRevision={...published,details:{...published.details,framework:{framework_id:'main',revision:1,status:'published'}}};
+assert.doesNotMatch((await run([user,commitCall,olderRevision],undefined,deliveredReport)).final.content[0].text,/报告已保存/);
 console.log("PASS failed research delivery: no rejected draft in stream/history, bounded recovery attempts, tool calls preserved, turn reset and successful receipt");
 
 const state = {written:false,previousPartial:new Map([["exports/analysis.md","该文件为部分核验记录"]])};
@@ -122,14 +130,14 @@ for (const initial of [[user], capped]) {
   assert.equal(JSON.stringify(messages), original);
 }
 
-async function scenario(drafts,verdicts) {
+async function scenario(drafts,verdicts,question=user) {
  let calls=0,audits=0;
  const provider=async()=>{
   const text=drafts[Math.min(calls++,drafts.length-1)];
   const message={role:'assistant',content:[{type:'text',text}],stopReason:'stop'};
   const stream=createAssistantMessageEventStream();stream.push({type:'done',reason:'stop',message});stream.end();return stream;
  };
- const stream=await guardResearchDelivery(provider,{audit:async()=>verdicts[Math.min(audits++,verdicts.length-1)]})({}, {messages:[user]},{});
+ const stream=await guardResearchDelivery(provider,{audit:async()=>verdicts[Math.min(audits++,verdicts.length-1)]})({}, {messages:[question]},{});
  for await(const e of stream){}
  return {calls,audits,result:await stream.result()};
 }
@@ -140,6 +148,13 @@ assert.equal(preserved.calls,1);assert.match(preserved.result.content[0].text,/�
 assert.doesNotMatch(preserved.result.content[0].text,/核验结果不完整|本轮分析未完成/);
 const progress=await scenario(['我先重新梳理',valid],[{ok:true,issues:[]}]);
 assert.equal(progress.calls,2);assert.equal(progress.audits,1);assert.match(progress.result.content[0].text,/应观察成交价/);
+const clarification = '你倾向哪个方向？\n\nA. 复现原表目标价。\nB. 追踪最影响估值的经营假设。';
+const clarify = await scenario([clarification], [{ok:true,issues:[]}], {role:'user',content:'这个模型怎么看？'});
+assert.equal(clarify.calls, 1);
+assert.equal(clarify.result.content[0].text, clarification);
+const handoff = await scenario(['如果你希望，我可以再分析。', valid], [{ok:true,issues:[]}]);
+assert.equal(handoff.calls, 2);
+assert.equal(handoff.result.content[0].text, valid);
 const badSentence='良率低于62%必然失效。';
 const scoped=await scenario([valid+'\n\n'+badSentence],[{ok:false,issues:[{check:'threshold_provenance',excerpt:badSentence,reason:'缺少阈值推导依据，具体失效门槛无法确定。'}]}]);
 assert.equal(scoped.calls,3);assert.match(scoped.result.content[0].text,/应观察成交价/);assert.doesNotMatch(scoped.result.content[0].text,/62%必然/);

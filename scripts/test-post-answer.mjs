@@ -1196,3 +1196,22 @@ const correctionSession = { messages: [], async prompt() {
 } };
 const deliveredCorrection = await runWithPostAnswer({ session: correctionSession }, '请说明更正后的口径');
 assert.equal(deliveredCorrection.text, correction);
+
+const choicePrompts = [];
+const choiceContext = [];
+const choiceSession = { messages: [],
+  async sendCustomMessage(message) { choiceContext.push(message.content); },
+  async prompt(text) {
+    choicePrompts.push(text);
+    this.messages.push({ role: 'user', content: text });
+    this.messages.push({ role: 'assistant', stopReason: 'stop', content: choicePrompts.length === 1
+      ? '你想先弄清哪件事？\n\nA. 查现价。\nB. 解释模型目标价的公式。'
+      : '原表使用预测盈利乘以目标倍数，并折现到估值日。' });
+  },
+};
+const choiceEntry = {session:choiceSession};
+assert.equal((await runWithPostAnswer(choiceEntry, '这个模型怎么看？')).status,'completed');
+assert.equal((await runWithPostAnswer(choiceEntry, 'B')).status,'completed');
+assert.equal(choicePrompts[1], '解释模型目标价的公式。');
+assert.match(choiceContext.at(-1), /workbook_trace/);
+assert.doesNotMatch(choiceContext.at(-1), /westock_query/);

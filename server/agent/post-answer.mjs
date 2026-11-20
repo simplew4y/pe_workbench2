@@ -12,7 +12,8 @@ import { frameworkForTurn, textOfContent } from './snapshot.mjs';
 import { indexJson, locateChatTopics, recentTopicDialogue } from './topic-locator.mjs';
 import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 
-import { activateQueuedTurn, startTurn, saveTurnDelivery } from './turn-delivery.mjs';
+import { resolveResearchChoice } from '../../lib/research-clarification.mjs';
+import { activateQueuedTurn, startTurn, saveTurnDelivery, turnTimeline } from './turn-delivery.mjs';
 import { sourceSearchGap } from './transcript-search-recovery.mjs';
 import { adoptedCitations, asksHistoricalSource, answerBlocks, answerGaps, blockingFinding, reportedLocatorEvidence, joinContinuation, verifiedPortion, workbookItemCoverage } from './answer-delivery.mjs';
 import { CONTEXT_BUDGET_FAILURE, isContextBudgetError } from '../../lib/context-budget.mjs';
@@ -87,7 +88,11 @@ function failureReason(error) {
 }
 
 async function generateAnswer(entry, promptText, options, active) {
-  const { turnId, question: text } = active;
+  const { turnId, question } = active;
+  const previous = turnTimeline(entry.session).findLast(item => item.kind === 'delivery')?.record;
+  const selected = previous?.status === 'completed' ? resolveResearchChoice(question, previous.text) : null;
+  const text = selected ?? question;
+  if (selected) promptText = selected + promptText.slice(question.length);
   entry.ctx?.factMemory?.recover();
   let correctionCount = 0;
   let continuationCount = 0;

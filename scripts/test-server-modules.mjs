@@ -91,6 +91,11 @@ await run("systemHint scopes the investment first-screen contract", () => {
   assert.match(hint, /回答结构随问题而定/);
   assert.match(hint, /把核实结果并入原有解释/);
   assert.doesNotMatch(hint, /最后一次工具调用之后/);
+  assert.match(hint, /model-qa/);
+  assert.match(hint, /clarify-research-question/);
+  const clarify = fs.readFileSync(new URL("../skills/clarify-research-question/SKILL.md", import.meta.url), "utf8");
+  assert.match(clarify, /可执行问题/);
+  assert.match(clarify, /只回答选定方向/);
   assert.match(hint, /investment-framework/);
   assert.doesNotMatch(hint, /结论 → 需人工复核/);
   assert.doesNotMatch(hint, /报告链接/);
