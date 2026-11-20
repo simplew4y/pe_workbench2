@@ -3,7 +3,7 @@ import { citationLookup } from '../../lib/citations.mjs';
 import { explicitTurns } from './answer-delivery.mjs';
 import { citationFilenames, locatorKey, maskCitationIds, resolveLocatorToken } from '../../lib/citation-locator.mjs';
 
-const SEARCH = /(?:查询|检索|搜索|查找|查(?:一下)?|\bsearch\b)(?!结果|记录)/i;
+const SEARCH = /(?:查询|检索|搜索|查找|查(?:一下)?|\bsearch\b)(?!结果|记录|(?:命中|匹配)(?:总数|数量|数))/i;
 // Keep punctuation in a quoted search term literal.
 const CLAUSES = /((?:“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'|[^“「『"'。！？；;，,\n])+)([。！？；;，,\n]*)/g;
 const KEYWORD = /^(?:关键词|关键字|字词|短语)?\s*[:：]?\s*/;
@@ -170,7 +170,7 @@ export function resultReports(parts, targets, isSource) {
         unclassified.push(clause);
         continue;
       }
-      const rest = residue.replace(predicate, '').replace(/第\s*[零一二三四五六七八九十百千\d]+\s*轮|(?:检索|查询|搜索)(?:结果)?|关键词|关键字|正式答文|正式回答|记录|结果|该词|历史|均|和|与|以及|本轮|在|中|的/g, '');
+      const rest = residue.replace(predicate, '').replace(/第\s*[零一二三四五六七八九十百千\d]+\s*轮|(?:检索|查询|搜索)(?:结果)?|关键词|关键字|(?:助手)?正式(?:答文|回答)|记录|结果|该词|历史|均|和|与|以及|本轮|在|中|的/g, '');
       const resultOnly = !rest.replace(/[\s`*“”「」『』"'，,：:、。.!！]/g, '');
       if (!resultOnly && !absent) {
         unclassified.push(clause);

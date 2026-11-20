@@ -860,3 +860,115 @@ test('after correction, omissions outside the request can complete only on a fre
       assert.ok(rows.some((r) => r.type === 'pe_source_host_repair' && r.data.after === digest(record.text)));
   }
 });
+
+test('a verified transcript count fulfills only the requested population, even when the counts coincide', async () => {
+  for (const userHit of [true, false]) {
+    const matches = userHit ? [{role: 'user', turn: 1}, formalHit] : [formalHit];
+    const search = observation('transcript_search', 'counted', {query, turn: 1}, {
+      totalMatches: matches.length, matches, coverage: {turns: [1], turnsScanned: 1, truncated: false},
+    });
+    const populations = [
+      ['全部消息（含用户消息）', '全部消息', 'totalMatches', matches.length],
+      ['只计助手正式回答', '助手正式回答', 'assistantMatches', 1],
+    ];
+    for (const [requested, , required] of populations) {
+      const question = history + '请报告' + requested + '共匹配到几条。';
+      const plan = await prepareSourcePlan({question}, {session: {}});
+      for (const [, offered, field, value] of populations) {
+        const heading = '第1轮' + offered + '共匹配到' + value + '条，出处如下：';
+        const text = heading + '\n\n' + report;
+        const result = evaluateSourceDraft({text, question, plan, observations: sourceObservations(plan, [search, search], []),
+          meaning: {claims: [{quote: heading, relation: 'execution', fields: [{name: field, literal: value + '条', value}]}]}});
+        assert.equal(result.status, required === field ? 'completed' : 'partial', question + '\n' + text);
+        assert.equal(result.sourceDelivery.items[0].fieldsDelivered.includes(required), required === field);
+        assert.ok(result.text.includes(original.id));
+      }
+    }
+  }
+});
+
+test('the second attached document has its own request, tool, and verbatim field receipt', async () => {
+  const request = '读取附件 PricingMemo.txt 中的估值依据来源并逐字给出';
+  const question = history + '再就同一份材料做只读估值分析，本轮打开现在的同一格，给出其当前值与版本，并说明只用这一个值能否判断企业估值。同时' + request + '。';
+  const file = 'uploads/1795153342957-PricingMemo.txt';
+  const content = '估值依据来源：蓝色台账 MC-729\n';
+  const attachment = {id: 'memo', name: 'PricingMemo.txt', relPath: file, versions: [{v: 1, sha256: digest(content)}]};
+  const plan = await prepareSourcePlan({question, attachments: [file]}, {session: {},
+    ctx: {store: {findMaterialByPath: (rel) => rel === file ? attachment : null}},
+    readSourceLanguage: async () => ({kind: 'mixed', research: true, items: [{action: 'read', quote: request, fields: ['verbatim source']}]})});
+  assert.ok(plan.items.some(i => i.action === 'readAttachment' && i.filename === attachment.name && i.fields.includes('估值依据来源')));
+  const active = {question, plan, controller: new AbortController()};
+  const tools = ['workbook_query', 'workbook_trace', 'transcript_search', 'read', 'edit'].map(name => ({type: 'function', function: {name}}));
+  const sent = await sourceModelOptions(active, {}, {sourceStage: 'research-draft'}).onPayload({messages: [], tools});
+  assert.deepEqual(sent.tools.map(t => t.function.name), tools.slice(0, 4).map(t => t.function.name));
+  const line = '备忘录中估值依据来源为：蓝色台账 MC-729。';
+  const call = {id: 'memo-call', name: 'read', args: {path: file}, success: true,
+    result: {isError: false, content: [{type: 'text', text: content}, {type: 'text', text: '[research_evidence_id] memo-call'}]}};
+  for (const [calls, offered, expected] of [
+    [[call], line, true], [[], line, false], [[{...call, args: {path: 'uploads/other.txt'}}], line, false],
+    [[call], '', false], [[call], line.replace('729', '730'), false], [[call], line.replace('为：', '并非'), false],
+    [[call], line + '据此估值翻倍。', true],
+  ]) {
+    const text = [report, offered].filter(Boolean).join('\n\n');
+    const result = evaluateSourceDraft({text, question, plan, currentVersions: {}, observations: sourceObservations(plan, [activeSearch, ...calls], [])});
+    const item = result.sourceDelivery.items.find(i => i.action === 'readAttachment');
+    assert.equal(item.state, expected ? 'answered' : 'unresolved', offered);
+    if (expected) assert.ok(result.sourceDelivery.claims.some(c => c.callIds.includes('memo-call') && c.itemIds.includes(item.id)));
+    else assert.match(result.reason, /PricingMemo\.txt.*估值依据来源/);
+    assert.ok(!result.text.includes('估值翻倍'));
+  }
+});
+
+test('separate count requests preserve their populations, targets and unresolved selectors', async () => {
+  const fieldPlan = async suffix => prepareSourcePlan({question: multiple + suffix}, {session: {}});
+  for (const suffix of ['另给出其中一类消息的命中数。', '排除助手消息后共匹配到几条？', '请报告排除助手消息后的检索命中数。']) {
+    const plan = await fieldPlan(suffix);
+    assert.ok(plan.gaps.some(g => g.includes('统计对象')), suffix);
+    assert.deepEqual(plan.items.filter(i => i.action === 'search').map(i => i.query).sort(), [query, query2].sort());
+  }
+  const both = await fieldPlan('分别给出“字面常量”的全部消息的命中数和助手正式回答的命中数。');
+  assert.deepEqual(both.items.filter(i => i.fields.includes('totalMatches')).map(i => i.query), [query]);
+  assert.deepEqual(both.items.filter(i => i.fields.includes('assistantMatches')).map(i => i.query), [query]);
+  const split = await fieldPlan('报告“字面常量”的全部消息命中数，以及“折旧政策”的助手答文命中数。');
+  const fields = k => split.items.find(i => i.query === k).fields;
+  assert.ok(fields(query).includes('totalMatches') && !fields(query).includes('assistantMatches'));
+  assert.ok(fields(query2).includes('assistantMatches') && !fields(query2).includes('totalMatches'));
+});
+
+test('a count from another round, an incomplete scan or a same-suffix attachment cannot satisfy the request', async () => {
+  const question = history + '请报告全部消息共匹配到几条。';
+  const plan = await prepareSourcePlan({question}, {session: {}});
+  for (const [extra, truncated] of [[[{role: 'user', turn: 2}], false], [[], true]]) {
+    const call = observation('transcript_search', 'range', {query, turnRange: [1, 2]}, {
+      matches: [formalHit, ...extra], totalMatches: 1 + extra.length, coverage: {turns: [1, 2], turnsScanned: 2, truncated}});
+    const heading = '第1轮全部消息共匹配到' + (1 + extra.length) + '条，出处如下：';
+    const record = evaluateSourceDraft({text: heading + '\n\n' + report, question, plan, observations: sourceObservations(plan, [call], []),
+      meaning: {claims: [{quote: heading, relation: 'execution', fields: [{name: 'totalMatches', literal: (1 + extra.length) + '条', value: 1 + extra.length}]}]}});
+    assert.equal(record.status, 'partial');
+    assert.ok(!record.text.includes(heading));
+  }
+  const actual = {id: 'one', relPath: 'uploads/123-PricingMemo.txt', name: 'PricingMemo.txt', versions: [{v: 1, sha256: digest('x')}]};
+  const wrong = await prepareSourcePlan({question: history + '同时读取附件 OtherPricingMemo.txt 中的依据并逐字给出。', attachments: [actual.relPath]},
+    {session: {}, ctx: {store: {findMaterialByPath: () => actual}}});
+  assert.ok(!wrong.items.some(i => i.path === actual.relPath));
+  assert.ok(wrong.gaps.some(g => g.includes('OtherPricingMemo.txt')));
+});
+
+test('an exhaustive assistant miss with a matching user row cannot supply a zero total', async () => {
+  const question = '请查第1轮“字面常量”是否命中过助手回答，另请报告第1轮全部消息共匹配到几条。';
+  const plan = await prepareSourcePlan({question}, {session: {}});
+  const scan = observation('transcript_search', 'range', {query, turn: 1}, {
+    matches: [{turn: 1, role: 'user'}], totalMatches: 1, coverage: {turns: [1], turnsScanned: 1, truncated: false},
+  });
+  for (const [line, field, value, status] of [
+    ['全部消息共匹配到1条。', 'totalMatches', 1, 'completed'],
+    ['助手正式回答共匹配到0条。', 'assistantMatches', 0, 'partial'],
+    ['全部消息共匹配到0条。', 'totalMatches', 0, 'partial'],
+  ]) {
+    const text = '第1轮“字面常量”未命中助手正式回答。\n\n' + line;
+    const result = evaluateSourceDraft({text, question, plan, observations: sourceObservations(plan, [scan], []),
+      meaning: {claims: [{quote: line, relation: 'execution', fields: [{name: field, value, literal: value + '条'}]}]}});
+    assert.equal(result.status, status, JSON.stringify(result));
+    if (line.startsWith('全部') && !value) assert.ok(!result.text.includes(line));
+  }
+});

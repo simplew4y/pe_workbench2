@@ -3,6 +3,7 @@ import {validCitations} from '../../lib/contracts/citation.mjs';
 import {collectCitationsFromToolCalls, toolEvidenceState} from '../../lib/citations.mjs';
 import {citationFilenames, locatorKey} from '../../lib/citation-locator.mjs';
 import {matchesQuery, retryOf} from './transcript-search-recovery.mjs';
+import {observedAttachmentFields} from './source-attachments.mjs';
 import {digest} from './source-plan.mjs';
 
 function scoped(args, turn) {
@@ -30,6 +31,7 @@ export function conditionValue(predicate, items) {
 }
 
 export function sourceObservations(plan, scanned, live, catalog) {
+  const attachmentItems = plan.items.filter(i => i.action === 'readAttachment');
   const byId = new Map(),
     conflicts = new Set(),
     rawIdentities = new Map(),
@@ -39,7 +41,8 @@ export function sourceObservations(plan, scanned, live, catalog) {
     ['live', live],
   ]) {
     for (const call of copies) {
-      if (!['transcript_search', 'workbook_query', 'workbook_trace'].includes(call.name) || !call.id)
+      const attachmentRead = call.name === 'read' && attachmentItems.some(i => i.path === call.args?.path);
+      if (!call.id || (!attachmentRead && !['transcript_search', 'workbook_query', 'workbook_trace'].includes(call.name)))
         continue;
       const prior = byId.get(call.id);
       const state =
@@ -47,7 +50,8 @@ export function sourceObservations(plan, scanned, live, catalog) {
           ? toolEvidenceState(call)
           : 'failed';
       const details = call.result?.details ?? call.details;
-      const fingerprint = digest(JSON.stringify([state, details ?? null]));
+      const attachmentFields = attachmentRead && state === 'success' ? observedAttachmentFields(attachmentItems, call, digest) : [];
+      const fingerprint = digest(JSON.stringify([call.name, call.args, state, details ?? null, attachmentFields]));
       const observation = {
         startedAt: call.startedAt ?? null,
         finishedAt: call.finishedAt ?? call.result?.timestamp ?? null,
@@ -58,6 +62,7 @@ export function sourceObservations(plan, scanned, live, catalog) {
         state,
         details,
         fingerprint,
+        ...(attachmentRead ? {attachmentFields} : {}),
         argumentsError: call.argumentsError ?? prior?.argumentsError,
       };
       if (state === 'success' || state === 'partial') {
@@ -91,6 +96,7 @@ export function sourceObservations(plan, scanned, live, catalog) {
   for (const call of attempts) {
     if (conflicts.has(call.id)) call.state = 'conflict';
     if (!['success', 'partial'].includes(call.state) || !call.details) continue;
+    if (call.name === 'read') continue;
     if (call.name === 'transcript_search') {
       if (call.state !== 'success') continue;
       for (const [matchIndex, hit] of (call.details.matches ?? []).entries()) {

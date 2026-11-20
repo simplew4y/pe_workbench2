@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {attachmentRequests} from './source-attachments.mjs';
 import {classifyQuestion} from '../../lib/turn-context.mjs';
 import {asksHistoricalSource, explicitTurns} from './answer-delivery.mjs';
 import {requestedSearches, requestedWorkbooks} from './transcript-search-recovery.mjs';
@@ -71,6 +72,7 @@ export function modelPlan(plan) {
             material: i.book ?? undefined,
           }
         : {}),
+      ...(i.action === 'readAttachment' ? {material: i.filename, ...(i.path ? {tool: 'read', args: {path: i.path}} : {})} : {}),
       fields: i.fields,
       condition: i.conditional ? i.predicate : undefined,
     })),
@@ -89,12 +91,61 @@ export function sourceBusinessTools(plan, options) {
   const tools = new Set();
   for (const item of plan.items) {
     if (item.action === 'search') tools.add('transcript_search');
+    if (item.action === 'readAttachment' && item.path) tools.add('read');
     if (item.action === 'read') {
       tools.add('workbook_query');
       tools.add('workbook_trace');
     }
   }
   return tools;
+}
+
+// Identity of the counted rows is independent of their cardinality.
+export function countPopulation(text) {
+  if (/出现|字串|字样|字面次数/u.test(text)) return 'textOccurrences';
+  if (/台账|账本|ledger/iu.test(text)) return 'ledgerMatches';
+  if (/(?:其中|某|特定|指定)(?:的)?一?类|排除助手|不(?:含|计|包括)助手|仅(?:计|算)用户|去重|不同(?:材料|来源)|按.{0,6}(?:类别|类型)/u.test(text)) return;
+  const excludesUser = /(?:排除|不含|不包括|不计入?|去掉|除去)用户/u.test(text);
+  const includesUser = /全部消息|所有消息|用户消息也算/u.test(text) ||
+    (!excludesUser && /(?:含|包括|计入)用户/u.test(text));
+  if (includesUser && excludesUser) return;
+  if (includesUser) return 'totalMatches';
+  if (excludesUser || /助手|正式(?:答文|回答)|回答中/u.test(text)) return 'assistantMatches';
+  if (/用户|附件|引用数/u.test(text)) return;
+  return 'totalMatches';
+}
+
+function admitCounts(question, plan) {
+  const searches = plan.items.filter(i => i.action === 'search');
+  const masked = assertionQuestion(question, plan);
+  const asksCount = /(?:命中|匹配)[^。？！；]{0,18}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数(?:量)?|总数)|(?:多少|几)(?:条|个)(?:消息|回答|答文).{0,8}(?:命中|匹配)/u;
+  for (const sentence of question.matchAll(/[^。？！!?\n]+/gu)) {
+    const context = sentence[0];
+    if (!asksCount.test(masked.slice(sentence.index, sentence.index + context.length))) continue;
+    const named = searches.filter(i => i.query && context.includes(i.query));
+    const scoped = named.length ? named : searches;
+    // Keep a shared subject for coordinated counts, but let an operand
+    // or turn in an individual part narrow its own obligation.
+    let cursor = 0;
+    for (const part of context.split(/以及|另请|并分别|[和与](?=助手|全部|所有)/u)) {
+      const index = context.indexOf(part, cursor);
+      cursor = index + part.length;
+      const at = sentence.index + index;
+      const predicate = masked.slice(at, at + part.length);
+      const sharedCount = /(?:全部消息|所有消息|助手(?:正式)?(?:答文|回答|消息))(?:数)?$/u.test(predicate) &&
+        /^(?:[和与]|以及)(?:全部消息|所有消息|助手)/u.test(context.slice(cursor));
+      if (!asksCount.test(predicate) && !sharedCount) continue;
+      const terms = scoped.filter(i => i.query && part.includes(i.query));
+      const rounds = explicitTurns(predicate);
+      const owners = (terms.length ? terms : scoped).filter(i => !rounds.size || rounds.has(i.turn));
+      const population = countPopulation(predicate);
+      if (!owners.length || !population) {
+        plan.gaps.push('需确定检索命中数的统计对象及范围：' + part);
+        continue;
+      }
+      for (const item of owners) if (!item.fields.includes(population)) item.fields.push(population);
+    }
+  }
 }
 
 const normalize = (s) => s.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -229,9 +280,7 @@ export async function prepareSourcePlan(active, entry) {
     }
   }
   const requested = assertionQuestion(question, plan);
-  if (/(?:命中|匹配)[^。？！；]{0,10}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数量|总数)/u.test(requested)) {
-    for (const item of items) item.fields.push('matchCount');
-  }
+  admitCounts(question, plan);
   let predicate;
   if (conditional) {
     const start = question.search(/仅当|只有|若|如果|如有|when |only if /i);
@@ -255,22 +304,19 @@ export async function prepareSourcePlan(active, entry) {
     };
     if (!parents.length) gaps.push('条件尚未对应到具体检索事项：' + conditionText);
   }
-  const unresolvedRead = modelItems.some(
-    (i) =>
-      i.action === 'read' &&
-      typeof i.quote === 'string' &&
-      i.quote &&
-      question.includes(i.quote) &&
-      !hasCurrent &&
-      // A request for fields of the cited source is already covered by the
-      // historical item. Keep an independently proposed file inspection open.
-      !(
-        sourceRequest &&
-        /(?:所|曾|当时)?引用(?:的|过的)|原出处/.test(i.quote) &&
-        !/读取|读回|打开|实读|核对(?:工作簿|原件)|read (?:the |from )?file/i.test(i.quote)
-      ),
-  );
-  if (unresolvedRead) gaps.push('原问包含尚未对齐的读取要求。');
+  const attachments = attachmentRequests(question, active.attachments, entry.ctx?.store, modelItems);
+  items.push(...attachments.items);
+  gaps.push(...attachments.gaps);
+  for (const proposed of modelItems) {
+    if (proposed.action !== 'read' || typeof proposed.quote !== 'string' || !proposed.quote ||
+        !question.includes(proposed.quote) || attachments.handled.has(proposed)) continue;
+    const quote = proposed.quote;
+    if (hasCurrent && current.test(quote) && /同一|该格|原格|版本|当前值|读数/u.test(quote) &&
+        !/附件|备忘录|\.[a-z0-9]{2,5}\b/iu.test(quote)) continue;
+    if (sourceRequest && /(?:所|曾|当时)?引用(?:的|过的)|原出处/u.test(quote) &&
+        !/读取|读回|打开|实读|核对(?:工作簿|原件)|read (?:the |from )?file/i.test(quote)) continue;
+    gaps.push('原问包含尚未对齐的读取要求：' + quote);
+  }
   if (interpretation?.kind === 'pending') gaps.push('独立清点尚未确定原问的范围。');
   if (hasCurrent)
     items.push({
@@ -299,7 +345,7 @@ export async function prepareSourcePlan(active, entry) {
     });
   }
   const review = items.find((i) => i.action === 'review');
-  if (review && hasCurrent && !review.requiresSave && !gaps.length &&
+  if (review && hasCurrent && !review.requiresSave && gaps.every(gap => attachments.gaps.includes(gap)) &&
       items.filter((i) => i.action === 'search').length === 1) {
     const read = items.find((i) => i.action === 'read');
     // Resolve the object of the interpretation and its input. A sufficiency
@@ -315,6 +361,7 @@ export async function prepareSourcePlan(active, entry) {
     if (sameCell && sufficiency && read.fields.includes('value') &&
         !extraOperations.test(requested) &&
         clauses.every((part) => part === sufficiency ||
+          attachments.items.some(i => question.slice(...i.range).includes(part)) ||
           /(?:第.{1,5}轮|来源|出处|工作簿|原格|版本|引用|只读|同一|当前值|聊天|答复|citation)/i.test(part))) {
       review.inputItemId = read.id;
       review.range = span(question, sufficiency);

@@ -17,7 +17,8 @@ import {
 } from './answer-delivery.mjs';
 import {resultReports} from './transcript-search-recovery.mjs';
 import {conditionValue} from './source-observations.mjs';
-import {digest} from './source-plan.mjs';
+import {countPopulation, digest} from './source-plan.mjs';
+import {verifyAttachmentLine} from './source-attachments.mjs';
 
 const absent =
   /(?:未(?:命中|匹配|引用|找到|检索到|查到)|没有(?:命中|匹配|引用|找到)|无(?:匹配|命中)|零命中|0\s*条|no matches)/i;
@@ -157,18 +158,22 @@ function visibleMatchCounts(text) {
     const searchHeading = /(?:出处|来源|引用)如下/u.test(sentence);
     let subject;
     for (const clause of sentence.split(/[，,：:]/u)) {
-      // Returned rows can each contain the term more than once. The bounded
-      // excerpt cannot establish a count within the original message.
-      if (/出现|字串|字样|字面次数/.test(clause)) subject = 'textOccurrences';
-      else if (/台账|账本|ledger/i.test(clause)) subject = 'ledgerMatches';
-      else if (/命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/.test(clause)) subject = /助手|正式(?:答文|回答)|回答中/.test(clause) ? 'assistantMatches' : 'totalMatches';
-      else if (!/^\s*(?:共|合计|一共|总计|计有|仅|只|有|结[果论])/u.test(clause)) subject = undefined;
-      if (!subject && !searchHeading) continue;
-      for (const m of clause.matchAll(/([零一二两三四五六七八九十百千万\d]+)\s*(?:处|条|项|个)(?!\s*(?:单元格|坐标|工作簿|引用|字段|条件|词))/gu)) {
-        const prefix = clause.slice(0, m.index);
-        // Only an exact positive count discharges an exact count obligation.
-        // Qualifiers need a separate interpretation; never sign them using
-        // an equality check on the numeral alone.
+      const search = /命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/u.test(clause);
+      const counts = [...clause.matchAll(/([零一二两三四五六七八九十百千万\d]+)\s*(?:处|条|项|个)(?!\s*(?:单元格|坐标|工作簿|引用|字段|条件|词))/gu)];
+      const category = /助手|正式(?:答文|回答)|回答中|所有消息|全部消息|用户消息|台账|账本|ledger|出现|字串|字样|字面次数/iu;
+      if (!counts.length) {
+        if (category.test(clause) || search) subject = countPopulation(clause) ?? 'unknownCount';
+        else if (!/^\s*(?:共|合计|一共|总计|计有|仅|只|有|结[果论])/u.test(clause)) subject = undefined;
+        continue;
+      }
+      let previousEnd = 0;
+      for (const m of counts) {
+        const prefix = clause.slice(previousEnd, m.index);
+        const suffix = clause.slice(m.index + m[0].length).match(/^\s*(助手(?:正式)?(?:回答|答文|消息)|用户消息|台账记录)/u)?.[0] ?? '';
+        if (category.test(prefix + suffix)) subject = countPopulation(prefix + suffix) ?? 'unknownCount';
+        else if (search && !subject) subject = 'totalMatches';
+        previousEnd = m.index + m[0].length;
+        if (!subject && !searchHeading) continue;
         const qualified = /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
         fields.push({name: subject ?? 'totalMatches', literal: m[0], value: quantity(m[1]), ...(qualified ? {qualified: true} : {})});
       }
@@ -198,7 +203,7 @@ function* scopedScans(owners, observations) {
     // A whole-scan count and a count for one workbook or turn are equal
     // only when all returned rows lie in the selected scope.
     if (
-      hits.some((m) =>
+      d.matches.some((m) =>
         owners.some(
           (i) =>
             (i.turn && i.turn !== m.turn) ||
@@ -435,6 +440,8 @@ export function evaluateSourceDraft({
   );
   const reviewItem = plan.items.find((i) => i.action === 'review');
   const reviewed = reviewItem && {...reviewItem, state: 'unresolved', delivered: new Set(), attemptIds: []};
+  const attachments = plan.items.filter(i => i.action === 'readAttachment').map(i => ({...i,
+    state: 'unresolved', delivered: new Set(), attemptIds: observations.attempts.filter(a => a.name === 'read' && a.args.path === i.path).map(a => a.id)}));
   const optionalRead = {
     id: 'observed-read',
     action: 'read',
@@ -456,7 +463,9 @@ export function evaluateSourceDraft({
   const accept = (unit, refs, owners, ws, relation) => {
     if (unit.countProof) {
       ws = [...ws, {callId: unit.countProof.callId}];
-      for (const item of unit.countOwners) item.delivered.add('matchCount');
+      for (const item of unit.countOwners) {
+        for (const {name} of unit.countProof.fields) item.delivered.add(name);
+      }
     }
     accepted.push({unit, refs, owners, ws, relation});
   };
@@ -470,6 +479,17 @@ export function evaluateSourceDraft({
   for (const unit of units(text)) {
     const s = unit.value,
       visible = visibleMarkdown(s);
+    const attachment = verifyAttachmentLine(visible.trim(), attachments, observations.attempts);
+    if (attachment !== undefined) {
+      const disputed = review?.openFindings?.some(f => f.excerpt && s.includes(f.excerpt));
+      if (attachment && !disputed && !unsafeMarkdown.test(s)) {
+        const {item, field, callId} = attachment;
+        item.delivered.add(field);
+        unit.attachmentField = field;
+        accept(unit, [], [item], [{callId}], 'attachmentQuote');
+      } else rejected.push(s);
+      continue;
+    }
     const named = decisions.filter((i) => i.query && s.toLowerCase().includes(i.query.toLowerCase()));
     const selected = named.length ? named : decisions;
     const countText = named.reduce((part, item) => part.replaceAll(item.query, ''), visible);
@@ -483,7 +503,8 @@ export function evaluateSourceDraft({
     const countScan = scans.find((scan) => matchCounts.every(({name, value, qualified}) => !qualified && scan[name] === value));
     if (countScan) {
       unit.countProof = {callId: countScan.callId, fields: matchCounts};
-      unit.countOwners = matchCounts.some((field) => field.name !== 'ledgerMatches') ? selected : [];
+      const coverage = observations.attempts.find(a => a.id === countScan.callId)?.details?.coverage;
+      unit.countOwners = coverage?.truncated === false ? selected.filter(i => !i.turn || coverage.turns?.includes(i.turn)) : [];
     }
     const introducesFields = /(?:出处|来源|引用)(?:如(?:下|上)|如下所示)\s*[：:。.]?\s*$/u.test(s) &&
       selected.length && selected.every((i) => i.hits.length) &&
@@ -498,12 +519,8 @@ export function evaluateSourceDraft({
     }
     const ledgerCount = s.match(/台账.*?(?:记录|命中).*?(\d+)\s*条/);
     if (ledgerCount) {
-      const proof = observations.attempts.find(
-        (c) =>
-          c.name === 'transcript_search' &&
-          c.state === 'success' &&
-          c.details?.ledgerTotalMatches === Number(ledgerCount[1]),
-      );
+      const proof = [...scopedScans(selected, observations)].find(({attempt}) =>
+        attempt.details.ledgerTotalMatches === Number(ledgerCount[1]))?.attempt;
       if (proof && !amount.test(s.replace('字面常量', '')))
         accept(unit, [], [], [{callId: proof.id}], 'ledgerCount');
       else rejected.push(s);
@@ -611,6 +628,12 @@ export function evaluateSourceDraft({
       decisions.map((i) => ({query: i.query || '\u0000'})),
       () => false,
     );
+    const provesAbsence = item => {
+      if (!item?.empty || item.hits.length) return false;
+      const scan = observations.attempts.find(a => a.id === item.empty);
+      return scan?.details?.totalMatches === 0 || item.book && !/(?:所有|全部)消息/u.test(countText) ||
+        countPopulation(countText) === 'assistantMatches';
+    };
     if (notes.length && !extractLocatorMatches(s).length) {
       const owners = notes.map((n) =>
         decisions.find((i) => (i.query || '\u0000') === n.query && (!n.turns.size || n.turns.has(i.turn))),
@@ -619,7 +642,7 @@ export function evaluateSourceDraft({
         (n, k) =>
           n.complete &&
           owners[k] &&
-          (n.absent ? owners[k].empty && !owners[k].hits.length : owners[k].hits.length),
+          (n.absent ? provesAbsence(owners[k]) : owners[k].hits.length),
       );
       if (!proven) {
         rejected.push(s);
@@ -639,7 +662,7 @@ export function evaluateSourceDraft({
       continue;
     }
     if (absent.test(s) && !extractLocatorMatches(s).length) {
-      const emptyOwners = selected.filter((i) => i.empty && !i.hits.length);
+      const emptyOwners = selected.filter(provesAbsence);
       if (
         emptyOwners.length &&
         emptyOwners.length === selected.length &&
@@ -923,7 +946,11 @@ export function evaluateSourceDraft({
   }
   const hostRepair = optionalNotes.length > 0;
   for (const i of decisions) {
-    if (i.state === 'confirmedEmpty') continue;
+    if (i.state === 'confirmedEmpty') {
+      const missingCount = i.fields.some(f => ['totalMatches', 'assistantMatches', 'ledgerMatches', 'textOccurrences'].includes(f) && !i.delivered.has(f));
+      if (missingCount) i.state = 'unresolved';
+      continue;
+    }
     const unique = distinctWitnesses(i.hits);
     if (
       i.fields.includes('id') &&
@@ -962,13 +989,16 @@ export function evaluateSourceDraft({
     currentDecision.fields.every((f) => currentDecision.delivered.has(f))
   )
     currentDecision.state = 'answered';
+  for (const item of attachments) if (item.fields.every(f => item.delivered.has(f))) item.state = 'answered';
   const fieldLabels = {
     id: '完整引用 ID', filename: '工作簿名', version: '材料版本', locator: '单元格',
-    value: '当前读数', matchCount: '检索命中数', reviewedAnswer: '经审校的说明',
+    value: '当前读数', totalMatches: '全部消息的检索命中数', assistantMatches: '助手正式答文的检索命中数',
+    ledgerMatches: '台账命中数', textOccurrences: '原文字串出现次数', reviewedAnswer: '经审校的说明',
   };
   const items = [
     ...decisions,
     ...(currentDecision ? [currentDecision] : optionalRead.attemptIds.length ? [optionalRead] : []),
+    ...attachments,
     ...(reviewed ? [reviewed] : []),
   ].map(({hits, related, empty, delivered, ...i}) => {
     if (i.state === 'unresolved') {
@@ -976,7 +1006,8 @@ export function evaluateSourceDraft({
         i.turn ? '第' + i.turn + '轮' : '',
         i.query,
         i.book,
-        i.action === 'review' ? '研究审校与直接取证' : i.action === 'read' ? '同一材料当前状态' : '历史出处',
+        i.action === 'readAttachment' ? '附件 ' + i.filename :
+          i.action === 'review' ? '研究审校与直接取证' : i.action === 'read' ? '同一材料当前状态' : '历史出处',
       ]
         .filter(Boolean)
         .join(' ');
@@ -1009,6 +1040,7 @@ export function evaluateSourceDraft({
       relation,
       itemIds,
       ...(unit.countProof ? {searchCounts: unit.countProof} : {}),
+      ...(unit.attachmentField ? {field: unit.attachmentField} : {}),
       citationIds: [...new Set(ws.map((w) => w.citation?.id).filter(Boolean))],
       callIds: [...new Set(ws.map((w) => w.callId))],
       sourceTurns: [...new Set(ws.map((w) => w.sourceTurnId ?? w.legacyAnchor).filter(Boolean))],

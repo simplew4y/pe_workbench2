@@ -272,6 +272,9 @@ export function createSessionService({
       const plan=entry?.activeTurn?.plan;
       const offered=entry?.activeTurn?.offeredSourceTools;
       if (offered && !offered.has(toolCall.name)) return {block:true,reason:`本次来源请求没有提供工具 ${toolCall.name}。请根据已登记事项及本轮工具结果回答。`};
+      if (toolCall.name === 'read' && offered?.has('read') &&
+          !plan.items.some(i => i.action === 'readAttachment' && i.path === args?.path))
+        return {block:true,reason:'此读取路径未对应到本轮指定的附件。'};
       const read=plan?.items.find(i=>i.action==='read' && i.conditional);
       if (read && ['workbook_query','workbook_trace'].includes(toolCall.name)) {
         const observed=sourceObservations(plan,[],entry.turnToolCalls??[],ctx.store);
