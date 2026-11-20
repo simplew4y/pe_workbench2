@@ -8,7 +8,7 @@ import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/to
  */
 
 import { conditionValue, sourceObservations } from './source-observations.mjs';
-import { digest } from './source-plan.mjs';
+import { digest, sourceBusinessTools } from './source-plan.mjs';
 import { sourceModelOptions, readSourceLanguage, recordSourceModelCall } from './source-provider.mjs';
 import {auditResearch} from "../../lib/research-audit.mjs";
 import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
@@ -193,15 +193,9 @@ export function createSessionService({
       session.agent.streamFunction = async (model, context, options) => {
         const active=entry?.activeTurn;
         const sourceMode=active?.plan && active.plan.route!=='ordinary';
-        const research=active?.plan?.research || ['research-audit','research-report-audit','research-synthesis'].includes(options?.sourceStage);
-        // Offer the tools this source operation can use before Pi normalizes
-        // its system/tool updates; keep the full research request when needed.
-        const businessStage=['answer','research-draft','research-repair'].includes(options?.sourceStage??'answer');
-        const narrow=sourceMode && (!research || active.plan.sourceOnlyRead && businessStage) && !options?.sourceOperation;
+        const allowed=sourceBusinessTools(active?.plan,options);
         let input=context;
-        if (narrow) {
-          const allowed=new Set(active.plan.items.some(i=>i.action==='read') ?
-            ['transcript_search','workbook_query','workbook_trace'] : ['transcript_search']);
+        if (allowed) {
           const tools=context.tools?.filter(t=>allowed.has(t.name));
           const messages=context.messages.map(m=>m.role==='system' && m.toolsAdded ?
             {...m,toolsAdded:m.toolsAdded.filter(t=>allowed.has(t.name))}:m);

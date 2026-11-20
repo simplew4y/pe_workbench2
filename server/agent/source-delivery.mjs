@@ -22,7 +22,7 @@ import {digest} from './source-plan.mjs';
 const absent =
   /(?:未(?:命中|匹配|引用|找到|检索到|查到)|没有(?:命中|匹配|引用|找到)|无(?:匹配|命中)|零命中|0\s*条|no matches)/i;
 const negative = /并非|并不|不是|绝非|不曾|并未|没有引用|未曾引用|\bnot\b|\bnever\b/i;
-const now = /当前|截至今天|目前|今天|现在|最新|本次读取|本轮(?:直接读取|实读)|\bcurrent(?:ly)?\b|\btoday\b/i;
+const now = /当前|截至今天|至今|迄今|如今|仍然|现行|现为|目前|今天|现在|最新|本次读取|本轮(?:直接读取|实读)|\bcurrent(?:ly)?\b|\btoday\b/i;
 const amount = /(?:利润|收入|增长|营收|财务|常量|读数|金额|数值|值为|余额|同比|环比|元\/股|万元|亿元|百万元)/;
 const version =
   /(?:\bv|@v)\d+\b|第[一二三四五六七八九十\d]+版|(?:版本|\bversion)\s*(?:为|是|[:：])?\s*v?\d+/i;
@@ -30,16 +30,16 @@ const unsafeMarkdown = /<[^>]+>|!?\[[^\]\n]*\]\s*\([^)\n]*\)|^\s*\[[^\]\n]+\]:/;
 
 // Only tokens which actually render as text can satisfy an explicit field.
 function visibleMarkdown(markdown) {
-  function leaves(tokens) {
+  function leaves(tokens, separator = '\n') {
     return tokens
       .map((t) => {
         if (['html', 'image', 'def', 'space'].includes(t.type)) return '';
         if (t.type === 'table')
           return leaves([...t.header, ...t.rows.flat()].map((c) => ({tokens: c.tokens})));
         if (t.items) return leaves(t.items);
-        return t.tokens ? leaves(t.tokens) : (t.text ?? '');
+        return t.tokens ? leaves(t.tokens, '') : (t.text ?? '');
       })
-      .join('\n');
+      .join(separator);
   }
   return leaves(Lexer.lex(markdown));
 }
@@ -117,16 +117,65 @@ function alignedFieldList(unit, claim, source, conflict) {
   return !/[\d!@]|\.xls[xm]|cite:|第[^，。；]{1,8}版/i.test(residue);
 }
 
-// Counts concern the successful scan in the requested scope. An omitted
-// model projection, an unrestricted query or an incomplete scan proves none.
-function executionReport(claim, text, owners, observations) {
-  if (
-    claim?.relation !== 'execution' ||
-    !claim.fields?.length ||
-    extractLocatorMatches(text).length ||
-    /cite:|\.xls[xm]|@v\d|\bv\d/i.test(text)
-  )
-    return;
+// Inherit a heading's time only for a presentation of known fields. The
+// values come from the selected evidence, not from the language receipt.
+// Text left over after the labels and values is a separate assertion.
+function neutralSourceRow(text, witnesses) {
+  const values = new Set();
+  for (const {citation: c} of witnesses) {
+    for (const value of [c.id, c.materialId, c.locator, ...citationFilenames(c), 'v' + c.version])
+      if (value) values.add(value);
+  }
+  let rest = text;
+  for (const value of [...values].sort((a, b) => b.length - a.length))
+    rest = rest.replaceAll(value, ' ');
+  if (rest === text) return false;
+  // Numbered versions are checked again by checkSourceFields, including
+  // a second spelling of the same version in a parenthetical.
+  rest = rest.replace(/第\s*[一二两三四五六七八九十\d]+\s*版/g, ' ');
+  return !rest.replace(/(?:实际|原始|显示|存储|存放|完整|该|即|工作簿|工作表|文件名?|材料|版本号?|单元格|原格|坐标|引用|citation\.id|materialId|ID|是|为|的)|[\s\p{P}*_]/giu, '');
+}
+
+function quantity(token) {
+  if (/^\d+$/.test(token)) return Number(token);
+  const digits = '零一二三四五六七八九';
+  const [tens, ones, extra] = token.replaceAll('两', '二').split('十');
+  if (ones === undefined) return tens.length === 1 ? digits.indexOf(tens) : NaN;
+  if (extra !== undefined || tens.length > 1 || ones.length > 1) return NaN;
+  return (tens ? digits.indexOf(tens) : 1) * 10 + (ones ? digits.indexOf(ones) : 0);
+}
+
+// Read match counts from the visible clause before consuming *any* reader
+// spans. A receipt about a turn, or a receipt containing the entire clause,
+// cannot discharge a separate count. Do not conflate cells or ledger rows
+// with transcript matches.
+function visibleMatchCounts(text) {
+  const fields = [];
+  for (const sentence of text.split(/[。；;！？\n]/u)) {
+    // In an introduction an unqualified number of results refers to the
+    // scan. A named noun (e.g. number of citations) has its own evidence.
+    const searchHeading = /(?:出处|来源|引用)如下/u.test(sentence);
+    let subject;
+    for (const clause of sentence.split(/[，,：:]/u)) {
+      if (/台账|账本|ledger/i.test(clause)) subject = 'ledgerMatches';
+      else if (/命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/.test(clause)) subject = /助手|正式(?:答文|回答)|回答中/.test(clause) ? 'assistantMatches' : 'totalMatches';
+      else if (!/^\s*(?:共|合计|一共|总计|计有|仅|只|有|结[果论])/u.test(clause)) subject = undefined;
+      if (!subject && !searchHeading) continue;
+      for (const m of clause.matchAll(/([零一二两三四五六七八九十百千万\d]+)\s*(?:处|条|项|个)(?!\s*(?:单元格|坐标|工作簿|引用|字段|条件|词))/gu)) {
+        const prefix = clause.slice(0, m.index);
+        // Only an exact positive count discharges an exact count obligation.
+        // Qualifiers need a separate interpretation; never sign them using
+        // an equality check on the numeral alone.
+        const qualified = /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
+        fields.push({name: subject ?? 'totalMatches', literal: m[0], value: qualified ? NaN : quantity(m[1])});
+      }
+    }
+  }
+  return fields;
+}
+
+function* scopedScans(owners, observations) {
+  if (!owners.length) return;
   const attempts = observations.attempts.filter(
     (a) =>
       a.state === 'success' &&
@@ -157,6 +206,22 @@ function executionReport(claim, text, owners, observations) {
       )
     )
       continue;
+    yield {attempt, hits};
+  }
+}
+
+// Counts concern the successful scan in the requested scope. An omitted
+// model projection, an unrestricted query or an incomplete scan proves none.
+function executionReport(claim, text, owners, observations) {
+  if (
+    claim?.relation !== 'execution' ||
+    !claim.fields?.length ||
+    extractLocatorMatches(text).length ||
+    /cite:|\.xls[xm]|@v\d|\bv\d/i.test(text)
+  )
+    return;
+  for (const {attempt, hits} of scopedScans(owners, observations)) {
+    const d = attempt.details, coverage = d.coverage;
     const ids = hits.flatMap((h) => (h.citations ?? []).map((c) => c.id));
     const values = {
       totalMatches: d.totalMatches,
@@ -185,7 +250,7 @@ function executionReport(claim, text, owners, observations) {
     // match is not a ledger match, even if the blind reader labeled it so.
     const fields = claim.fields.map(f => {
       if (f.name === 'ledgerMatches' && !/台账|账本|ledger/i.test(text) &&
-          /命中|匹配/.test(text) && /^(?:\d+|[一二三四五六七八九十]+)\s*(?:处|条|项|个)$/.test(f.literal))
+          /命中|匹配/.test(text) && /^(?:\d+|[一二两三四五六七八九十]+)\s*(?:处|条|项|个)$/.test(f.literal))
         return {...f, name:'totalMatches'};
       return f;
     });
@@ -216,12 +281,8 @@ function executionReport(claim, text, owners, observations) {
         const digits = f.literal.match(/\d+/g) ?? [];
         if (digits.length) return digits.every((n) => Number(n) === expected);
         if (expected === 0) return /未|没有|无|零|未曾/.test(f.literal);
-        return (
-          Number.isInteger(expected) &&
-          expected > 0 &&
-          expected < 10 &&
-          f.literal.includes('零一二三四五六七八九'[expected])
-        );
+        const numbers = f.literal.match(/[零一二两三四五六七八九十百千万]+/g);
+        return numbers?.length && numbers.every((token) => quantity(token) === expected);
       }
       if (typeof expected === 'boolean')
         return (
@@ -240,15 +301,8 @@ function executionReport(claim, text, owners, observations) {
     unchecked = unchecked.replace(/第\s*(\d+)\s*轮/g, (token, n) =>
       coverage.turns?.length === 1 && coverage.turns[0] === Number(n) ? ' ' : token,
     );
-    // Also check independently visible count modifiers, including counts
-    // which the reader omitted from its fields.
-    let conflictingCount = false;
-    unchecked = unchecked.replace(/(?:命中(?:了|的)?(?:只有|仅有|仅)?|只有|仅有)\s*([零一二三四五六七八九十\d]+)\s*(?:处|条|项|个)/g, (match, n) => {
-      const value = /^\d+$/.test(n) ? Number(n) : '零一二三四五六七八九十'.indexOf(n);
-      conflictingCount ||= value !== d.totalMatches;
-      return ' ';
-    });
-    if (!conflictingCount && !/[\da-f]{8}-[\da-f-]{27}|\d|\.xlsx|cite:/i.test(unchecked)) return attempt;
+    for (const field of visibleMatchCounts(text)) unchecked = unchecked.replace(field.literal, ' ');
+    if (!/[\da-f]{8}-[\da-f-]{27}|\d|\.xlsx|cite:/i.test(unchecked)) return attempt;
   }
 }
 
@@ -390,42 +444,46 @@ export function evaluateSourceDraft({
     statedLimits = [],
     rejectedChecks = [],
     citations = new Map();
-  let body = '',
-    priorEnd = 0,
-    antecedent;
+  let antecedent;
   let historyFieldGroup = false;
+  const accepted = [];
   const accept = (unit, refs, owners, ws, relation) => {
-    if (body) {
-      const separator = text.slice(priorEnd, unit.start);
-      body += /^\s*$/.test(separator) ? separator : '\n';
+    if (unit.countProof) {
+      ws = [...ws, {callId: unit.countProof.callId}];
+      for (const item of unit.countOwners) item.delivered.add('matchCount');
     }
-    const offset = body.length;
-    body += unit.value;
-    priorEnd = unit.end;
-    const itemIds = owners.map((item) => item.id);
-    claims.push({
-      start: offset,
-      end: body.length,
-      relation,
-      itemIds,
-      citationIds: [...new Set(ws.map((w) => w.citation?.id).filter(Boolean))],
-      callIds: [...new Set(ws.map((w) => w.callId))],
-      sourceTurns: [...new Set(ws.map((w) => w.sourceTurnId ?? w.legacyAnchor).filter(Boolean))],
-    });
-    for (const {raw, index, citation} of refs) {
-      citations.set(citation.id, citation);
-      occurrences.push({
-        start: offset + index,
-        end: offset + index + raw.length,
-        text: raw,
-        citationId: citation.id,
-      });
-    }
+    accepted.push({unit, refs, owners, ws, relation});
   };
   const gaps = [...plan.gaps, ...observations.recoveryGaps];
   for (const unit of units(text)) {
     const s = unit.value,
       visible = visibleMarkdown(s);
+    const named = decisions.filter((i) => i.query && s.toLowerCase().includes(i.query.toLowerCase()));
+    const selected = named.length ? named : decisions;
+    const countText = named.reduce((part, item) => part.replaceAll(item.query, ''), visible);
+    const matchCounts = visibleMatchCounts(countText);
+    const scans = matchCounts.length ? [...scopedScans(selected, observations)].map(({attempt, hits}) => ({
+      callId: attempt.id,
+      totalMatches: attempt.details.totalMatches,
+      assistantMatches: hits.length,
+      ledgerMatches: attempt.details.ledgerTotalMatches,
+    })) : [];
+    const countScan = scans.find((scan) => matchCounts.every(({name, value}) => scan[name] === value));
+    if (countScan) {
+      unit.countProof = {callId: countScan.callId, fields: matchCounts};
+      unit.countOwners = matchCounts.some((field) => field.name !== 'ledgerMatches') ? selected : [];
+    }
+    const introducesFields = /(?:出处|来源|引用)(?:如(?:下|上)|如下所示)\s*[：:。.]?\s*$/u.test(s) &&
+      selected.length && selected.every((i) => i.hits.length) &&
+      [...explicitTurns(s)].every((round) => selected.every((i) => i.hits.some((w) => w.turn === round)));
+    if (matchCounts.length && !countScan) {
+      // A wrong count is not publishable. The heading still identifies
+      // the subject of the list; every following field needs its own proof.
+      historyFieldGroup = Boolean(introducesFields);
+      rejectedChecks.push({start: unit.start, end: unit.end, relation: 'execution', fields: matchCounts, scans});
+      rejected.push(s);
+      continue;
+    }
     const ledgerCount = s.match(/台账.*?(?:记录|命中).*?(\d+)\s*条/);
     if (ledgerCount) {
       const proof = observations.attempts.find(
@@ -439,11 +497,13 @@ export function evaluateSourceDraft({
       else rejected.push(s);
       continue;
     }
-    const named = decisions.filter((i) => i.query && s.toLowerCase().includes(i.query.toLowerCase()));
-    const selected = named.length ? named : decisions;
     if (/^(?:[-*] )?未核验[：:]/.test(s) && !/^未核验[：:]\s*无[。.]?$/.test(s)) {
       statedLimits.push(s);
       gaps.push(s);
+      continue;
+    }
+    if (/^未核验[：:]\s*无[。.]?$/.test(visible.trim())) {
+      accept(unit, [], [], [], 'qualification');
       continue;
     }
     const visibleUnit = visible.trim();
@@ -460,9 +520,12 @@ export function evaluateSourceDraft({
       claim.fields?.length && claim.fields.every((field) =>
         ['materialId', 'version', 'locator', 'filename', 'displayFilename', 'storedFilename', 'id'].includes(field.name) &&
         typeof field.literal === 'string' && visibleUnit.includes(field.literal)));
-    historyFieldGroup &&= Boolean(sourceFields && !now.test(s) && !negative.test(s) &&
-      !/现行|如今|现为|latest|as of/i.test(s) && !amount.test(s));
-    if (historyFieldGroup) semantics = semantics.map((claim) => ({...claim, relation: 'historical'}));
+    // A row-specific predicate does not change the subject of its siblings.
+    // Close the group at a new prose unit, not at an independently dated row.
+    if (!sourceFields && !/^\s*[-*]\s/.test(s)) historyFieldGroup = false;
+    const inheritedRow = historyFieldGroup && sourceFields &&
+      neutralSourceRow(visibleUnit, selected.flatMap((i) => i.hits));
+    if (inheritedRow) semantics = semantics.map((claim) => ({...claim, relation: 'historical'}));
     const whole = semantics.find((c) => c.quote === s || visibleMarkdown(c.quote).trim() === visibleUnit);
     const executionClaims = semantics.filter((c) => c.relation === 'execution');
     const completeExecution =
@@ -472,13 +535,13 @@ export function evaluateSourceDraft({
         !executionClaims
           .reduce((rest, c) => rest.replace(c.quote, ''), s)
           .replace(/[\s。，、；;,.：:]/g, ''));
-    if (completeExecution) {
-      const evidence = {relation: 'execution', fields: executionClaims.flatMap((c) => c.fields ?? [])};
-      const attempt = executionReport(evidence, s, selected, observations);
+    if (completeExecution || (countScan && introducesFields)) {
+      const fields = completeExecution ? executionClaims.flatMap((c) => c.fields ?? []) : semantics.flatMap((c) => c.fields ?? []);
+      const evidence = {relation: 'execution', fields: [...fields, ...matchCounts]};
+      const attempt = executionReport(evidence, visibleUnit, selected, observations);
       if (attempt) {
         accept(unit, [], selected, [{callId: attempt.id}], 'execution');
-        historyFieldGroup = /(?:出处|来源|引用)/.test(s) &&
-          !now.test(s) && !negative.test(s) && selected.every(i=>i.hits.length);
+        historyFieldGroup = Boolean(introducesFields && !now.test(s) && !negative.test(s));
       }
       else if (
         plan.route === 'history' &&
@@ -503,7 +566,7 @@ export function evaluateSourceDraft({
     }
     const heading = named.reduce((part, item) => part.replaceAll(item.query, ''), s);
     const count = heading.match(/([一二两三四五六七八九十\d]+)\s*(?:个|处|条|本)\s*(工作簿位置|单元格|坐标|来源|工作簿)/);
-    const countValue = count && (Number(count[1]) || '一二三四五六七八九十'.indexOf(count[1].replace('两','二')) + 1);
+    const countValue = count && quantity(count[1]);
     const signedPositions = distinctWitnesses(selected.flatMap((i) => i.hits));
     const headingCount = count?.[2] === '工作簿'
       ? new Set(signedPositions.map((w) => w.citation.materialId)).size : signedPositions.length;
@@ -588,10 +651,6 @@ export function evaluateSourceDraft({
       accept(unit, [], selected, [], 'introduction');
       continue;
     }
-    if (/^未核验[：:]\s*无[。.]?$/.test(s)) {
-      if (body) accept(unit, [], [], [], 'qualification');
-      continue;
-    }
     const isRead =
       semantics.some((c) => c.relation === 'current') || (now.test(s) && !/今天(?:检索|查[询到])/.test(s));
     if (
@@ -635,7 +694,7 @@ export function evaluateSourceDraft({
     // token already names a real sheet it wins. Otherwise use the independently
     // aligned, witnessed literal only after an unambiguous field predicate.
     let locatorInput = masked;
-    if (historyFieldGroup) {
+    if (inheritedRow) {
       for (const ref of extractLocatorMatches(masked)) {
         if (resolveLocatorToken(ref.raw, lookup)?.citation || lookup.isAmbiguous(ref.key)) continue;
         const literal = whole?.fields?.find((f) => f.name === 'locator' && typeof f.literal === 'string' &&
@@ -901,6 +960,39 @@ export function evaluateSourceDraft({
     return {...i, fieldsDelivered: [...delivered], ...(empty ? {emptyCallId: empty} : {})};
   });
   if (rejected.length) gaps.push('有可见陈述缺少相符的来源或超出本轮证据。');
+  // Final coverage decides whether "nothing unverified" is true. Render
+  // the selected units once so that all offsets refer to this exact text.
+  let body = '', priorEnd = 0;
+  for (const {unit, refs, owners, ws, relation} of accepted) {
+    if (relation === 'qualification' && gaps.length) continue;
+    if (body) {
+      const separator = text.slice(priorEnd, unit.start);
+      body += /^\s*$/.test(separator) ? separator : '\n';
+    }
+    const offset = body.length;
+    body += unit.value;
+    priorEnd = unit.end;
+    const itemIds = owners.map((item) => item.id);
+    claims.push({
+      start: offset,
+      end: body.length,
+      relation,
+      itemIds,
+      ...(unit.countProof ? {searchCounts: unit.countProof} : {}),
+      citationIds: [...new Set(ws.map((w) => w.citation?.id).filter(Boolean))],
+      callIds: [...new Set(ws.map((w) => w.callId))],
+      sourceTurns: [...new Set(ws.map((w) => w.sourceTurnId ?? w.legacyAnchor).filter(Boolean))],
+    });
+    for (const {raw, index, citation} of refs) {
+      citations.set(citation.id, citation);
+      occurrences.push({
+        start: offset + index,
+        end: offset + index + raw.length,
+        text: raw,
+        citationId: citation.id,
+      });
+    }
+  }
   if (!gaps.length && !rejected.length && body.trim() === text.trim()) {
     const shift = text.indexOf(body);
     for (const r of [...claims, ...occurrences]) {

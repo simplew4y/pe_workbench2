@@ -1,4 +1,4 @@
-import {digest} from './source-plan.mjs';
+import {digest, sourceBusinessTools} from './source-plan.mjs';
 import {DOCUMENT_OUTPUT_POLICY} from '../../lib/document-output-policy.mjs';
 import {appendTurnMarker} from './turn-delivery.mjs';
 
@@ -34,19 +34,12 @@ export function sourceModelOptions(active, model, options, configPayload) {
     // Redundant completed tool outputs from earlier turns are recoverable
     // through transcript_search. Preserve paired protocol messages and every
     // result from the current question, including errors and negative results.
-    const canScope =
-      !side &&
-      (!active.plan?.research || active.plan.sourceOnlyRead) &&
-      ['answer', 'research-draft', 'research-repair'].includes(options?.sourceStage ?? 'answer');
-    if (canScope && Array.isArray(body.tools)) {
-      const allowed = new Set([
-        'transcript_search',
-        ...(active.plan.items.some((i) => i.action === 'read') ? ['workbook_query', 'workbook_trace'] : []),
-      ]);
+    const allowed = sourceBusinessTools(active.plan, options);
+    if (allowed && Array.isArray(body.tools)) {
       body.tools = body.tools.filter((t) => allowed.has(t.function?.name ?? t.name));
       active.offeredSourceTools = new Set(body.tools.map((t) => t.function?.name ?? t.name));
     }
-    if (canScope && Buffer.byteLength(JSON.stringify(body)) > availableBytes && Array.isArray(body.messages)) {
+    if (allowed && Buffer.byteLength(JSON.stringify(body)) > availableBytes && Array.isArray(body.messages)) {
       const boundary = body.messages.findLastIndex(
         (m) => m.role === 'user' && JSON.stringify(m.content).includes(active.question),
       );
@@ -124,7 +117,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
         ];
       });
     }
-    if (canScope && Array.isArray(body.messages) && Buffer.byteLength(JSON.stringify(body)) > availableBytes) {
+    if (allowed && Array.isArray(body.messages) && Buffer.byteLength(JSON.stringify(body)) > availableBytes) {
       const offered = active.offeredSourceTools;
       const citations = new Map();
       const excerpts = new Map();
@@ -181,6 +174,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
     const encoded = JSON.stringify(body);
     // A byte upper bound deliberately overestimates BPE input. Never charge
     // host-only details, credentials or an earlier, unfitted transcript.
+    const toolNames = body.tools?.map((tool) => tool.function?.name ?? tool.name) ?? [];
     const input = Buffer.byteLength(encoded);
     const lane = side ? 'side' : 'business';
     const sizes = (body.messages ?? []).map((m) => [m.role, Buffer.byteLength(JSON.stringify(m))]);
@@ -190,7 +184,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
       budget.input + input > 192000 ||
       budget.output + maxTokens > 24000
     ) {
-      active.sourceBudgetStop={lane,input,sizes,initialBytes,priorInput:budget.input,stage:options?.sourceStage ?? options?.sourceOperation ?? 'answer',
+      active.sourceBudgetStop={lane,input,sizes,toolNames,initialBytes,priorInput:budget.input,stage:options?.sourceStage ?? options?.sourceOperation ?? 'answer',
         digest:digest(encoded),perRequestExceeded:input>(side?8000:32000),totalInputExceeded:input+budget.input>192000,
         callLimitExceeded:budget[lane]>=(side?4:12),outputLimitExceeded:budget.output+maxTokens>24000,toolCount:body.tools?.length??0};
       active.receipt?.('pe_source_budget_stop', active.sourceBudgetStop);
@@ -270,7 +264,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
           ),
       ),
       sentAt: Date.now(),
-      initialBytes, priorInput:budget.input-input, inputUpperBound: input,
+      toolNames, initialBytes, priorInput:budget.input-input, inputUpperBound: input,
       maxTokens,
       visible,
     };

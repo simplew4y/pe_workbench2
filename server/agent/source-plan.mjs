@@ -78,6 +78,25 @@ export function modelPlan(plan) {
   });
 }
 
+// Use the same capabilities before Pi normalizes the tool list and when
+// measuring the final provider payload. Audit and synthesis keep their
+// original no-tool context; broad research retains its granted tools.
+export function sourceBusinessTools(plan, options) {
+  if (!plan || plan.route === 'ordinary' || options?.sourceOperation ||
+      !['answer', 'research-draft', 'research-repair'].includes(options?.sourceStage ?? 'answer'))
+    return;
+  if (plan.research && !plan.sourceOnlyRead) return;
+  const tools = new Set();
+  for (const item of plan.items) {
+    if (item.action === 'search') tools.add('transcript_search');
+    if (item.action === 'read') {
+      tools.add('workbook_query');
+      tools.add('workbook_trace');
+    }
+  }
+  return tools;
+}
+
 const normalize = (s) => s.trim().toLowerCase().replace(/\s+/g, ' ');
 export async function prepareSourcePlan(active, entry) {
   const question = active.question;
@@ -103,8 +122,17 @@ export async function prepareSourcePlan(active, entry) {
   // An ordinal by itself might name a cell; a reference to a reply plus
   // requested provenance fields refers to the conversation.
   const asksFields = /出处|来源|引用|单元格|工作簿|哪本|哪一格|citation[._ ]?id|workbook|which cell/i.test(question);
-  const replySubject = /答复|回复|答文|答过|回答(?:中|里|用|引用|所|的)|发给我|你.{0,6}(?:说过|提到过|写过)|(?:your|previous|earlier) (?:reply|answer|message)/i.test(question);
-  const refersToAnswer = asksFields && replySubject;
+  // The location of the forthcoming output is a modifier, not its object.
+  // Remove only that unqualified location; retain a past or ordinal modifier.
+  const referents = question.replace(/(?:请)?在(?:本次|本轮|这次|接下来(?:的)?)?(?:回答|答复|回复|正文)(?:中|里)/gu, '');
+  const replySubject = /答复|回复|答文|答过|回答(?:中|里|用|引用|所|的)|发给我|你.{0,6}(?:说过|提到过|写过)|(?:your|previous|earlier) (?:reply|answer|message)/i.test(referents);
+  // A reply can be the requested output or an existing object of enquiry.
+  // Only an identifiable earlier reply or a question about its provenance
+  // obliges us to search. Have the independent reader resolve weaker cues.
+  const earlierReply = scope.length > 0 || history.test(question) ||
+    /发给我(?:的|过)|(?:说|写|答|提到)过|(?:这|那)(?:篇|条|份)(?:答复|回复|回答)|previous|earlier/i.test(question);
+  const asksProvenance = /(?:用|据|引|出自).{0,8}(?:哪|什么)|(?:哪本|哪一格)|(?:出处|来源)(?:是|为|在哪)|完整.{0,8}(?:引用|citation)/i.test(question);
+  const refersToAnswer = asksFields && replySubject && (earlierReply || asksProvenance);
   const sourceRequest = refersToAnswer ||
     (audited.asksHistory &&
       (audited.terms.length > 0 || /检索结果|有无|是否|出处|引用|来源|单元格/.test(question))) ||
@@ -123,6 +151,7 @@ export async function prepareSourcePlan(active, entry) {
     !audited.asksHistory &&
     !(proposal.length && /聊天|本会话|对话|答复|前文|记录里|transcript|conversation/i.test(question)) &&
     !implicitSubject &&
+    !(asksFields && replySubject) &&
     !/以前|之前|方才|前面|当时|旧答|上文|过去|earlier|previous/i.test(question);
   plan.inventory = {rounds: scope, terms: audited.terms, books: audited.books, sourceRequest, plain};
   // An unqualified self-audit has its own coverage, ledger and correction
@@ -171,6 +200,7 @@ export async function prepareSourcePlan(active, entry) {
   const conditional = /(?:仅当|只有|若|如果|如有|when |only if )/.test(question) && hasCurrent;
   const existence = /是否|有没有|有无|分别说明.{0,12}检索结果|逐项说有无/i.test(question);
   const fields = [];
+
   if (
     sourceId.test(question) &&
     !/(?:可(?:以)?(?:注明|省略)|不必|无需|不要)[^。，；]{0,6}(?:引用\s*ID|citation\.id)/i.test(question)
@@ -197,6 +227,10 @@ export async function prepareSourcePlan(active, entry) {
         });
       }
     }
+  }
+  const requested = assertionQuestion(question, plan);
+  if (/(?:命中|匹配)[^。？！；]{0,10}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数量|总数)/u.test(requested)) {
+    for (const item of items) item.fields.push('matchCount');
   }
   let predicate;
   if (conditional) {
@@ -264,10 +298,30 @@ export async function prepareSourcePlan(active, entry) {
       requiresSave: /保存|写入|写成.{0,8}报告/.test(question),
     });
   }
-  plan.sourceOnlyRead = Boolean(plan.research && hasCurrent &&
-    /同一(?:份|本|个)?(?:材料|文件|工作簿)|同一格/.test(question) &&
-    /(?:仅凭|只凭|只据|仅依据|仅根据)[^。！？]{0,20}(?:格|读数|值)/.test(question) &&
-    !items.some((i) => i.requiresSave));
+  const review = items.find((i) => i.action === 'review');
+  if (review && hasCurrent && !review.requiresSave && !gaps.length &&
+      items.filter((i) => i.action === 'search').length === 1) {
+    const read = items.find((i) => i.action === 'read');
+    // Resolve the object of the interpretation and its input. A sufficiency
+    // question about this read uses the same evidence regardless of how the
+    // user introduces it. Additional research operations keep the full lane.
+    const clauses = requested.split(/[。？！；，,;：:\n]|(?:同时|并且|并请|然后|另外|此外)/u)
+      .map((part) => part.trim()).filter(Boolean);
+    const sameCell = /同一(?:份|本|个)?(?:材料|文件|工作簿)|同一格/.test(requested);
+    const sufficiency = clauses.find((part) =>
+      /(?:这个|该|这(?:一)?(?:个|项|格)|该格|单(?:一|个)).{0,6}(?:值|读数|数据|数字)|这个读数/.test(part) &&
+      /能否|是否|可否|足以|能不能|够不够/.test(part));
+    const extraOperations = /联网|上网|外部|市场行情|可比公司|同业|研报|调研|审批|批准|写回|改写|修改|下载|报告文件|web_search|web_fetch/i;
+    if (sameCell && sufficiency && read.fields.includes('value') &&
+        !extraOperations.test(requested) &&
+        clauses.every((part) => part === sufficiency ||
+          /(?:第.{1,5}轮|来源|出处|工作簿|原格|版本|引用|只读|同一|当前值|聊天|答复|citation)/i.test(part))) {
+      review.inputItemId = read.id;
+      review.range = span(question, sufficiency);
+      review.operation = 'assessRead';
+    }
+  }
+  plan.sourceOnlyRead = review?.operation === 'assessRead';
   plan.inventory = {
     turns: scope, refersToAnswer,
     terms: audited.terms,

@@ -732,3 +732,100 @@ test('interrupted mixed requests preserve signed-version evidence and keep the u
     assert.ok(!evaluate(overrides).text.includes(note));
   }
 });
+
+test('a formatting instruction can refer to this answer even when the session has prior answers', async () => {
+  for (const messages of [[], [{role: 'assistant', content: sourceText}]]) {
+    const entry = {session: {messages}, readSourceLanguage: async () => ({kind: 'ordinary', items: []})};
+    for (const place of ['正文中', '回答中', '回复里']) {
+      for (const definition of ['解释“单元格”的含义', '解释什么是单元格']) {
+        const question = '请在' + place + '用一句话' + definition + '。';
+        assert.equal((await prepareSourcePlan({question}, entry)).route, 'ordinary', question);
+      }
+    }
+    const question = '请在回答中列出第一条答复引用的工作簿、单元格与完整引用 ID。';
+    assert.equal((await prepareSourcePlan({question}, entry)).items[0].turn, 1);
+  }
+});
+
+test('a history heading scopes neutral fields while keeping a separate present-tense predicate on its row', () => {
+  const heading = '第1轮命中1处，出处如下：';
+  const location = '- 单元格：Model!B2';
+  const id = '- 完整引用 ID：' + original.id;
+  const plan = {...sourcePlan, route: 'history'};
+  for (const row of ['- 材料版本：v1', '- 材料沿用至今的版本是 v1']) {
+    const text = [heading, '', location, row, id].join('\n');
+    const meaning = {claims: [
+      {quote: heading, relation: 'execution', fields: [{name: 'scannedTurn', literal: '第1轮', value: 1}]},
+      ...[[location, 'locator', original.locator], [row, 'version', 'v1'], [id, 'id', original.id]].map(
+        ([quote, name, literal]) => ({quote, relation: 'current', polarity: 'positive', fields: [{name, literal}]})),
+    ]};
+    const result = evaluateSourceDraft({text, question: history, plan, meaning,
+      observations: sourceObservations(plan, [activeSearch], []), currentVersions: {[materialId]: 2}});
+    assert.equal(result.text.includes(row), row.includes('：'), result.text);
+    assert.ok(result.text.includes(id), result.text);
+    assert.deepEqual(result.citations.map((c) => c.id), [original.id]);
+  }
+});
+
+test('visible match quantities bind to the scoped search even when the reader only extracted a turn', () => {
+  const plan = {...sourcePlan, route: 'history'};
+  for (const relation of ['execution', 'historical', 'scope']) {
+    for (const receiptIncludesCount of [false, true]) {
+      for (const [word, value] of [['一', 1], ['两', 2]]) {
+        const heading = '第1轮匹配到' + word + '处，出处如下：';
+        const text = heading + '\n\n' + report;
+        const fields = [{name: 'scannedTurn', literal: '第1轮', value: 1}];
+        if (receiptIncludesCount) fields.push({name: 'totalMatches', literal: word + '处', value});
+        const claims = [{quote: heading, relation, polarity: 'positive', fields}];
+        const result = evaluateSourceDraft({text, question: history, plan, meaning: {claims},
+          currentVersions: {[materialId]: 2}, observations: sourceObservations(plan, [activeSearch], [])});
+        assert.equal(result.text.includes(heading), value === 1, [relation, receiptIncludesCount, result.text].join(' '));
+        assert.ok(result.text.includes(original.id));
+      }
+    }
+  }
+});
+
+test('the admitted read and explanation determine tool scope across paraphrases while wider work keeps its tools', async () => {
+  const source = '请查第1轮“字面常量”的正式出处，列出工作簿、原格、版本和完整引用 ID。再就同一份材料做一个只读的估值分析：本轮打开现在的同一格，给出其当前值与版本，';
+  for (const [task, bounded] of [
+    ['并说明仅凭这一个值能否判断企业估值。只在聊天答复。', true],
+    ['并说明只用这一个值能否判断企业估值。只在聊天答复。', true],
+    ['并讨论这个读数是否足以支撑估值。', true],
+    ['并说明仅凭这一个值能否判断企业估值。再查询市场行情和同业报告并比较。', false],
+    ['并说明只用这一个值能否判断企业估值。请保存研究报告。', false],
+  ]) {
+    const question = source + task;
+    const plan = await prepareSourcePlan({question}, {session: {}});
+    const active = {question, plan, controller: new AbortController()};
+    const names = ['transcript_search', 'workbook_query', 'workbook_trace', 'web_fetch', 'edit'];
+    const body = await sourceModelOptions(active, {}, {sourceStage: 'research-draft'}).onPayload({
+      messages: [{role: 'user', content: question}],
+      tools: names.map((name) => ({type: 'function', function: {name}})),
+    });
+    assert.deepEqual(body.tools.map((t) => t.function.name), bounded ? names.slice(0, 3) : names, task);
+  }
+});
+
+test('an omitted requested match count leaves an open field and cannot publish an all-clear', async () => {
+  const question = history + '另请报告实际命中了几处。';
+  const text = '未核验：无。\n\n' + report;
+  const {record} = await run(question, [{query, turn: 1}], text);
+  assert.equal(record.status, 'partial', record.text);
+  assert.ok(!record.text.includes('未核验：无'));
+  assert.ok(record.text.includes(original.id));
+  const link = record.sourceDelivery.occurrences[0];
+  assert.equal(record.text.slice(link.start, link.end), '[Acceptance13.xlsx]Model!B2');
+});
+
+test('a counted search result retains its quantity across punctuation and inline Markdown', () => {
+  for (const heading of ['第1轮检索结果共两条，出处如下：', '第1轮查到两处，出处如下：',
+    '第1轮匹配到结果，共两处，出处如下：', '第1轮匹配到**两**处，出处如下：', '第1轮匹配到的并非一处，出处如下：']) {
+    const result = evaluateSourceDraft({text: heading + '\n\n' + report, question: history,
+      plan: {...sourcePlan, route: 'history'}, observations: sourceObservations(sourcePlan, [activeSearch], []),
+      meaning: {claims: [{quote: heading, relation: 'execution', polarity: 'positive',
+        fields: [{name: 'scannedTurn', literal: '第1轮', value: 1}]}]}});
+    assert.ok(!result.text.includes(heading), heading);
+    assert.ok(result.text.includes(original.id));
+  }
+});
