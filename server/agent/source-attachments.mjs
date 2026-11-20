@@ -1,4 +1,4 @@
-const quoteMarks = /[「“‘"']([^」”’"'\n]+)[」”’"']/gu;
+import {ordinal} from './answer-delivery.mjs';
 
 // Read the whole filename between the naming operation (or list separator)
 // and its extension. A suffix inside a different upload never grants access.
@@ -23,9 +23,22 @@ function fileMentions(text, byName) {
 function requestedFields(tail) {
   const operand = tail.match(/^\s*[」”’"']?\s*(?:(?:中|内|里)(?:的)?|的)\s*(.+)/u)?.[1];
   if (!operand) return [];
-  const quoted = [...operand.matchAll(quoteMarks)].map(m => m[1]);
-  if (quoted.length) return [...new Set(quoted)];
-  return operand.split(/[,，]|并|逐字|按原文/u)[0].replace(/字段$/u, '').split(/[、]/u).map(x => x.trim()).filter(Boolean);
+  const fields = new Set();
+  let rest = operand.trimStart();
+  while (rest && !/^(?:请|并|按文件|按原文|分别|逐字|再读|同时读)/u.test(rest)) {
+    // Quoting protects a label's internal separators. A quoted label and a
+    // bare label use the same list grammar and carry the same obligation.
+    const quoted = /^[「“‘"'`]([^」”’"'`\n]+)[」”’"'`]/u.exec(rest);
+    const bare = /^[\s\S]+?(?=以及|[和与及、，,]|并|逐字|按原文|$)/u;
+    const token = quoted ?? bare.exec(rest);
+    if (!token) break;
+    const field = quoted ? quoted[1] : token[0].trim().replace(/(?:这?[两二三四五六七八九\d]+个)?字段$/u, '').trimEnd();
+    if (field) fields.add(field);
+    const separator = /^\s*(?:以及|[和与及、，,])\s*/u.exec(rest.slice(token[0].length));
+    if (!separator) break;
+    rest = rest.slice(token[0].length + separator[0].length);
+  }
+  return [...fields];
 }
 
 // Resolve each named file through this turn's attachments and catalogue. A
@@ -57,6 +70,12 @@ export function attachmentRequests(question, attachments, catalog, proposals) {
       const tail = clause.slice(mention.end, next?.start);
       if (next && /^[\s和与及以、，,「」“”‘’"']*$/u.test(tail)) continue;
       const fields = requestedFields(tail);
+      if (group.length === mentions.length) {
+        const expected = tail.match(/(?:给出|列出|报告|提供)\s*(?:这|以上|上述)?([零一二两三四五六七八九十百千\d]+)个字段/u);
+        if (expected && ordinal(expected[1]) !== fields.length)
+          gaps.push('需确定附件 ' + group.map(f => f.name).join('、') + ' 的所求字段：' + expected[0] +
+            '，已对应' + fields.length + '个。');
+      }
       for (const operand of group) {
         if (/\.xls[xm]$/iu.test(operand.name)) continue;
         const candidates = byName.get(operand.name) ?? [];
@@ -79,9 +98,18 @@ export function attachmentRequests(question, attachments, catalog, proposals) {
       group = [];
     }
     for (const proposal of proposed) {
-      const material = proposal.material;
-      if (admitted.some(({operand, item}) => proposal.quote.includes(operand.name) &&
-          (!material || [operand.name, item.filename, item.path].includes(material)))) handled.add(proposal);
+      const named = admitted.filter(({operand, item}) => proposal.quote.includes(operand.name) &&
+        (!proposal.material || [operand.name, item.filename, item.path].includes(proposal.material)));
+      // Model schemas can also carry generic field types such as "verbatim
+      // source". Reconcile the literal labels present in the user's request
+      // for each proposed file. An unmatched label remains an open request.
+      const labels = Array.isArray(proposal.fields) ? proposal.fields.filter(f =>
+        typeof f === 'string' && f.trim() && clause.includes(f)) : [];
+      if (named.length && named.every(({item}) => labels.every(f => item.fields.includes(f)))) handled.add(proposal);
+      else if (named.length) for (const {item} of named) {
+        const missing = labels.filter(f => !item.fields.includes(f));
+        if (missing.length) gaps.push('需确定附件 ' + item.filename + ' 的字段范围：' + missing.join('、'));
+      }
     }
   }
   return {items, gaps, handled};
@@ -110,14 +138,14 @@ export function observedAttachmentFields(items, call, sha256) {
 // A literal quotation is not an endorsement of the attachment's contents.
 // Consume the field and its complete visible value. Any surrounding claim
 // (negation, another object, a new valuation, etc.) still needs its own proof.
-export function verifyAttachmentLine(visible, decisions, attempts) {
+function attachmentAssertion(visible, decisions) {
   const targets = decisions.flatMap(item => item.fields.filter(field => visible.includes(field))
     .map(field => ({item, field})));
   if (!targets.length) {
     if (decisions.some(i => visible.includes(i.filename))) return null;
     return;
   }
-  for (const field of new Set(targets.map(t => t.field))) {
+  for (const field of [...new Set(targets.map(t => t.field))].sort((a, b) => b.length - a.length)) {
     const at = visible.indexOf(field);
     const prefix = visible.slice(0, at).trim().replace(/^[-*]\s*/u, '');
     const body = visible.slice(at + field.length).trim()
@@ -149,16 +177,48 @@ export function verifyAttachmentLine(visible, decisions, attempts) {
       }
     }
     if (!owners.length) continue;
-    const proofs = [];
-    for (const item of new Set(owners)) {
-      const proof = attempts.findLast(call => call.state === 'success' && call.attachmentFields?.some(row =>
-        row.itemId === item.id && row.field === field &&
-        [row.value, '“' + row.value + '”', '「' + row.value + '」'].some(literal =>
-          [literal, literal + '。', literal + '.', literal + '；', literal + ';'].includes(body))));
-      if (!proof) return null;
-      proofs.push({item, field, callId: proof.id});
-    }
-    return proofs;
+    return {field, body, owners: [...new Set(owners)]};
   }
   return null;
+}
+
+export function verifyAttachmentLine(visible, decisions, attempts) {
+  const assertion = attachmentAssertion(visible, decisions);
+  if (!assertion) return assertion;
+  const {field, body, owners} = assertion;
+  const proofs = [];
+  for (const item of owners) {
+    const proof = attempts.findLast(call => call.state === 'success' && call.attachmentFields?.some(row =>
+      row.itemId === item.id && row.field === field &&
+      [row.value, '“' + row.value + '”', '「' + row.value + '」'].some(literal =>
+        [body, body.replace(/[。.；;，,]$/u, '')].includes(literal))));
+    if (!proof) return null;
+    proofs.push({item, field, callId: proof.id});
+  }
+  return proofs;
+}
+
+// Preserve a full verbatim value containing a separator. If there are two
+// assertions, the first may identify the subject even when its value is wrong.
+// Its sibling still has to match a successful read of that exact file.
+export function* attachmentParts(part, attachments, attempts, visibleMarkdown) {
+  const names = attachments.flatMap(i => [i.filename, i.path].filter(Boolean));
+  const fields = attachments.flatMap(i => i.fields);
+  let start = 0;
+  let attachmentOwners;
+  for (const separator of part.matchAll(/[，,；;]/gu)) {
+    const end = separator.index + 1;
+    const next = part.slice(end).trimStart();
+    const nextFile = names.some(name => next.startsWith(name));
+    if (!nextFile && !fields.some(field => next.startsWith(field))) continue;
+    const scope = attachmentOwners ?? attachments;
+    if (verifyAttachmentLine(visibleMarkdown(part.slice(start)).trim(), scope, attempts)?.length) break;
+    const left = visibleMarkdown(part.slice(start, separator.index)).trim();
+    const subject = attachmentAssertion(left, scope);
+    if (!subject && !nextFile) continue;
+    yield {value: part.slice(start, end), attachmentOwners};
+    start = end;
+    attachmentOwners = nextFile ? undefined : subject.owners;
+  }
+  yield {value: part.slice(start), attachmentOwners};
 }

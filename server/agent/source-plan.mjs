@@ -138,6 +138,20 @@ function* countOperands(sentence) {
   if (begin < sentence.length) yield {begin, end: sentence.length, shared: false};
 }
 
+// Keep the identity of each named search. A quoted target is one operand;
+// in unquoted text, consume a complete longer name before any substring.
+export function queryReferences(text, items) {
+  const terms = [...new Set(items.map(item => item.query?.toLowerCase()).filter(Boolean))];
+  if (!terms.length) return [];
+  const alternatives = terms.sort((a, b) => b.length - a.length)
+    .map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(quoted.source + '|' + alternatives.join('|'), 'giu');
+  return [...text.matchAll(pattern)].map(match => {
+    const query = (match[1] ?? match[0]).toLowerCase();
+    return {query, known: terms.includes(query), start: match.index, end: match.index + match[0].length};
+  });
+}
+
 function admitCounts(question, plan) {
   const searches = plan.items.filter(i => i.action === 'search');
   const masked = assertionQuestion(question, plan);
@@ -146,7 +160,8 @@ function admitCounts(question, plan) {
   for (const sentence of question.matchAll(/[^。？！!?\n]+/gu)) {
     const context = sentence[0];
     if (!asksCount(masked.slice(sentence.index, sentence.index + context.length))) continue;
-    const named = searches.filter(i => i.query && context.includes(i.query));
+    const names = new Set(queryReferences(context, searches).map(ref => ref.query));
+    const named = searches.filter(i => names.has(i.query?.toLowerCase()));
     const scoped = named.length ? named : searches;
     // Keep a shared subject for coordinated counts, but let an operand
     // or turn in an individual part narrow its own obligation.
@@ -156,7 +171,8 @@ function admitCounts(question, plan) {
       const predicate = masked.slice(at, sentence.index + end);
       const sharedCount = shared && /(?:全部消息|所有消息|助手(?:正式)?(?:答文|回答|消息))(?:数)?\s*$/u.test(predicate);
       if (!asksCount(predicate) && !sharedCount) continue;
-      const terms = scoped.filter(i => i.query && part.includes(i.query));
+      const localNames = new Set(queryReferences(part, scoped).map(ref => ref.query));
+      const terms = scoped.filter(i => localNames.has(i.query?.toLowerCase()));
       const rounds = explicitTurns(predicate);
       const owners = (terms.length ? terms : scoped).filter(i => !rounds.size || rounds.has(i.turn));
       const population = countPopulation(predicate);

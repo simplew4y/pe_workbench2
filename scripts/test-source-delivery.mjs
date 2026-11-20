@@ -1174,3 +1174,112 @@ test('coincident counts in one sentence retain distinct field positions in the s
   const last = heading.lastIndexOf('一条');
   assert.deepEqual(spans, [['totalMatches',[first,first+2]],['assistantMatches',[last,last+2]]]);
 });
+
+test('one attachment read must deliver each requested field across mixed quoting', async () => {
+  const fields = ['估值依据来源', '审核人'];
+  const content = '估值依据来源：蓝色台账 MC-729\n审核人：林丙 073\n';
+  const file = {id: 'memo-a', name: 'A.txt', relPath: 'uploads/stored-A.txt', versions: [{v: 1, sha256: digest(content)}]};
+  const call = {id: 'read-A', name: 'read', args: {path: file.relPath}, success: true, result: {content: [{type: 'text', text: content}]}};
+  for (const labels of ['“估值依据来源”和审核人', '估值依据来源和“审核人”', '“估值依据来源”和“审核人”', '估值依据来源、审核人']) {
+    const question = history + '同时读取附件 A.txt 中的' + labels + '，请逐字给出这两个字段。';
+    const plan = await prepareSourcePlan({question, attachments: [file.relPath]}, {session: {},
+      ctx: {store: {findMaterialByPath: () => file}}, readSourceLanguage: async () => ({
+        kind: 'mixed', items: [{action: 'read', material: 'A.txt', quote: 'A.txt', fields}]} )});
+    const item = plan.items.find(i => i.materialId === file.id);
+    assert.deepEqual(item.fields, fields, labels);
+    const first = 'A.txt 的估值依据来源为：蓝色台账 MC-729';
+    const second = '审核人为：林丙 073。';
+    for (const [tail, deliveredFields] of [
+      [first + '。', fields.slice(0, 1)], [first + '。\n\nA.txt 的' + second, fields],
+      [first + '，' + second, fields], [first + '，审核人为：未知。', fields.slice(0, 1)],
+      ['A.txt 的估值依据来源为：错误，' + second, fields.slice(1)],
+    ]) {
+      const text = report + '\n\n' + tail;
+      const result = evaluateSourceDraft({text, question, plan, observations: sourceObservations(plan, [activeSearch, call], [])});
+      const complete = deliveredFields.length === fields.length;
+      assert.equal(result.status, complete ? 'completed' : 'partial', result.reason);
+      const quotes = result.sourceDelivery.claims.flatMap(c => c.attachmentQuotes ?? []);
+      assert.deepEqual(quotes.map(q => [q.itemId, q.field, q.callId]),
+        deliveredFields.map(f => [item.id, f, call.id]), tail);
+      if (complete) assert.equal(result.text, text);
+      else assert.ok(result.reason.includes('附件 A.txt（缺少' + fields.find(f => !deliveredFields.includes(f)) + '）'));
+    }
+  }
+});
+
+test('independent counts in the same visible sentence bind to their own queries and calls', async () => {
+  const terms = [query, '存储'];
+  const question = '请核对第1轮已交付回答的历史出处，给出原工作簿、单元格、材料版本和完整引用 ID。' +
+    terms.map(term => '请在本会话第1轮查询“' + term + '”，报告该词的全部消息共匹配到几条。').join('');
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  for (const equal of [false, true]) {
+    const rows = equal ? [formalHit] : [{turn: 1, role: 'user'}, formalHit];
+    const calls = terms.map((term, i) => observation('transcript_search', 'count-' + i, {query: term, turn: 1},
+      {matches: i ? [formalHit] : rows, totalMatches: i ? 1 : rows.length, coverage: {turns: [1], truncated: false}}));
+    const expected = [equal ? '一条' : '两条', '一条'];
+    for (const values of [expected, ['一条','两条'], [expected[0], '三条']]) for (const whole of [true,false]) for (const join of ['，', '而']) {
+      const parts = terms.map((term,i) => '第1轮“' + term + '”的全部消息共匹配到' + values[i] + (i ? '，出处如下：' : join));
+      const fields = values.map(literal => [{name:'scannedTurn', literal:'第1轮', value:1},
+        {name:'totalMatches',literal,value: {'一条':1,'两条':2,'三条':3}[literal]}]);
+      const claims = whole ? [{quote: parts.join(''), relation:'execution',fields:fields.flat()}] :
+        parts.map((quote,i) => ({quote,relation:'execution',fields:fields[i]}));
+      const text = parts.join('') + '\n\n' + report;
+      const result = evaluateSourceDraft({text, question, plan, observations:sourceObservations(plan,[...calls].reverse(),[]), meaning:{claims}});
+      const matches = expected.map((literal,i) => literal === values[i]);
+      assert.equal(result.status, matches.every(Boolean) ? 'completed' : 'partial', result.reason);
+      if (result.status === 'completed') assert.equal(result.text, text);
+      for (const [i,term] of terms.entries()) {
+        const owner = result.sourceDelivery.items.find(item => item.query === term);
+        assert.equal(owner.fieldsDelivered.includes('totalMatches'), matches[i], term);
+        const proof = result.sourceDelivery.claims.find(c => c.searchCounts && c.itemIds.includes(owner.id));
+        if (!matches[i]) { assert.equal(proof, undefined); continue; }
+        assert.equal(proof.searchCounts.callId, calls[i].id);
+        assert.deepEqual(proof.itemIds, [owner.id]);
+        const [start, end] = proof.searchCounts.fields[0].visibleRange;
+        assert.equal(result.text.slice(proof.start + start, proof.start + end), values[i]);
+      }
+    }
+  }
+});
+
+test('a named query cannot fulfill a shorter query included in its spelling', async () => {
+  const terms = [query, '常量'];
+  const question = '请查第1轮“字面常量”和“常量”的正式回答来源和完整引用 ID。' +
+    terms.map(term => '请查询“' + term + '”，给出它的全部消息匹配数。').join('');
+  const plan = await prepareSourcePlan({question}, {session: {}});
+  const calls = terms.map(term => observation('transcript_search', 'call-' + term, {query:term, turn:1},
+    {matches:[formalHit], totalMatches:1, coverage:{turns:[1],truncated:false}}));
+  const line = '第1轮“字面常量”的全部消息共匹配到一条，出处如下：';
+  const result = evaluateSourceDraft({question,plan,text:line+'\n\n'+report,
+    observations:sourceObservations(plan,calls,[]),meaning:{claims:[{quote:line,relation:'execution',
+      fields:[{name:'totalMatches',literal:'一条',value:1}]}]}});
+  assert.equal(result.status, 'partial');
+  assert.ok(result.text.includes(line));
+  assert.deepEqual(result.sourceDelivery.items.filter(i => i.fieldsDelivered.includes('totalMatches')).map(i=>i.query), [query]);
+});
+
+test('splitting count predicates must not detach a qualification from its quantity', async () => {
+  const question = '第1轮分别查询“字面常量”和“存储”的正式回答出处和完整引用 ID，并分别给出全部消息匹配数。';
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  const calls = plan.items.filter(i => i.action === 'search').map(i =>
+    observation('transcript_search', i.id, {query:i.query, turn:1}, {totalMatches:1,
+      matches:[formalHit],coverage:{turns:[1],truncated:false}}));
+  const first = '第1轮“字面常量”的全部消息匹配到一条以上';
+  const second = '第1轮“存储”的全部消息匹配到一条，出处如下：';
+  const line = first + '，' + second;
+  const result = evaluateSourceDraft({plan, question, text:line+'\n\n'+report,
+    observations:sourceObservations(plan,calls,[]),meaning:{claims:[{quote:line,relation:'execution',fields:[
+      {name:'scannedTurn',literal:'第1轮',value:1},{name:'totalMatches',literal:'一条',value:1}]}]}});
+  assert.equal(result.status,'partial');
+  assert.ok(!result.text.includes(first));
+  assert.deepEqual(result.sourceDelivery.items.filter(i => i.fieldsDelivered.includes('totalMatches')).map(i => i.query),['存储']);
+});
+
+test('a stated field total cannot be closed by an incomplete attachment proposal', async () => {
+  const file = {id: 'memo', name:'A.txt', relPath:'uploads/one-A.txt', versions:[{v:1,sha256:digest('依据：台账')}]};
+  const question = history + '请读取 A.txt 的“依据”，逐字给出这两个字段。';
+  const plan = await prepareSourcePlan({question, attachments:[file.relPath]}, {session:{},
+    ctx:{store:{findMaterialByPath: () => file}},
+    readSourceLanguage:async () => ({kind:'mixed',items:[{action:'read',quote:'A.txt',material:'A.txt',fields:['依据']}]})});
+  assert.ok(plan.gaps.some(reason => reason.includes('A.txt') && reason.includes('字段')), JSON.stringify(plan.gaps));
+});

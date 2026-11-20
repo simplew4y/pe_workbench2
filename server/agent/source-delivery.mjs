@@ -17,8 +17,8 @@ import {
 } from './answer-delivery.mjs';
 import {resultReports} from './transcript-search-recovery.mjs';
 import {conditionValue} from './source-observations.mjs';
-import {countPopulation, digest} from './source-plan.mjs';
-import {verifyAttachmentLine} from './source-attachments.mjs';
+import {countPopulation, digest, queryReferences} from './source-plan.mjs';
+import {attachmentParts, verifyAttachmentLine} from './source-attachments.mjs';
 
 const absent =
   /(?:未(?:命中|匹配|引用|找到|检索到|查到)|没有(?:命中|匹配|引用|找到)|无(?:匹配|命中)|零命中|0\s*条|no matches)/i;
@@ -45,30 +45,47 @@ function visibleMarkdown(markdown) {
   return leaves(Lexer.lex(markdown));
 }
 
-function units(text, attachments) {
-  const result = [];
+// Split only at the start of a separately identifiable assertion. Preserve
+// the original Markdown (including separators) so accepted neighbors retain
+// their exact spelling and all durable spans address the signed version.
+function* countParts(part, decisions) {
+  let start = 0;
+  if (decisions.length > 1) {
+    const refs = queryReferences(part, decisions).filter(ref => ref.known);
+    for (let i = 1; i < refs.length; i++) {
+      // The two operands bound the intervening predicate. Split after its
+      // last quantity, preserving Markdown closers and original punctuation.
+      const previous = refs[i - 1], next = refs[i];
+      const between = part.slice(previous.end, next.start);
+      const count = visibleMatchCounts(between).at(-1);
+      if (!count || !visibleMatchCounts(part.slice(next.end)).length) continue;
+      const end = previous.end + count.visibleRange[1];
+      const gap = part.slice(end, next.start);
+      const punctuation = /[，,；;、](?![\s\S]*[，,；;、])/u.exec(gap);
+      // Leave modifiers after the number ("两条以上") with that number.
+      // Otherwise the sign-off would turn a qualified count into an exact one.
+      const nextIntro = /\s*(?:(?:而|同时|并且|以及|另|和|与)\s*)?(?:第\s*[零一二两三四五六七八九十百千\d]+\s*轮\s*)?$/u.exec(gap);
+      const cut = end + (punctuation ? punctuation.index + 1 : nextIntro.index);
+      yield {value: part.slice(start, cut), parent: part};
+      start = cut;
+    }
+  }
+  yield {value: part.slice(start), parent: start ? part : undefined};
+}
+
+function* units(text, attachments, decisions, attempts) {
   let end = 0;
-  for (const block of answerBlocks(text))
-    for (const value of block.parts.flatMap(part => {
-      if (!attachments.length || !attachments.some(i => part.includes(i.filename))) return [part];
-      // Retain separators on verified spans so two accepted quotes reproduce
-      // the exact original. A rejected second quote cannot invalidate the first.
-      const parts = [];
-      let start = 0;
-      for (const sep of part.matchAll(/[;；]\s*/gu)) {
-        const next = sep.index + sep[0].length;
-        if (!attachments.some(i => [i.filename, i.path].some(name => name && part.startsWith(name, next)))) continue;
-        parts.push(part.slice(start, sep.index + 1));
-        start = next;
-      }
-      return [...parts, part.slice(start)];
-    })) {
+  for (const part of answerBlocks(text).flatMap(block => block.parts)) {
+    const isAttachment = attachments.some(item => part.includes(item.filename) || (item.path && part.includes(item.path)));
+    const fragments = isAttachment ? attachmentParts(part, attachments, attempts, visibleMarkdown) : countParts(part, decisions);
+    for (const fragment of fragments) {
+      const value = fragment.value.trim();
       const start = text.indexOf(value, end);
       if (start < 0) continue;
       end = start + value.length;
-      result.push({value, start, end});
+      yield {...fragment, value, start, end};
     }
-  return result;
+  }
 }
 
 // A blind reader can align several field labels to a list of values. Verify
@@ -202,7 +219,8 @@ function visibleMatchCounts(text) {
         else if (search && !subject) subject = 'totalMatches';
         previousEnd = m.index + m[0].length;
         if (!subject && !searchHeading) continue;
-        const qualified = /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
+        const qualified = /^(?:以上|以下|左右|以内|以外|起)/u.test(clause.slice(previousEnd).trimStart()) ||
+          /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
         fields.push({name: subject ?? 'totalMatches', literal: m[0], value: quantity(m[1]), visibleRange: fieldRange(m), ...(qualified ? {qualified: true} : {})});
       }
     }
@@ -515,10 +533,10 @@ export function evaluateSourceDraft({
     }
   }
   const gaps = [...plan.gaps, ...observations.recoveryGaps];
-  for (const unit of units(text, attachments)) {
+  for (const unit of units(text, attachments, decisions, observations.attempts)) {
     const s = unit.value,
       visible = visibleMarkdown(s);
-    const attachment = verifyAttachmentLine(visible.trim(), attachments, observations.attempts);
+    const attachment = verifyAttachmentLine(visible.trim(), unit.attachmentOwners ?? attachments, observations.attempts);
     if (attachment !== undefined) {
       const disputed = review?.openFindings?.some(f => f.excerpt && s.includes(f.excerpt));
       if (attachment && !disputed && !unsafeMarkdown.test(s)) {
@@ -529,10 +547,19 @@ export function evaluateSourceDraft({
       } else rejected.push(s);
       continue;
     }
-    const named = decisions.filter((i) => i.query && s.toLowerCase().includes(i.query.toLowerCase()));
-    const selected = named.length ? named : decisions;
-    const countText = named.reduce((part, item) => part.replaceAll(item.query, ' '.repeat(item.query.length)), visible);
+    const refsInText = queryReferences(visible, decisions);
+    const namesHere = new Set(refsInText.map(ref => ref.query));
+    const named = decisions.filter(i => namesHere.has(i.query?.toLowerCase()));
+    let selected = named.length ? named : decisions;
+    const countText = refsInText.filter(ref => ref.known).reduceRight((part, ref) => part.slice(0, ref.start) +
+      ' '.repeat(ref.end - ref.start) + part.slice(ref.end), visible);
     const matchCounts = visibleMatchCounts(countText);
+    if (matchCounts.length) {
+      const rounds = explicitTurns(countText);
+      if (rounds.size) selected = selected.filter(item => !item.turn || (rounds.size === 1 && rounds.has(item.turn)));
+      if (refsInText.some(ref => !ref.known && /^(?:的)?(?:全部消息|助手|匹配|命中)/u.test(visible.slice(ref.end).trimStart())) || unsafeMarkdown.test(s))
+        selected = [];
+    }
     const scans = matchCounts.length ? [...scopedScans(selected, observations)].map(({attempt, hits}) => ({
       callId: attempt.id,
       ...scanCounts(attempt, hits, observations),
@@ -573,12 +600,19 @@ export function evaluateSourceDraft({
       continue;
     }
     const visibleUnit = visible.trim();
-    let semantics =
-      meaning?.claims?.filter((c) => {
-        if (typeof c.quote !== 'string' || !c.quote.trim()) return false;
-        const quote = visibleMarkdown(c.quote).trim();
-        return s.includes(c.quote) || (quote && visibleUnit.includes(quote));
-      }) ?? [];
+    // A reader may describe this predicate or its entire enclosing sentence.
+    // Restrict a sentence receipt to the literals at this occurrence. Only
+    // the locally selected tool result may corroborate those literals.
+    let semantics = (meaning?.claims ?? []).flatMap(claim => {
+      if (typeof claim.quote !== 'string' || !claim.quote.trim()) return [];
+      const quote = visibleMarkdown(claim.quote).trim();
+      if (s.includes(claim.quote) || (quote && visibleUnit.includes(quote))) return [claim];
+      if (unit.parent && claim.relation === 'execution' && claim.polarity !== 'negative' &&
+          unit.parent.includes(claim.quote) && quote.includes(visibleUnit))
+        return [{...claim, quote: s, fields: (claim.fields ?? []).filter(f =>
+          typeof f.literal === 'string' && visibleUnit.includes(f.literal))}];
+      return [];
+    });
     // A field/value row inherits the subject of its verified introducer.
     // Preserve explicit switches of time, negation and additional assertions.
     const sourceFields = semantics.length > 0 && semantics.every((claim) =>

@@ -161,7 +161,7 @@ function reportsHistoricalSource(part, refs, question, hasId) {
   });
 }
 
-function ordinal(label) {
+export function ordinal(label) {
   if (/^\d+$/.test(label)) return Number(label);
   if (!/^[零〇一二两三四五六七八九十百千]+$/.test(label)) return NaN;
   let number = 0;
