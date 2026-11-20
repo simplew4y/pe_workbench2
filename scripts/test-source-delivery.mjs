@@ -3,7 +3,7 @@ import test from 'node:test';
 import {runWithPostAnswer} from '../server/agent/post-answer.mjs';
 import {createTranscriptSearchTool} from '../lib/transcript-search-tool.mjs';
 import {sourceObservations} from '../server/agent/source-observations.mjs';
-import {evaluateSourceDraft} from '../server/agent/source-delivery.mjs';
+import {evaluateSourceDraft, recoverSourceFields} from '../server/agent/source-delivery.mjs';
 import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
 import {sourceModelOptions} from '../server/agent/source-provider.mjs';
 import {prepareSourcePlan, assertionQuestion, modelPlan, digest} from '../server/agent/source-plan.mjs';
@@ -34,7 +34,7 @@ const multiple =
 const exists =
   '请查第1轮“折旧政策”是否引用过 Acceptance13.xlsx；仅当引用过才查同一材料当前版本，否则只报告未命中。';
 
-async function run(question, searches, text, budgetStop = false) {
+async function run(question, searches, text, budgetStop = false, readSourceLanguage) {
   const rows = [];
   const events = new Set();
   const prior = [
@@ -70,7 +70,7 @@ async function run(question, searches, text, budgetStop = false) {
           );
         }
       }
-      if (budgetStop) {
+      if (budgetStop === true || budgetStop === prompts) {
         entry.activeTurn.sourceBudgetStop = {lane: 'business'};
         this.messages.push({
           role: 'assistant',
@@ -87,7 +87,7 @@ async function run(question, searches, text, budgetStop = false) {
         });
     },
   };
-  const entry = {session, id: 'session'};
+  const entry = {session, id: 'session', readSourceLanguage};
   const record = await runWithPostAnswer(entry, question);
   return {record, rows, markersAtCall, session};
 }
@@ -484,5 +484,242 @@ test('visible negative historical assertion and a new corporate claim cannot inh
     const {record} = await run(history, [{query, turn: 1}], text);
     assert.notEqual(record.status, 'completed');
     assert.ok(!record.text.includes('董事会') && !record.text.includes('并非'));
+  }
+});
+
+test('an earlier assistant reply binds the requested fields even without a tool or a proposed search term', async () => {
+  const definition = '折旧是将可折旧金额在资产使用寿命内进行分摊。';
+  for (const subject of ['第1轮正式回答', '第一条答复', '第一个回复']) {
+    const seen = [];
+    const q = '你发给我的' + subject + '用了哪本工作簿的哪个单元格？请给出完整 citation.id。';
+    const {record, rows} = await run(q, [], definition, false, (op) => {
+      seen.push(op);
+      return op === 'request' ? {kind: 'history', items: []} : null;
+    });
+    assert.ok(seen.includes('request'), subject);
+    const plan = rows.find((r) => r.type === 'pe_source_plan').data;
+    assert.deepEqual(
+      plan.items.map((i) => [i.action, i.turn, i.fields]),
+      [['search', 1, ['id', 'filename']]],
+    );
+    assert.deepEqual([record.status, record.text], ['failed', '']);
+  }
+  assert.equal((await run('请用一句话说明什么是折旧。', [], definition)).record.status, 'completed');
+});
+
+test('a checked search heading governs field rows; independently stated current facts keep their time', () => {
+  const heading = '第1轮命中1处，出处如下：';
+  const lines = [
+    '- 工作簿：' + filename + '（材料ID ' + materialId + '，v1）',
+    '- 单元格：Model!B2',
+    '- 材料版本：v1',
+    '- 完整引用 ID：' + original.id,
+  ];
+  const text = heading + '\n\n' + lines.join('\n') + '\n\n未核验：无。';
+  const claims = [
+    {
+      quote: heading,
+      relation: 'execution',
+      polarity: 'positive',
+      fields: [
+        {name: 'scannedTurn', literal: '第1轮', value: 1},
+        {name: 'ledgerMatches', literal: '1处', value: 1},
+      ],
+    },
+    ...lines.map((quote, i) => ({
+      quote,
+      relation: 'current',
+      polarity: 'positive',
+      fields: [
+        {
+          name: ['filename', 'locator', 'version', 'id'][i],
+          literal: [filename, 'Model!B2', 'v1', original.id][i],
+        },
+      ],
+    })),
+  ];
+  const plan = {...sourcePlan, route: 'history'};
+  const found = structuredClone(activeSearch);
+  found.result.details.ledgerTotalMatches = 0;
+  const evaluate = (s, meaning = claims) =>
+    evaluateSourceDraft({
+      text: s,
+      question: history,
+      plan,
+      observations: sourceObservations(plan, [found], []),
+      meaning: {claims: meaning},
+      currentVersions: {[materialId]: 2},
+    });
+  const good = evaluate(text);
+  assert.deepEqual(
+    [good.status, good.text, good.citations.map((c) => c.id)],
+    ['completed', text, [original.id]],
+  );
+  const prose = (line) => line.replace('出处如下：', '出处如下。').replace(/^- (.*?)：/, '$1为');
+  const paragraph = text.split('\n').map(prose).join('\n');
+  const paragraphReceipt = evaluate(
+    paragraph,
+    claims.map((claim) => ({...claim, quote: prose(claim.quote)})),
+  );
+  assert.equal(paragraphReceipt.status, 'completed');
+  assert.equal(paragraphReceipt.text, paragraph);
+  assert.deepEqual(
+    paragraphReceipt.sourceDelivery.occurrences.map((r) => paragraph.slice(r.start, r.end)),
+    ['Model!B2'],
+  );
+  for (const extra of [
+    '当前工作簿版本为 v1。',
+    '- 当前材料版本：v1',
+    '- 另一个格：Model!Z999',
+    '- 材料版本：v2',
+    '- 不是这个版本。',
+  ]) {
+    const scored = evaluate(text + '\n' + extra, [
+      ...claims,
+      {quote: extra, polarity: 'positive', relation: 'historical', fields: []},
+    ]);
+    assert.ok(!scored.text.includes(extra), extra);
+    assert.equal(scored.status, 'partial', extra);
+  }
+  assert.ok(!evaluate(text.replace('命中1处', '命中2处')).text.includes('命中2处'));
+});
+
+test('budget stop rechecks the retained prose of multiple obligations and names a remaining missing target', async () => {
+  const bad = report + '。\n\n当前材料的 [Unknown.xlsx]Model!C9 版本为 v9。';
+  const both = multiple.replaceAll(query2, '来源');
+  const {record, rows} = await run(
+    both,
+    [
+      {query, turn: 1},
+      {query: '来源', turn: 1},
+    ],
+    bad,
+    2,
+  );
+  assert.equal(record.status, 'completed', record.reason);
+  assert.ok(record.text.includes(original.id) && !record.text.includes('v9'));
+  assert.ok(rows.some((r) => r.type === 'pe_source_host_repair'));
+  const earlyStop = await run(multiple, [{query, turn: 1}], '', true);
+  assert.equal(earlyStop.record.status, 'partial', earlyStop.record.reason);
+  assert.ok(earlyStop.record.text.includes(original.id));
+  assert.match(earlyStop.record.reason, /折旧政策/);
+  const missing = await run(multiple, [{query, turn: 1}], bad, 2);
+  assert.equal(missing.record.status, 'partial');
+  assert.match(missing.record.reason, /折旧政策/);
+});
+
+test('read-only scoped research can start its authorized searches inside the first physical input limit', async () => {
+  const question =
+    '请查第1轮“字面常量”的正式出处，列出工作簿、原格、版本和完整引用 ID。再就同一份材料做一个只读的估值分析：本轮打开现在的同一格，给出其当前值与版本，并说明仅凭这一个值能否判断企业估值。只在聊天答复。';
+  const plan = await prepareSourcePlan({turnId: 'R', question}, {id: 's', session: {}});
+  const active = {question, plan, controller: new AbortController(), planProjection: modelPlan(plan)};
+  const body = {
+    messages: [
+      {role: 'system', content: '权限及研究规则。'},
+      {role: 'user', content: active.planProjection},
+      {role: 'user', content: question},
+    ],
+    tools: ['transcript_search', 'workbook_query', 'web_fetch', 'edit'].map((name) => ({
+      type: 'function',
+      function: {name, description: name === 'edit' ? 'x'.repeat(71500) : name},
+    })),
+  };
+  const fitted = await sourceModelOptions(active, {id: 'fixture'}, {sourceStage: 'research-draft'}).onPayload(
+    body,
+  );
+  assert.deepEqual(
+    fitted.tools.map((t) => t.function.name),
+    ['transcript_search', 'workbook_query'],
+  );
+  assert.ok(
+    fitted.messages.some((m) => m.content === question) &&
+      fitted.messages.some((m) => m.content === active.planProjection),
+  );
+  assert.ok(active.budget.input <= 32000);
+});
+
+test('history tool error is readable by a versionless client without reflecting supplied arguments', () => {
+  const msg =
+    'Validation failed for tool "transcript_search":\n  - query: must have required properties query\n\nReceived arguments:\n{"token":"not-for-display"}';
+  const tool = {id: 'invalid', name: 'transcript_search', status: 'error', detail: '{}', output: msg};
+  for (const row of [
+    projectSourceEvent({type: 'snapshot', messages: [{tools: [tool]}]}, false).messages[0].tools[0],
+    projectSourceEvent({type: 'tool.completed', ...tool}, false),
+  ]) {
+    assert.match(row.presentationError ?? row.detail, /query/);
+    assert.ok(!JSON.stringify(row).includes('not-for-display'));
+    assert.equal(row.id, tool.id);
+    assert.equal(row.status, 'error');
+  }
+});
+
+test('interrupted mixed requests preserve signed-version evidence and keep the unaudited explanation open', () => {
+  const plan = {
+    ...sourcePlan,
+    route: 'mixed',
+    sourceOnlyRead: true,
+    research: true,
+    items: [
+      {...sourcePlan.items[0], operation: 'source'},
+      {id: 'now', action: 'read', fields: ['version', 'locator', 'value']},
+      {id: 'research', action: 'review', fields: ['reviewedAnswer']},
+    ],
+  };
+  const read = observation('workbook_query', 'cell', {query: 'Model!B2'}, {citations: [current]});
+  const observations = sourceObservations(plan, [activeSearch, read], []);
+  function recover(head) {
+    const currentVersions = {[materialId]: head};
+    const text = recoverSourceFields(plan, observations, currentVersions);
+    const result = evaluateSourceDraft({text, question: history, plan, observations, currentVersions});
+    assert.equal(result.status, 'partial', result.reason);
+    assert.equal(result.text, text);
+    assert.match(result.reason, /研究审校/);
+    assert.ok(result.text.includes(original.id));
+    return result;
+  }
+  assert.deepEqual(
+    recover(2).citations.map((c) => c.version),
+    [1, 2],
+  );
+  assert.deepEqual(
+    recover(3).citations.map((c) => c.version),
+    [1],
+  );
+  const currentVersions = {[materialId]: 2};
+  const evidence = recoverSourceFields(plan, observations, currentVersions);
+  const note = '单一工作簿中的读数不足以判断企业估值。';
+  const text = evidence + '\n\n' + note;
+  const meaning = {
+    claims: [
+      ...evidence
+        .split('\n\n')
+        .map((quote) => ({
+          quote,
+          relation: quote.startsWith('当前') ? 'current' : 'historical',
+          polarity: 'positive',
+          fields: [],
+        })),
+      {quote: note, relation: 'financial', polarity: 'positive', fields: []},
+    ],
+  };
+  const review = {digest: digest(text), openFindings: []};
+  const evaluate = (overrides) =>
+    evaluateSourceDraft({
+      text,
+      question: history,
+      plan,
+      observations,
+      currentVersions,
+      meaning,
+      review,
+      ...overrides,
+    });
+  assert.equal(evaluate({}).status, 'completed', JSON.stringify(evaluate({}).rejectedChecks));
+  for (const overrides of [
+    {review: {}},
+    {currentVersions: {[materialId]: 3}},
+    {review: {...review, openFindings: [{excerpt: note}]}},
+  ]) {
+    assert.ok(!evaluate(overrides).text.includes(note));
   }
 });

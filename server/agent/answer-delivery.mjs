@@ -140,7 +140,7 @@ const RESTATEMENT = /(?:行号|坐标)(?:也)?显示为\s*$|也就是说|也就�
 function reportsHistoricalSource(part, refs, question, hasId) {
   let description = part.replace(new RegExp(LOCATOR_SOURCE, 'g'), ' ');
   const historicalSubject = HISTORY.test(description);
-  description = description.replace(/第\s*\d+\s*[轮次]|\bturn\s*#?\d+|\d+\s*条(?=\s*(?:命中|记录|结果|[，,。；;]|$))/gi, ' ');
+  description = description.replace(/第\s*\d+\s*(?:[轮次]|[个条段份则封篇]\s*(?:正式)?(?:答复|回复|回答|答文|回信|消息))|\bturn\s*#?\d+|\d+\s*条(?=\s*(?:命中|记录|结果|[，,。；;]|$))/gi, ' ');
   if (/\d|当前|现在|最新|现价|[零〇一二两三四五六七八九十百千万亿]+(?:元|美元|港元|%)|\b(?:current|now|latest)\b/i.test(description)) return false;
   const provenanceQuestion = HISTORY.test(question) && REFERENCE.test(question);
   if ((historicalSubject || provenanceQuestion) && sourceFieldsOnly(part, hasId)) return true;
@@ -180,7 +180,7 @@ function ordinal(label) {
 
 export function explicitTurns(text) {
   const turns = new Set();
-  for (const match of text.matchAll(/第\s*([零一二三四五六七八九十百千\d]+)\s*[轮次]|\bturn\s*#?(\d+)/gi)) {
+  for (const match of text.matchAll(/第\s*([零一二三四五六七八九十百千\d]+)\s*(?:[轮次]|[个条段份则封篇]\s*(?:正式)?(?:答复|回复|回答|答文|回信|消息))|\bturn\s*#?(\d+)/gi)) {
     turns.add(ordinal(match[1] || match[2]));
   }
   if (/首轮/.test(text)) turns.add(1);

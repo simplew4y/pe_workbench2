@@ -98,21 +98,32 @@ export async function prepareSourcePlan(active, entry) {
     items,
     gaps,
   };
-  const sourceRequest =
+  // Classify the object of the request independently of its search verb.
+  // An ordinal by itself might name a cell; a reference to a reply plus
+  // requested provenance fields refers to the conversation.
+  const asksFields = /出处|来源|引用|单元格|工作簿|哪本|哪一格|citation[._ ]?id|workbook|which cell/i.test(question);
+  const replySubject = /答复|回复|答文|答过|回答(?:中|里|用|引用|所|的)|发给我|你.{0,6}(?:说过|提到过|写过)|(?:your|previous|earlier) (?:reply|answer|message)/i.test(question);
+  const refersToAnswer = asksFields && replySubject;
+  const sourceRequest = refersToAnswer ||
     (audited.asksHistory &&
       (audited.terms.length > 0 || /检索结果|有无|是否|出处|引用|来源|单元格/.test(question))) ||
     asksHistoricalSource(question) ||
     (/transcript_search/.test(question) && /出处|引用|单元格|工作簿|有无|是否|检索结果/.test(question));
   // A short pronoun with no qualified operand needs the independent reader.
   const ambiguous = !sourceRequest && /刚才那|之前那|earlier one|that earlier/i.test(question);
+  const previousAnswer = entry.session.messages?.some((m) => m.role === 'assistant');
+  const implicitSubject = previousAnswer && asksFields &&
+    (sourceId.test(question) || /(?:那|上述|所用|提到的|所据|that|those)/i.test(question)) &&
+    !/上传|附件|直接读|打开文件/.test(question);
   const plain =
     !sourceRequest &&
     !ambiguous &&
     !audited.asksHistory &&
     !proposal.length &&
+    !implicitSubject &&
     !/以前|之前|方才|前面|当时|旧答|上文|过去|earlier|previous/i.test(question);
   plan.inventory = {rounds: scope, terms: audited.terms, books: audited.books, sourceRequest, plain};
-  if (plain || (!sourceRequest && !ambiguous && !entry.readSourceLanguage)) return plan;
+  if (plain) return plan;
   let interpretation;
   if (entry.readSourceLanguage) {
     interpretation = await entry.readSourceLanguage('request', {question}, active);
@@ -247,7 +258,12 @@ export async function prepareSourcePlan(active, entry) {
       requiresSave: /保存|写入|写成.{0,8}报告/.test(question),
     });
   }
+  plan.sourceOnlyRead = Boolean(plan.research && hasCurrent &&
+    /同一(?:份|本|个)?(?:材料|文件|工作簿)|同一格/.test(question) &&
+    /(?:仅凭|只凭|只据|仅依据|仅根据)[^。！？]{0,20}(?:格|读数|值)/.test(question) &&
+    !items.some((i) => i.requiresSave));
   plan.inventory = {
+    turns: scope, refersToAnswer,
     terms: audited.terms,
     books,
     requiredCount: count?.[1],

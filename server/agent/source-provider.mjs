@@ -29,12 +29,14 @@ export function sourceModelOptions(active, model, options, configPayload) {
     const body = (await configPayload?.(modified ?? payload, requestModel)) ?? modified ?? payload;
     if (signal.aborted) throw new Error('本轮模型请求已停止');
     if (side && (body.tools?.length || body.functions?.length)) throw new Error('无工具核读请求意外包含工具');
+    const initialBytes = Buffer.byteLength(JSON.stringify(body));
+    const availableBytes = Math.min(side ? 8000 : 32000, 192000 - budget.input);
     // Redundant completed tool outputs from earlier turns are recoverable
     // through transcript_search. Preserve paired protocol messages and every
     // result from the current question, including errors and negative results.
     const canScope =
       !side &&
-      !active.plan?.research &&
+      (!active.plan?.research || active.plan.sourceOnlyRead) &&
       ['answer', 'research-draft', 'research-repair'].includes(options?.sourceStage ?? 'answer');
     if (canScope && Array.isArray(body.tools)) {
       const allowed = new Set([
@@ -44,7 +46,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
       body.tools = body.tools.filter((t) => allowed.has(t.function?.name ?? t.name));
       active.offeredSourceTools = new Set(body.tools.map((t) => t.function?.name ?? t.name));
     }
-    if (canScope && Buffer.byteLength(JSON.stringify(body)) > 32000 && Array.isArray(body.messages)) {
+    if (canScope && Buffer.byteLength(JSON.stringify(body)) > availableBytes && Array.isArray(body.messages)) {
       const boundary = body.messages.findLastIndex(
         (m) => m.role === 'user' && JSON.stringify(m.content).includes(active.question),
       );
@@ -98,7 +100,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
           ({turn, role, excerpt, sourceTurnId, sourceStatus, sourceLimits}) => ({
             turn,
             role,
-            excerpt: String(excerpt).slice(0, 180),
+            excerpt: Array.from(String(excerpt ?? '')).slice(0, 64).join(''),
             sourceTurnId,
             sourceStatus,
             sourceLimits,
@@ -113,10 +115,67 @@ export function sourceModelOptions(active, model, options, configPayload) {
               coverage,
               sourceEvidence,
               ledgerTotalMatches,
+              ledgerCoverage: result.ledgerCoverage,
+              ledgerMatchesOmitted: result.ledgerMatches?.length ? true : undefined,
+              excerptsAbbreviated: true,
               truncated,
             }),
           },
         ];
+      });
+    }
+    if (canScope && Array.isArray(body.messages) && Buffer.byteLength(JSON.stringify(body)) > availableBytes) {
+      const offered = active.offeredSourceTools;
+      const citations = new Map();
+      const excerpts = new Map();
+      const ledgerScans = new Map();
+      body.messages = body.messages.map((message) => {
+        // Pi advertises its initially loaded tools in a separate catalogue.
+        // Match that catalogue to the actual offered schemas. Leave permission
+        // rules, developer instructions and every user message intact.
+        if (offered && message.role === 'system' && typeof message.content === 'string') {
+          const content = message.content.replace(/<tools>\n([\s\S]*?)\n<\/tools>/, (_, lines) =>
+            '<tools>\n' + lines.split('\n').filter((line) => {
+              const tool = line.match(/^- (\w+): /);
+              return !tool || offered.has(tool[1]);
+            }).join('\n') + '\n</tools>');
+          return {...message, content};
+        }
+        if (message.role !== 'tool' || typeof message.content !== 'string') return message;
+        let result;
+        try { result = JSON.parse(message.content); } catch { return message; }
+        if (!Array.isArray(result.sourceEvidence)) return message;
+        if (result.ledgerCoverage) {
+          const key = JSON.stringify(result.ledgerCoverage);
+          const prior = ledgerScans.get(key);
+          if (prior) {
+            delete result.ledgerCoverage;
+            result.ledgerCoverageFrom = prior;
+          } else ledgerScans.set(key, message.tool_call_id);
+        }
+        if (Array.isArray(result.matches)) {
+          result.matches = result.matches.map((match, index) => {
+            if (!match.sourceTurnId || !match.excerpt) return match;
+            const {excerpt, ...source} = match;
+            const key = JSON.stringify([source.sourceTurnId, source.role, source.sourceStatus, source.sourceLimits, excerpt]);
+            const earlier = excerpts.get(key);
+            if (earlier) return {...source, excerptFrom: earlier};
+            excerpts.set(key, [message.tool_call_id, index]);
+            return match;
+          });
+        }
+        // Share only the literal citation fields. Each hit keeps its own
+        // source turn, permissions, limits, target items and retrievable handle.
+        result.sourceEvidence = result.sourceEvidence.map((row) => {
+          if (!row.handle || !row.id || !row.version || !row.materialId || !row.locator) return row;
+          const {id, materialId, version, locator, filename, storedFilename, ...observation} = row;
+          const identity = JSON.stringify([id, materialId, version, locator, filename, storedFilename]);
+          const earlier = citations.get(identity);
+          if (earlier) return {...observation, citationFromHandle: earlier};
+          citations.set(identity, row.handle);
+          return row;
+        });
+        return {...message, content: JSON.stringify(result)};
       });
     }
     const encoded = JSON.stringify(body);
@@ -131,7 +190,9 @@ export function sourceModelOptions(active, model, options, configPayload) {
       budget.input + input > 192000 ||
       budget.output + maxTokens > 24000
     ) {
-      active.sourceBudgetStop={lane,input,sizes,toolCount:body.tools?.length??0};
+      active.sourceBudgetStop={lane,input,sizes,initialBytes,priorInput:budget.input,stage:options?.sourceStage ?? options?.sourceOperation ?? 'answer',
+        digest:digest(encoded),perRequestExceeded:input>(side?8000:32000),totalInputExceeded:input+budget.input>192000,
+        callLimitExceeded:budget[lane]>=(side?4:12),outputLimitExceeded:budget.output+maxTokens>24000,toolCount:body.tools?.length??0};
       active.receipt?.('pe_source_budget_stop', active.sourceBudgetStop);
       throw new Error(
         '来源核验模型预算耗尽（' +
@@ -209,7 +270,7 @@ export function sourceModelOptions(active, model, options, configPayload) {
           ),
       ),
       sentAt: Date.now(),
-      inputUpperBound: input,
+      initialBytes, priorInput:budget.input-input, inputUpperBound: input,
       maxTokens,
       visible,
     };

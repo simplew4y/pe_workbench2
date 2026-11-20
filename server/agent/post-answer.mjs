@@ -117,13 +117,27 @@ async function generateAnswer(entry, promptText, options, active) {
   let continuationCount = 0;
   let safeText = '';
   let safeCitations = [];
+  let recheckRetained;
+  let retainedIncomplete = false;
+  function signingVersions(observations, previous = entry.materialVersions) {
+    const versions = {...previous};
+    if (entry.ctx?.store?.getVersionRow) {
+      for (const id of new Set(observations.witnesses.map((w) => w.citation.materialId))) {
+        versions[id] = entry.ctx.store.getVersionRow(id)?.version?.v ?? null;
+      }
+    }
+    return versions;
+  }
   function repairFromObservations(kind,reason,observations,lint,before) {
-    const recovered=recoverSourceFields(active.plan,observations);
+    const currentVersions = signingVersions(observations);
+    const budgetStop = kind === 'verifiedFieldsAfterBudgetStop';
+    const recovered=recoverSourceFields(active.plan,observations,currentVersions,budgetStop);
     if (!recovered) return;
     const {hostRepair,rejected,rejectedChecks,optionalNotes,statedLimits,...decision}=evaluateSourceDraft({
-      text:recovered,question:text,plan:active.plan,observations,currentVersions:{},lint,repairId:false,
+      text:recovered,question:text,plan:active.plan,observations,currentVersions,lint,repairId:false,
     });
-    if (decision.status!=='completed' || rejected.length) return;
+    const usefulPartial = budgetStop && decision.status === 'partial' && decision.text;
+    if ((decision.status !== 'completed' && !usefulPartial) || rejected.length) return;
     appendTurnMarker(entry.session,'pe_source_host_repair',{turnId,kind,reason:failureReason(reason),
       before:digest(before),after:decision.sourceDelivery.textDigest,callIds:decision.sourceDelivery.claims.flatMap(c=>c.callIds)});
     return decision;
@@ -131,12 +145,27 @@ async function generateAnswer(entry, promptText, options, active) {
   const interrupted = reason => {
     if (!active.cancelled && active.sourceBudgetStop && active.admitted) {
       const observations=sourceObservations(active.plan,scannedTurnTools(entry.session,turnBoundary),toolCalls,entry.ctx?.store);
+      if (safeText && recheckRetained) {
+        const {hostRepair,rejected,rejectedChecks,optionalNotes,statedLimits,...checked}=recheckRetained(observations);
+        if (!retainedIncomplete && !rejected.length && checked.text===safeText && checked.status==='completed') {
+          appendTurnMarker(entry.session,'pe_source_host_repair',{turnId,kind:'retainedTextAfterBudgetStop',
+            before:digest(safeText),after:checked.sourceDelivery.textDigest,reason:failureReason(reason)});
+          return checked;
+        }
+        // Revalidation can invalidate a previously safe coordinate when the
+        // workbook changes. Only this freshly filtered decision can survive.
+        safeText = checked.text;
+        safeCitations = checked.citations;
+        active.safeDecision = checked;
+        if (checked.text) return {...checked, status:'partial',
+          reason:[checked.reason,failureReason(reason)].filter(Boolean).join('；')};
+      }
       const repaired=repairFromObservations('verifiedFieldsAfterBudgetStop',reason,observations,
         (part,pool)=>lintAnswer(part,{question:text,citations:pool,locatorCitations:pool}),safeText);
       if (repaired) return repaired;
     }
     return {...(active.safeDecision||{}),status:active.cancelled?'cancelled':safeText?'partial':'failed',
-      text:safeText,citations:safeCitations,reason:failureReason(reason)};
+      text:safeText,citations:safeCitations,reason:[active.safeDecision?.reason,failureReason(reason)].filter(Boolean).join('；')};
   };
   let latestMessage;
   let continuationPrefix = null;
@@ -266,11 +295,7 @@ async function generateAnswer(entry, promptText, options, active) {
       if (active.plan.route !== 'ordinary') {
         const meaning=await entry.readSourceLanguage?.('claims',{answer,units:answerBlocks(answer).flatMap(b=>b.parts)},active);
         const observations=sourceObservations(active.plan,scanned,toolCalls,entry.ctx?.store);
-        const sourceVersions={...currentVersions};
-        if (entry.ctx?.store?.getVersionRow) for (const w of observations.witnesses) {
-          const id=w.citation.materialId;
-          sourceVersions[id]=entry.ctx.store.getVersionRow(id)?.version?.v ?? null;
-        }
+        const sourceVersions = signingVersions(observations, currentVersions);
         const claimQuestion=assertionQuestion(text,active.plan);
         const scopedLint=(part,pool)=>{
           const checks={...lintContext,question:claimQuestion,locatorCitations:pool};
@@ -315,6 +340,12 @@ async function generateAnswer(entry, promptText, options, active) {
             observations,scopedLint,answer);
           if (repaired) return repaired;
         }
+        retainedIncomplete = incomplete;
+        recheckRetained = (fresh) => {
+          const versions = signingVersions(fresh, sourceVersions);
+          return evaluateSourceDraft({text:decision.text,question:text,plan:active.plan,observations:fresh,
+            currentVersions:versions,meaning,review:active.reviewed,lint:scopedLint,repairId:false});
+        };
         safeText=decision.text;
         safeCitations=decision.citations;
         active.safeDecision=decision;

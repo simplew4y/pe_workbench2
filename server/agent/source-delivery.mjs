@@ -159,6 +159,7 @@ function executionReport(claim, text, owners, observations) {
       continue;
     const ids = hits.flatMap((h) => (h.citations ?? []).map((c) => c.id));
     const values = {
+      totalMatches: d.totalMatches,
       assistantMatches: hits.length,
       totalTurns: coverage.totalTurns,
       turnsScanned: coverage.turnsScanned,
@@ -180,6 +181,14 @@ function executionReport(claim, text, owners, observations) {
       )
         values.citationCount = new Set(ids).size;
     }
+    // Bind a count to the noun in the visible report. A generic search
+    // match is not a ledger match, even if the blind reader labeled it so.
+    const fields = claim.fields.map(f => {
+      if (f.name === 'ledgerMatches' && !/台账|账本|ledger/i.test(text) &&
+          /命中|匹配/.test(text) && /^(?:\d+|[一二三四五六七八九十]+)\s*(?:处|条|项|个)$/.test(f.literal))
+        return {...f, name:'totalMatches'};
+      return f;
+    });
     const corroborated = (f) => {
       if (
         typeof f.literal !== 'string' ||
@@ -216,14 +225,14 @@ function executionReport(claim, text, owners, observations) {
       }
       if (typeof expected === 'boolean')
         return (
-          f.literal.includes(String(expected)) || (expected === false && /未截断|没有截断/.test(f.literal))
+          f.literal.includes(String(expected)) || (expected === false && /未截断|没有截断|没有遗漏|无遗漏/.test(f.literal))
         );
       return (
         typeof expected === 'string' &&
         (literal.includes(expected) || (f.name === 'sourceStatus' && literal.includes(statusNames[expected])))
       );
     };
-    if (!claim.fields.every(corroborated)) continue;
+    if (!fields.every(corroborated)) continue;
     let unchecked = text;
     for (const field of [...claim.fields].sort((a, b) => b.literal.length - a.literal.length)) {
       unchecked = unchecked.replace(field.literal, ' ');
@@ -231,7 +240,15 @@ function executionReport(claim, text, owners, observations) {
     unchecked = unchecked.replace(/第\s*(\d+)\s*轮/g, (token, n) =>
       coverage.turns?.length === 1 && coverage.turns[0] === Number(n) ? ' ' : token,
     );
-    if (!/[\da-f]{8}-[\da-f-]{27}|\d|\.xlsx|cite:/i.test(unchecked)) return attempt;
+    // Also check independently visible count modifiers, including counts
+    // which the reader omitted from its fields.
+    let conflictingCount = false;
+    unchecked = unchecked.replace(/(?:命中(?:了|的)?(?:只有|仅有|仅)?|只有|仅有)\s*([零一二三四五六七八九十\d]+)\s*(?:处|条|项|个)/g, (match, n) => {
+      const value = /^\d+$/.test(n) ? Number(n) : '零一二三四五六七八九十'.indexOf(n);
+      conflictingCount ||= value !== d.totalMatches;
+      return ' ';
+    });
+    if (!conflictingCount && !/[\da-f]{8}-[\da-f-]{27}|\d|\.xlsx|cite:/i.test(unchecked)) return attempt;
   }
 }
 
@@ -242,18 +259,12 @@ function distinctWitnesses(witnesses) {
 // A budget stop can precede the first printable draft even though the
 // requested source was retrieved. Recover only a fully enumerated, unique
 // source and submit the resulting text to the ordinary field verifier.
-export function recoverSourceFields(plan, observations) {
-  if (
-    plan.route !== 'history' ||
-    plan.research ||
-    plan.gaps.length ||
-    plan.items.length !== 1 ||
-    observations.recoveryGaps.length ||
-    observations.badIds.length
-  )
-    return;
-  const [item] = observations.items;
-  if (!item || item.item.action !== 'search' || item.item.operation !== 'source' || !item.item.turn) return;
+function recoveredItemText(item, observations, currentVersions, includeRead) {
+  if (!item.item.turn) return;
+  if (item.empty && item.item.operation === 'exists' && !item.hits.length &&
+      /^[\p{L}\p{N}_ .!-]{1,100}$/u.test(item.item.query)) {
+    return '第' + item.item.turn + '轮“' + item.item.query + '”未命中。';
+  }
   const sources = distinctWitnesses(item.hits);
   if (sources.length !== 1) return;
   const w = sources[0],
@@ -278,7 +289,7 @@ export function recoverSourceFields(plan, observations) {
     c.id !== 'cite:' + c.materialId + ':v' + c.version + ':' + c.locator
   )
     return;
-  return (
+  const historyText = (
     '第' +
     w.turn +
     '轮正式回答引用的是 [' +
@@ -292,6 +303,28 @@ export function recoverSourceFields(plan, observations) {
     '）。\n\n完整引用 ID：' +
     c.id
   );
+  if (!includeRead) return historyText;
+  const direct = distinctWitnesses(observations.witnesses.filter((row) =>
+    row.relation === 'read' && row.selection === 'head' &&
+    row.citation.materialId === c.materialId && row.citation.locator === c.locator &&
+    currentVersions[c.materialId] === row.citation.version));
+  if (direct.length !== 1) return historyText;
+  const cell = direct[0].citation;
+  if (!Number.isFinite(cell.value)) return historyText;
+  return historyText + '\n\n当前同一材料的 [' + c.materialId + '@v' + cell.version + ']' +
+    cell.locator + ' 读数为 ' + cell.value + '，版本为 v' + cell.version + '。';
+
+}
+
+export function recoverSourceFields(plan, observations, currentVersions = {}, allowPartial = false) {
+  const scopedMixed = plan.route === 'mixed' && plan.sourceOnlyRead;
+  if ((!scopedMixed && (plan.route !== 'history' || plan.research)) || observations.badIds.length) return;
+  if (!allowPartial && (plan.gaps.length || observations.recoveryGaps.length || observations.items.length !== 1)) return;
+  // Recovery is per admitted search. A successful X can provide a printable
+  // source while Y stays unresolved in the very same verification pass.
+  const reports = observations.items.map((item) =>
+    recoveredItemText(item, observations, currentVersions, scopedMixed)).filter(Boolean);
+  return [...new Set(reports)].join('\n\n') || undefined;
 }
 
 export function evaluateSourceDraft({
@@ -360,6 +393,7 @@ export function evaluateSourceDraft({
   let body = '',
     priorEnd = 0,
     antecedent;
+  let historyFieldGroup = false;
   const accept = (unit, refs, owners, ws, relation) => {
     if (body) {
       const separator = text.slice(priorEnd, unit.start);
@@ -413,12 +447,22 @@ export function evaluateSourceDraft({
       continue;
     }
     const visibleUnit = visible.trim();
-    const semantics =
+    let semantics =
       meaning?.claims?.filter((c) => {
         if (typeof c.quote !== 'string' || !c.quote.trim()) return false;
         const quote = visibleMarkdown(c.quote).trim();
         return s.includes(c.quote) || (quote && visibleUnit.includes(quote));
       }) ?? [];
+    // A field/value row inherits the subject of its verified introducer.
+    // Preserve explicit switches of time, negation and additional assertions.
+    const sourceFields = semantics.length > 0 && semantics.every((claim) =>
+      ['current', 'historical'].includes(claim.relation) && claim.polarity === 'positive' &&
+      claim.fields?.length && claim.fields.every((field) =>
+        ['materialId', 'version', 'locator', 'filename', 'displayFilename', 'storedFilename', 'id'].includes(field.name) &&
+        typeof field.literal === 'string' && visibleUnit.includes(field.literal)));
+    historyFieldGroup &&= Boolean(sourceFields && !now.test(s) && !negative.test(s) &&
+      !/现行|如今|现为|latest|as of/i.test(s) && !amount.test(s));
+    if (historyFieldGroup) semantics = semantics.map((claim) => ({...claim, relation: 'historical'}));
     const whole = semantics.find((c) => c.quote === s || visibleMarkdown(c.quote).trim() === visibleUnit);
     const executionClaims = semantics.filter((c) => c.relation === 'execution');
     const completeExecution =
@@ -431,7 +475,11 @@ export function evaluateSourceDraft({
     if (completeExecution) {
       const evidence = {relation: 'execution', fields: executionClaims.flatMap((c) => c.fields ?? [])};
       const attempt = executionReport(evidence, s, selected, observations);
-      if (attempt) accept(unit, [], selected, [{callId: attempt.id}], 'execution');
+      if (attempt) {
+        accept(unit, [], selected, [{callId: attempt.id}], 'execution');
+        historyFieldGroup = /(?:出处|来源|引用)/.test(s) &&
+          !now.test(s) && !negative.test(s) && selected.every(i=>i.hits.length);
+      }
       else if (
         plan.route === 'history' &&
         decisions.every((i) => i.operation === 'source') &&
@@ -444,7 +492,7 @@ export function evaluateSourceDraft({
       continue;
     }
     if (
-      whole?.relation === 'scope' &&
+      whole?.relation === 'scope' && !(reviewed && /估值|valuation/i.test(s)) &&
       !extractLocatorMatches(s).length &&
       !version.test(s) &&
       !/[\d%]/.test(s.replace(/第\s*\d+\s*轮/g, '')) &&
@@ -453,17 +501,26 @@ export function evaluateSourceDraft({
       accept(unit, [], [], [], 'scope');
       continue;
     }
+    const heading = named.reduce((part, item) => part.replaceAll(item.query, ''), s);
+    const count = heading.match(/([一二两三四五六七八九十\d]+)\s*(?:个|处|条|本)\s*(工作簿位置|单元格|坐标|来源|工作簿)/);
+    const countValue = count && (Number(count[1]) || '一二三四五六七八九十'.indexOf(count[1].replace('两','二')) + 1);
+    const signedPositions = distinctWitnesses(selected.flatMap((i) => i.hits));
+    const headingCount = count?.[2] === '工作簿'
+      ? new Set(signedPositions.map((w) => w.citation.materialId)).size : signedPositions.length;
     if (
       selected.some((i) => i.hits.length) &&
-      /[:：]\s*$/.test(s) &&
+      /出处|来源|引用/.test(s) &&
       whole?.relation === 'historical' &&
       whole.polarity === 'positive' &&
-      !extractLocatorMatches(s).length &&
+      !extractLocatorMatches(s).length && !version.test(heading) && !amount.test(heading) &&
+      !now.test(heading) && !negative.test(heading) && !/\.xls[xm]/i.test(heading) &&
+      (!count || countValue === headingCount) && text.slice(unit.end).trim() &&
       [...explicitTurns(s)].every((round) => selected.some((i) => i.hits.some((w) => w.turn === round))) &&
       selected.every((i) => i.hits.length) &&
       !s.includes('cite:') &&
       !(whole.fields ?? []).some((f) => !['turn', 'query'].includes(f.name))
     ) {
+      historyFieldGroup = !now.test(s) && !negative.test(s);
       accept(unit, [], selected, [], 'introduction');
       continue;
     }
@@ -527,6 +584,7 @@ export function evaluateSourceDraft({
       /^[-*] /m.test(text.slice(unit.end).trimStart()) &&
       sourceFieldsOnly(s.replace(/如下[：:。.]?$/, ''), false)
     ) {
+      historyFieldGroup = !now.test(s) && !negative.test(s);
       accept(unit, [], selected, [], 'introduction');
       continue;
     }
@@ -573,7 +631,24 @@ export function evaluateSourceDraft({
       if (c) literals.push(c.id);
       else invalidId = true;
     });
-    const rawRefs = extractLocatorMatches(masked);
+    // A CJK field label can touch an unquoted sheet name. If the whole
+    // token already names a real sheet it wins. Otherwise use the independently
+    // aligned, witnessed literal only after an unambiguous field predicate.
+    let locatorInput = masked;
+    if (historyFieldGroup) {
+      for (const ref of extractLocatorMatches(masked)) {
+        if (resolveLocatorToken(ref.raw, lookup)?.citation || lookup.isAmbiguous(ref.key)) continue;
+        const literal = whole?.fields?.find((f) => f.name === 'locator' && typeof f.literal === 'string' &&
+          ref.raw.endsWith(f.literal) && resolveLocatorToken(f.literal, lookup)?.citation)?.literal;
+        if (!literal) continue;
+        const prefix = ref.raw.slice(0, -literal.length);
+        if (!/^(?:单元格|坐标|原格)(?:为|是)$/.test(prefix)) continue;
+        const start = ref.index;
+        locatorInput = locatorInput.slice(0, start) + ' '.repeat(prefix.length) +
+          locatorInput.slice(start + prefix.length);
+      }
+    }
+    const rawRefs = extractLocatorMatches(locatorInput);
     const adopted = adoptedCitations(s, pool);
     const refs = rawRefs.map((r) => {
       const citation = resolveLocatorToken(r.raw, lookup)?.citation;
@@ -595,14 +670,25 @@ export function evaluateSourceDraft({
     });
     const fields = checkSourceFields(fieldText, rawRefs, lookup, fieldOwner, pool);
     const exact = refs.every((r) => r.citation && visible.includes(r.raw));
-    const reviewedAssertion =
-      reviewed &&
-      review?.digest === digest(text) &&
-      !review.reviewUnavailable &&
-      !review.openFindings?.some((f) => f.excerpt && s.includes(f.excerpt)) &&
-      (!reviewed.requiresSave || (review.written && !review.pending?.length)) &&
-      whole?.relation === 'financial' &&
-      whole.polarity === 'positive';
+    const reviewedUnit =
+      reviewed && review?.digest === digest(text) && !review.reviewUnavailable &&
+      !review.openFindings?.some((f) => !f.excerpt || s.includes(f.excerpt)) &&
+      (!reviewed.requiresSave || (review.written && !review.pending?.length));
+    // A reviewed statement of insufficiency explains the requested read.
+    // Its support is the direct observation of the scoped cell. It makes no
+    // quantitative assertion and need not print the coordinate a second time.
+    if (reviewedUnit && plan.sourceOnlyRead && direct.length === 1 && whole &&
+        ['scope', 'financial'].includes(whole.relation) && !(whole.fields ?? []).length &&
+        /估值|valuation/i.test(s) && /不足以|不能|无法|不够|不能够|cannot|insufficient/i.test(s) &&
+        !/[\d%％!@]/.test(visible) && !amount.test(s.replace(/读数|数值/g, '')) &&
+        !(lint?.(s, direct.map((w) => w.citation)) ?? []).some(blockingFinding)) {
+      reviewed.state = 'answered';
+      reviewed.delivered.add('reviewedAnswer');
+      reviewed.attemptIds = direct.map((w) => w.callId);
+      accept(unit, [], [reviewed], direct, 'reviewedRead');
+      continue;
+    }
+    const reviewedAssertion = reviewedUnit && whole?.relation === 'financial' && whole.polarity === 'positive';
     if (reviewedAssertion) {
       const support = witnesses.filter(
         (w) =>
@@ -702,7 +788,11 @@ export function evaluateSourceDraft({
         (!currentDecision && /不重报读数|只问历史出处/.test(question)))
     )
       valid = false;
-    const findings = lint?.(s, pool) ?? [];
+    // Separate the same verified boundary for the general linter. Preserve
+    // the original text and its offsets for persistence and browser clicks.
+    const lintText = locatorInput === masked ? s : rawRefs.reduceRight((out, ref) =>
+      out.slice(0, ref.index) + ' ' + out.slice(ref.index), s);
+    const findings = lint?.(lintText, pool) ?? [];
     if (findings.some((f) => blockingFinding(f) && f.rule !== 'incomplete')) valid = false;
     if (!valid) {
       rejectedChecks.push({

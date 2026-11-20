@@ -776,6 +776,8 @@ sys.stdout.buffer.write(data.getvalue())
             assert.equal(await hit.locator('[data-cell-cite]').count(),0);
             assert.match(await group.locator('[data-tool-call-id="r2-Y"]').innerText(),/历史问答未命中/);
             assert.equal(await group.locator('.tool-row.error').count(),1);
+            const invalid = group.locator('.tool-row.error');
+            assert.match(await invalid.innerText(), /缺少必填的检索词 query/);
           };
           await checkOld();
           const at=await checkReply(ui,record,prior);
@@ -817,9 +819,46 @@ sys.stdout.buffer.write(data.getvalue())
           const legacy=await (await fetch(base+'/api/sessions/'+id+'/state')).json();
           const legacyCopy=legacy.messages.find(m=>m.turnId===record.turnId && m.role==='assistant');
           assert.deepEqual([legacyCopy.text,legacyCopy.citations],[text,[]]);
+          assert.match(legacyCopy.tools.find(t => t.id === 'r2-failed').detail, /缺少必填的检索词 query/);
           const oldHit=JSON.parse(legacyCopy.tools.find(t=>t.id==='r2-X').output).matches[0];
           assert.deepEqual(oldHit.citations,[]);assert.ok(oldHit.excerpt.includes(citation));
           contracts.push({id,sid,prior,record,transport,db:ctx.store.db.prepare('PRAGMA database_list').all().find(r=>r.name==='main').file});
+        });
+        if (history === 'managed') await t.test('ordinary and historical requests given the same definition', async () => {
+          const definition = '折旧是将可折旧金额在资产使用寿命内进行分摊。';
+          const sourceQuestion = subject => '你发给我的' + subject + '用了哪本工作簿的哪个单元格？请给出完整 citation.id。';
+          const reader = entry.readSourceLanguage;
+          try {
+            for (const [question, expected] of [
+              ['请用一句话说明什么是折旧。', 'completed'],
+              [sourceQuestion('第1轮正式回答'), 'failed'],
+              [sourceQuestion('第一条答复'), 'failed'],
+            ]) {
+              const reads = [];
+              entry.readSourceLanguage = async (op, payload) => {
+                reads.push([op, payload.question]);
+                return op === 'request' ? {kind: 'history', items: []} : null;
+              };
+              const index = (await snapshot()).length;
+              const model = scriptModel(entry, [{text: definition, pause: true}, {text: definition}]);
+              t.after(model.resume);
+              await ui.send(question);
+              await bounded(model.paused, 'definition offered');
+              const pending = entry.postAnswerRun;
+              model.resume();
+              const record = await bounded(pending, 'signed definition or missing source');
+              assert.equal(record.status, expected);
+              assert.equal(record.text, expected === 'completed' ? definition : '');
+              assert.deepEqual(record.citations, []);
+              if (expected === 'failed') assert.deepEqual(reads[0], ['request', question]);
+              const delivered = (await snapshot())[index];
+              assert.equal(delivered.turnId, record.turnId);
+              assert.equal(delivered.tools?.length ?? 0, 0);
+              await checkReply(ui, record, index);
+            }
+          } finally {
+            entry.readSourceLanguage = reader;
+          }
         });
       });
     }

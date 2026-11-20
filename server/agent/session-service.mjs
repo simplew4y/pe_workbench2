@@ -196,7 +196,8 @@ export function createSessionService({
         const research=active?.plan?.research || ['research-audit','research-report-audit','research-synthesis'].includes(options?.sourceStage);
         // Offer the tools this source operation can use before Pi normalizes
         // its system/tool updates; keep the full research request when needed.
-        const narrow=sourceMode && !research && !options?.sourceOperation;
+        const businessStage=['answer','research-draft','research-repair'].includes(options?.sourceStage??'answer');
+        const narrow=sourceMode && (!research || active.plan.sourceOnlyRead && businessStage) && !options?.sourceOperation;
         let input=context;
         if (narrow) {
           const allowed=new Set(active.plan.items.some(i=>i.action==='read') ?
