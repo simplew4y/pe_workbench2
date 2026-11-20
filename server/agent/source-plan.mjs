@@ -103,6 +103,7 @@ export function sourceBusinessTools(plan, options) {
 // Identity of the counted rows is independent of their cardinality.
 export function countPopulation(text) {
   if (/出现|字串|字样|字面次数/u.test(text)) return 'textOccurrences';
+  if (/(?:去重|不同|不重复)/u.test(text) && /工作簿/u.test(text)) return 'uniqueWorkbooks';
   if (/台账|账本|ledger/iu.test(text)) return 'ledgerMatches';
   if (/(?:其中|某|特定|指定)(?:的)?一?类|排除助手|不(?:含|计|包括)助手|仅(?:计|算)用户|去重|不同(?:材料|来源)|按.{0,6}(?:类别|类型)/u.test(text)) return;
   const excludesUser = /(?:排除|不含|不包括|不计入?|去掉|除去)用户/u.test(text);
@@ -118,10 +119,12 @@ export function countPopulation(text) {
 function admitCounts(question, plan) {
   const searches = plan.items.filter(i => i.action === 'search');
   const masked = assertionQuestion(question, plan);
-  const asksCount = /(?:命中|匹配)[^。？！；]{0,18}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数(?:量)?|总数)|(?:多少|几)(?:条|个)(?:消息|回答|答文).{0,8}(?:命中|匹配)/u;
+  const countRequest = /(?:命中|匹配)[^。？！；]{0,18}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数(?:量)?|总数)|(?:多少|几)(?:条|个)(?:消息|回答|答文).{0,8}(?:命中|匹配)/u;
+  const asksCount = text => countRequest.test(text) ||
+    /出现|字串|字样|去重|不重复|不同(?:材料|工作簿)/u.test(text) && /几|多少|次数|数量|总数/u.test(text);
   for (const sentence of question.matchAll(/[^。？！!?\n]+/gu)) {
     const context = sentence[0];
-    if (!asksCount.test(masked.slice(sentence.index, sentence.index + context.length))) continue;
+    if (!asksCount(masked.slice(sentence.index, sentence.index + context.length))) continue;
     const named = searches.filter(i => i.query && context.includes(i.query));
     const scoped = named.length ? named : searches;
     // Keep a shared subject for coordinated counts, but let an operand
@@ -134,7 +137,7 @@ function admitCounts(question, plan) {
       const predicate = masked.slice(at, at + part.length);
       const sharedCount = /(?:全部消息|所有消息|助手(?:正式)?(?:答文|回答|消息))(?:数)?$/u.test(predicate) &&
         /^(?:[和与]|以及)(?:全部消息|所有消息|助手)/u.test(context.slice(cursor));
-      if (!asksCount.test(predicate) && !sharedCount) continue;
+      if (!asksCount(predicate) && !sharedCount) continue;
       const terms = scoped.filter(i => i.query && part.includes(i.query));
       const rounds = explicitTurns(predicate);
       const owners = (terms.length ? terms : scoped).filter(i => !rounds.size || rounds.has(i.turn));

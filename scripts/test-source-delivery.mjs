@@ -972,3 +972,35 @@ test('an exhaustive assistant miss with a matching user row cannot supply a zero
     if (line.startsWith('全部') && !value) assert.ok(!result.text.includes(line));
   }
 });
+
+test('a true message count cannot settle an explicitly requested occurrence or deduplicated workbook count', async () => {
+  const offered = '第1轮全部消息共匹配到一条，出处如下：';
+  const claims = [{quote: offered, relation: 'execution', fields: [{name: 'totalMatches', literal: '一条', value: 1}]}];
+  for (const [ask, field] of [['报告原文字串出现了几次。', 'textOccurrences'], ['给出去重后有几本工作簿。', 'uniqueWorkbooks']]) {
+    const question = history + ask;
+    const plan = await prepareSourcePlan({question}, {session: {}});
+    const result = evaluateSourceDraft({text: offered + '\n\n' + report, question, plan, meaning: {claims},
+      observations: sourceObservations(plan, [activeSearch], [])});
+    assert.equal(result.status, 'partial', question);
+    assert.ok(result.text.includes(original.id));
+    const item = result.sourceDelivery.items.find(i => i.action === 'search');
+    assert.ok(item.fields.includes(field) && !item.fieldsDelivered.includes(field));
+  }
+});
+
+test('workbook cardinality uses distinct material identities from complete cited rows', async () => {
+  const question = history + '给出去重后有几本工作簿。';
+  const plan = await prepareSourcePlan({question}, {session: {}});
+  const line = '命中的工作簿去重后共一本，出处如下：';
+  const text = line + '\n\n' + report;
+  const meaning = {claims: [{quote: line, relation: 'execution', fields: [{name: 'uniqueWorkbooks', literal: '一本', value: 1}]}]};
+  const scan = observation('transcript_search', 'count-books', {query, turn: 1}, {
+    coverage: {turns: [1], truncated: false}, totalMatches: 1, matches: [{...formalHit, citations: [original, original]}],
+  });
+  const ok = evaluateSourceDraft({text, question, plan, meaning, observations: sourceObservations(plan, [scan], [])});
+  assert.equal(ok.status, 'completed', ok.reason);
+  scan.result.details.matches[0].sourceDigest = 'excerpt-projection';
+  const limited = evaluateSourceDraft({text, question, plan, meaning, observations: sourceObservations(plan, [scan], [])});
+  assert.equal(limited.status, 'partial');
+  assert.ok(!limited.text.includes(line));
+});

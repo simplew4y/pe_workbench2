@@ -158,6 +158,13 @@ function visibleMatchCounts(text) {
     const searchHeading = /(?:出处|来源|引用)如下/u.test(sentence);
     let subject;
     for (const clause of sentence.split(/[，,：:]/u)) {
+      const separate = countPopulation(clause);
+      if (separate === 'uniqueWorkbooks' || separate === 'textOccurrences') {
+        const quantified = separate === 'uniqueWorkbooks' ? /([零一二两三四五六七八九十百千万\d]+)\s*本/gu :
+          /([零一二两三四五六七八九十百千万\d]+)\s*次/gu;
+        for (const m of clause.matchAll(quantified)) fields.push({name: separate, value: quantity(m[1]), literal: m[0],
+          qualified: /不止|至少|至多|不超过|并非|不是|约|多于|少于/u.test(clause)});
+      }
       const search = /命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/u.test(clause);
       const counts = [...clause.matchAll(/([零一二两三四五六七八九十百千万\d]+)\s*(?:处|条|项|个)(?!\s*(?:单元格|坐标|工作簿|引用|字段|条件|词))/gu)];
       const category = /助手|正式(?:答文|回答)|回答中|所有消息|全部消息|用户消息|台账|账本|ledger|出现|字串|字样|字面次数/iu;
@@ -217,6 +224,18 @@ function* scopedScans(owners, observations) {
   }
 }
 
+function scanCounts(attempt, hits, observations) {
+  const details = attempt.details;
+  const counts = {totalMatches: details.totalMatches, assistantMatches: hits.length, ledgerMatches: details.ledgerTotalMatches};
+  // A projection of cited excerpts may omit other sources in the same
+  // formal answer. Only count distinct workbooks of complete source rows.
+  if (details.coverage?.truncated === false && hits.every(hit => !hit.sourceDigest && hit.citations?.length &&
+      hit.citations.every(c => c.materialId && observations.witnesses.some(w => w.callId === attempt.id && w.citation.id === c.id)))) {
+    counts.uniqueWorkbooks = new Set(hits.flatMap(hit => hit.citations.map(c => c.materialId))).size;
+  }
+  return counts;
+}
+
 // Counts concern the successful scan in the requested scope. An omitted
 // model projection, an unrestricted query or an incomplete scan proves none.
 function executionReport(claim, text, owners, observations) {
@@ -234,12 +253,10 @@ function executionReport(claim, text, owners, observations) {
     if (coverage.truncated !== false && /未截断|无遗漏|没有遗漏|全部(?:回答|回合)|完整扫描/.test(text)) continue;
     const ids = hits.flatMap((h) => (h.citations ?? []).map((c) => c.id));
     const values = {
-      totalMatches: d.totalMatches,
-      assistantMatches: hits.length,
+      ...scanCounts(attempt, hits, observations),
       totalTurns: coverage.totalTurns,
       turnsScanned: coverage.turnsScanned,
       scannedTurn: coverage.turns?.length === 1 ? coverage.turns[0] : undefined,
-      ledgerMatches: d.ledgerTotalMatches,
       truncated: coverage.truncated,
     };
     if (observations.historyToolsOnly) values.directReadCount = 0;
@@ -496,9 +513,7 @@ export function evaluateSourceDraft({
     const matchCounts = visibleMatchCounts(countText);
     const scans = matchCounts.length ? [...scopedScans(selected, observations)].map(({attempt, hits}) => ({
       callId: attempt.id,
-      totalMatches: attempt.details.totalMatches,
-      assistantMatches: hits.length,
-      ledgerMatches: attempt.details.ledgerTotalMatches,
+      ...scanCounts(attempt, hits, observations),
     })) : [];
     const countScan = scans.find((scan) => matchCounts.every(({name, value, qualified}) => !qualified && scan[name] === value));
     if (countScan) {
@@ -947,7 +962,7 @@ export function evaluateSourceDraft({
   const hostRepair = optionalNotes.length > 0;
   for (const i of decisions) {
     if (i.state === 'confirmedEmpty') {
-      const missingCount = i.fields.some(f => ['totalMatches', 'assistantMatches', 'ledgerMatches', 'textOccurrences'].includes(f) && !i.delivered.has(f));
+      const missingCount = i.fields.some(f => ['totalMatches', 'assistantMatches', 'ledgerMatches', 'textOccurrences', 'uniqueWorkbooks'].includes(f) && !i.delivered.has(f));
       if (missingCount) i.state = 'unresolved';
       continue;
     }
@@ -993,7 +1008,7 @@ export function evaluateSourceDraft({
   const fieldLabels = {
     id: '完整引用 ID', filename: '工作簿名', version: '材料版本', locator: '单元格',
     value: '当前读数', totalMatches: '全部消息的检索命中数', assistantMatches: '助手正式答文的检索命中数',
-    ledgerMatches: '台账命中数', textOccurrences: '原文字串出现次数', reviewedAnswer: '经审校的说明',
+    ledgerMatches: '台账命中数', textOccurrences: '原文字串出现次数', uniqueWorkbooks: '去重后的工作簿数', reviewedAnswer: '经审校的说明',
   };
   const items = [
     ...decisions,
