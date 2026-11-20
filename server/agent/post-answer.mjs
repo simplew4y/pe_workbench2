@@ -335,6 +335,24 @@ async function generateAnswer(entry, promptText, options, active) {
             return {...decision,status:'completed',reason:undefined,sourceDelivery:reviewed.sourceDelivery};
           }
         }
+        // A correction can repeat a false optional count or add a current
+        // version to a historical-only answer. Sign the surviving Markdown
+        // only after independently checking its fields, witnesses and links.
+        if (!active.cancelled && correctionCount && !incomplete && decision.text &&
+            active.plan.route==='history' && rejected.length && rejected.length===rejectedChecks.length &&
+            rejectedChecks.every(check=>check.unrequestedCurrentVersion || check.relation==='execution' && check.scans) &&
+            decision.sourceDelivery.items.every(item=>item.state==='answered')) {
+          const fresh=sourceObservations(active.plan,scannedTurnTools(entry.session,turnBoundary),toolCalls,entry.ctx?.store);
+          const {rejected: remaining, sourceDelivery, status, text: retained, citations}=evaluateSourceDraft({
+            text:decision.text,question:text,plan:active.plan,observations:fresh,
+            currentVersions:signingVersions(fresh,sourceVersions),meaning,lint:scopedLint,
+            retainedBindings:decision.sourceDelivery,repairId:false});
+          if (status==='completed' && !remaining.length && retained===decision.text) {
+            appendTurnMarker(entry.session,'pe_source_host_repair',{turnId,kind:'reverifiedAfterOmission',
+              before:digest(answer),after:sourceDelivery.textDigest,removed:rejectedChecks.map(({start,end})=>({start,end}))});
+            return {status,text:retained,citations,sourceDelivery};
+          }
+        }
         if (!active.cancelled && correctionCount && !decision.text && safeText && safeCitations.length) {
           const repaired=repairFromObservations('verifiedFieldsAfterEmptyCorrection','纠错稿未保留已取得的出处。',
             observations,scopedLint,answer);

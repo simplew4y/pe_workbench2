@@ -829,3 +829,33 @@ test('a counted search result retains its quantity across punctuation and inline
     assert.ok(result.text.includes(original.id));
   }
 });
+
+test('after correction, omissions outside the request can complete only on a fresh check of the exact retained text', async () => {
+  const search = {query, turn: 1};
+  const historyHeading = '第1轮匹配到一处，出处如下：';
+  const badHeading = '第1轮匹配到两处，出处如下：';
+  const wrongNow = '材料沿用至今的版本是 v1。';
+  const coordinate = '- 单元格：[Acceptance13.xlsx]Model!B2';
+  const id = '- 完整引用 ID：' + original.id;
+  for (const [heading, note, more, wanted] of [
+    [badHeading, '', '', 'completed'],
+    [badHeading, '', '另请报告命中几处。', 'partial'],
+    [historyHeading, wrongNow, '', 'completed'],
+    [historyHeading, wrongNow, '还请说明当前材料版本。', 'partial'],
+  ]) {
+    const draft = [heading, coordinate, '- 材料版本：v1', note, id].filter(Boolean).join('\n');
+    const claims = [
+      {quote: heading, relation: 'execution', fields: [{name: 'scannedTurn', literal: '第1轮', value: 1}]},
+      ...[[coordinate, 'locator', original.locator], ['- 材料版本：v1', 'version', 'v1'],
+        [wrongNow, 'version', 'v1'], [id, 'id', original.id]].map(([quote, name, literal]) =>
+        ({quote, relation: 'current', polarity: 'positive', fields: [{name, literal}]})),
+    ];
+    const {record, rows} = await run(history + more, [search], draft, false,
+      (op) => op === 'request' ? {kind: 'history', items: []} : {claims});
+    assert.equal(record.status, wanted, record.reason);
+    assert.ok(record.text.includes(id), record.text);
+    assert.ok(!record.text.includes(wrongNow) && !record.text.includes(badHeading));
+    if (wanted === 'completed')
+      assert.ok(rows.some((r) => r.type === 'pe_source_host_repair' && r.data.after === digest(record.text)));
+  }
+});

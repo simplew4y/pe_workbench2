@@ -157,7 +157,10 @@ function visibleMatchCounts(text) {
     const searchHeading = /(?:出处|来源|引用)如下/u.test(sentence);
     let subject;
     for (const clause of sentence.split(/[，,：:]/u)) {
-      if (/台账|账本|ledger/i.test(clause)) subject = 'ledgerMatches';
+      // Returned rows can each contain the term more than once. The bounded
+      // excerpt cannot establish a count within the original message.
+      if (/出现|字串|字样|字面次数/.test(clause)) subject = 'textOccurrences';
+      else if (/台账|账本|ledger/i.test(clause)) subject = 'ledgerMatches';
       else if (/命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/.test(clause)) subject = /助手|正式(?:答文|回答)|回答中/.test(clause) ? 'assistantMatches' : 'totalMatches';
       else if (!/^\s*(?:共|合计|一共|总计|计有|仅|只|有|结[果论])/u.test(clause)) subject = undefined;
       if (!subject && !searchHeading) continue;
@@ -393,6 +396,7 @@ export function evaluateSourceDraft({
   lint,
   review,
   repairId = true,
+  retainedBindings,
 }) {
   const {items: observed, witnesses, badIds} = observations;
   const decisions = observed.map(({item, hits, related, empty, attemptIds}) => ({
@@ -456,6 +460,12 @@ export function evaluateSourceDraft({
     }
     accepted.push({unit, refs, owners, ws, relation});
   };
+  const retainedHistory = new Map();
+  if (retainedBindings && retainedBindings.textDigest === digest(text)) {
+    for (const claim of retainedBindings.claims) {
+      if (claim.relation === 'historical') retainedHistory.set(claim.start, claim);
+    }
+  }
   const gaps = [...plan.gaps, ...observations.recoveryGaps];
   for (const unit of units(text)) {
     const s = unit.value,
@@ -525,8 +535,15 @@ export function evaluateSourceDraft({
     // A row-specific predicate does not change the subject of its siblings.
     // Close the group at a new prose unit, not at an independently dated row.
     if (!sourceFields && !/^\s*[-*]\s/.test(s)) historyFieldGroup = false;
-    const inheritedRow = historyFieldGroup && sourceFields &&
-      neutralSourceRow(visibleUnit, selected.flatMap((i) => i.hits));
+    // A suppressed introduction may have established the historical
+    // subject. On recheck, use only the exact retained span and a witness
+    // that still has the same identity; the row itself must remain neutral.
+    const previous = retainedHistory.get(unit.start);
+    const witnessesHere = selected.flatMap((i) => i.hits);
+    const previouslyBound = previous?.end === unit.end &&
+      witnessesHere.some((w) => previous.citationIds.includes(w.citation.id) && previous.callIds.includes(w.callId));
+    const inheritedRow = (historyFieldGroup || previouslyBound) && sourceFields &&
+      neutralSourceRow(visibleUnit, witnessesHere);
     if (inheritedRow) semantics = semantics.map((claim) => ({...claim, relation: 'historical'}));
     const whole = semantics.find((c) => c.quote === s || visibleMarkdown(c.quote).trim() === visibleUnit);
     const executionClaims = semantics.filter((c) => c.relation === 'execution');
@@ -861,6 +878,9 @@ export function evaluateSourceDraft({
         end: unit.end,
         claims: semantics.map((c) => c.relation),
         relation: isRead ? 'current' : 'historical',
+        ...(isRead && !readItem && now.test(s) && version.test(s) && !financial && !refs.length &&
+          !/[，,；;]/.test(s) && !/(?:当时|当初|曾经|历史)/.test(s)
+          ? {unrequestedCurrentVersion: true} : {}),
         eligible: eligible.map((w) => [w.callId, w.citation.id]),
         condition: currentDecision?.condition,
         proof: Boolean(proof),
