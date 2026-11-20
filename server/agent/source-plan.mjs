@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {classifyQuestion} from '../../lib/turn-context.mjs';
 import {asksHistoricalSource, explicitTurns} from './answer-delivery.mjs';
 import {requestedSearches, requestedWorkbooks} from './transcript-search-recovery.mjs';
 
@@ -123,7 +124,11 @@ export async function prepareSourcePlan(active, entry) {
     !implicitSubject &&
     !/以前|之前|方才|前面|当时|旧答|上文|过去|earlier|previous/i.test(question);
   plan.inventory = {rounds: scope, terms: audited.terms, books: audited.books, sourceRequest, plain};
-  if (plain) return plan;
+  // An unqualified self-audit has its own coverage, ledger and correction
+  // checks. A reference to earlier text alone does not change that operation.
+  const selfAudit = !sourceRequest && !implicitSubject && !ambiguous && !asksFields &&
+    !audited.terms.length && classifyQuestion(question).includes('selfaudit');
+  if (plain || selfAudit) return plan;
   let interpretation;
   if (entry.readSourceLanguage) {
     interpretation = await entry.readSourceLanguage('request', {question}, active);
