@@ -167,7 +167,7 @@ function visibleMatchCounts(text) {
         // Qualifiers need a separate interpretation; never sign them using
         // an equality check on the numeral alone.
         const qualified = /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
-        fields.push({name: subject ?? 'totalMatches', literal: m[0], value: qualified ? NaN : quantity(m[1])});
+        fields.push({name: subject ?? 'totalMatches', literal: m[0], value: quantity(m[1]), ...(qualified ? {qualified: true} : {})});
       }
     }
   }
@@ -186,9 +186,8 @@ function* scopedScans(owners, observations) {
     const d = attempt.details,
       coverage = d?.coverage;
     if (
-      !coverage ||
-      coverage.truncated !== false ||
-      !Array.isArray(d.matches) ||
+      (coverage ? coverage.truncated !== false : !(d?.totalMatches > 0)) ||
+      !Array.isArray(d?.matches) ||
       d.totalMatches !== d.matches.length
     )
       continue;
@@ -221,7 +220,10 @@ function executionReport(claim, text, owners, observations) {
   )
     return;
   for (const {attempt, hits} of scopedScans(owners, observations)) {
-    const d = attempt.details, coverage = d.coverage;
+    const d = attempt.details, coverage = d.coverage ?? {};
+    // Old results may attest to their own positive row count. Only explicit
+    // coverage attests to the turns scanned or to an exhaustive empty result.
+    if (coverage.truncated !== false && /未截断|无遗漏|没有遗漏|全部(?:回答|回合)|完整扫描/.test(text)) continue;
     const ids = hits.flatMap((h) => (h.citations ?? []).map((c) => c.id));
     const values = {
       totalMatches: d.totalMatches,
@@ -230,7 +232,7 @@ function executionReport(claim, text, owners, observations) {
       turnsScanned: coverage.turnsScanned,
       scannedTurn: coverage.turns?.length === 1 ? coverage.turns[0] : undefined,
       ledgerMatches: d.ledgerTotalMatches,
-      truncated: false,
+      truncated: coverage.truncated,
     };
     if (observations.historyToolsOnly) values.directReadCount = 0;
     if (hits.length === 1) {
@@ -468,7 +470,7 @@ export function evaluateSourceDraft({
       assistantMatches: hits.length,
       ledgerMatches: attempt.details.ledgerTotalMatches,
     })) : [];
-    const countScan = scans.find((scan) => matchCounts.every(({name, value}) => scan[name] === value));
+    const countScan = scans.find((scan) => matchCounts.every(({name, value, qualified}) => !qualified && scan[name] === value));
     if (countScan) {
       unit.countProof = {callId: countScan.callId, fields: matchCounts};
       unit.countOwners = matchCounts.some((field) => field.name !== 'ledgerMatches') ? selected : [];
