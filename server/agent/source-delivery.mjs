@@ -962,6 +962,10 @@ export function evaluateSourceDraft({
     currentDecision.fields.every((f) => currentDecision.delivered.has(f))
   )
     currentDecision.state = 'answered';
+  const fieldLabels = {
+    id: '完整引用 ID', filename: '工作簿名', version: '材料版本', locator: '单元格',
+    value: '当前读数', matchCount: '检索命中数', reviewedAnswer: '经审校的说明',
+  };
   const items = [
     ...decisions,
     ...(currentDecision ? [currentDecision] : optionalRead.attemptIds.length ? [optionalRead] : []),
@@ -976,7 +980,11 @@ export function evaluateSourceDraft({
       ]
         .filter(Boolean)
         .join(' ');
-      i.reason = '未核实或未完整交付：' + label;
+      const required = new Set(i.fields);
+      if (i.needsLocator) required.add('locator');
+      const missing = [...required].filter((field) => !delivered.has(field));
+      const detail = missing.map((field) => fieldLabels[field] ?? field).join('、');
+      i.reason = '未核实或未完整交付：' + label + (detail ? '（缺少' + detail + '）' : '');
       gaps.push(i.reason);
     }
     return {...i, fieldsDelivered: [...delivered], ...(empty ? {emptyCallId: empty} : {})};

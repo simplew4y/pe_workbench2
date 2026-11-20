@@ -812,6 +812,7 @@ test('an omitted requested match count leaves an open field and cannot publish a
   const text = '未核验：无。\n\n' + report;
   const {record} = await run(question, [{query, turn: 1}], text);
   assert.equal(record.status, 'partial', record.text);
+  assert.match(record.reason, /命中数/);
   assert.ok(!record.text.includes('未核验：无'));
   assert.ok(record.text.includes(original.id));
   const link = record.sourceDelivery.occurrences[0];
