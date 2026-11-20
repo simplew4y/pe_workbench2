@@ -1004,3 +1004,173 @@ test('workbook cardinality uses distinct material identities from complete cited
   assert.equal(limited.status, 'partial');
   assert.ok(!limited.text.includes(line));
 });
+
+test('each requested population needs a visible count in the same search scope', async () => {
+  const matches = [{turn: 1, role: 'user'}, formalHit];
+  const call = observation('transcript_search', 'both-counts', {query, turn: 1}, {
+    totalMatches: 2, matches, coverage: {turns: [1], turnsScanned: 1, truncated: false},
+  });
+  const total = '全部消息共匹配到2条。';
+  const assistants = '助手正式回答共匹配到1条。';
+  for (const ending of [
+    '分别报告两项：全部消息共匹配到几条；助手正式回答共匹配到几条。',
+    '分别报告两项：全部消息共匹配到几条。助手正式回答共匹配到几条。',
+    '请给出全部消息、助手正式回答各自的命中数。',
+    '请分别列出助手正式回答与全部消息的命中数。',
+    '全部消息共匹配到几条，同时也请说明助手正式回答共匹配到几条。',
+    '请问助手正式回答的匹配数并列出所有消息的匹配数。',
+  ]) {
+    const question = history + ending;
+    const plan = await prepareSourcePlan({question}, {session: {}});
+    for (const offered of [[total], [assistants], [total, assistants]]) {
+      const text = [report, ...offered].join('\n\n');
+      const claims = offered.map(quote => ({quote, relation: 'execution', fields: [
+        quote === total ? {name: 'totalMatches', literal: '2条', value: 2} :
+          {name: 'assistantMatches', literal: '1条', value: 1},
+      ]}));
+      const result = evaluateSourceDraft({text, question, plan, meaning: {claims}, observations: sourceObservations(plan, [call], [])});
+      assert.equal(result.status, offered.length === 2 ? 'completed' : 'partial', ending + text);
+      if (offered.length === 1) assert.match(result.reason, offered[0] === total ? /缺少助手正式答文的检索命中数/ : /缺少全部消息的检索命中数/);
+      for (const line of offered) {
+        const receipt = result.sourceDelivery.claims.find(c => result.text.slice(c.start, c.end) === line);
+        assert.equal(receipt?.searchCounts?.callId, 'both-counts');
+        assert.ok(receipt.itemIds.includes(plan.items[0].id));
+      }
+    }
+  }
+});
+
+test('a shared field belongs to every named upload and each published quote needs its own read', async () => {
+  const field = '估值依据来源';
+  const value = '蓝色台账 MC-729';
+  const files = ['A.txt', 'B.txt'].map((name, index) => {
+    const content = '作者：' + index + '\n' + field + '：' + value + '\n';
+    return {name, content, id: 'file-' + index, relPath: 'uploads/stored-' + name, versions: [{v: 1, sha256: digest(content)}]};
+  });
+  const [a,b] = files;
+  const read = file => ({id: 'r-' + file.id, name: 'read', args: {path: file.relPath}, success: true,
+    result: {isError: false, content: [{type: 'text', text: file.content}]}});
+  const line = file => file.name + ' 的' + field + '为：' + value + '。';
+  for (const request of [
+    '同时读取附件 A.txt 和 B.txt 中的“估值依据来源”，按文件分别逐字给出。',
+    '同时读取附件 A.txt 中的“估值依据来源”。再读 B.txt 中的“估值依据来源”。',
+  ]) {
+    const question = history + request;
+    const plan = await prepareSourcePlan({question, attachments: files.map(f => f.relPath)}, {session: {},
+      ctx: {store: {findMaterialByPath: path => files.find(f => f.relPath === path)}},
+      readSourceLanguage: async () => ({kind: 'history', items: files.map(f => ({action: 'read', quote: f.name, material: f.name, fields: [field]}))})});
+    for (const [calls, lines, status] of [
+      [[a,b], [line(a), line(b)], 'completed'],
+      [[a], [line(a), line(b)], 'partial'],
+      [[a,b], [line(a)], 'partial'],
+      [[a,b], [line(a), line(b).replace('为：','并非：')], 'partial'],
+    ]) {
+      const text = [report, ...lines].join('\n\n');
+      const result = evaluateSourceDraft({text, question, plan, observations: sourceObservations(plan, [activeSearch, ...calls.map(read)], [])});
+      assert.equal(result.status, status, request + '\n' + result.reason);
+      const items = result.sourceDelivery.items.filter(i => i.action === 'readAttachment');
+      assert.deepEqual(items.map(i => i.materialId), [a.id,b.id]);
+      for (const [n,file] of files.entries()) {
+        const ok = calls.includes(file) && lines.includes(line(file));
+        assert.equal(items[n].state, ok ? 'answered' : 'unresolved');
+        const claim = result.sourceDelivery.claims.find(c => c.itemIds.includes(items[n].id));
+        if (ok) {
+          assert.deepEqual(claim.callIds, ['r-' + file.id]);
+          assert.equal(result.text.slice(claim.start, claim.end), line(file));
+        } else assert.match(result.reason, /B\.txt.*估值依据来源/);
+      }
+    }
+  }
+});
+
+test('full upload reads fit a bounded request while preserving both targets and raw results', async () => {
+  const paths = ['uploads/123-A.txt','uploads/456-B.txt'];
+  const plan = {route: 'mixed', research: true, sourceOnlyRead: true,
+    items: paths.map((path, n) => ({id: 'file' + n, action: 'readAttachment', path, fields: ['原文']}))};
+  const active = {question: '请读取两份附件的原文。', plan, controller: new AbortController()};
+  const read = {type: 'function', function: {name: 'read', strict: true,
+    description: 'general file-reading documentation '.repeat(30),
+    parameters: {type: 'object', properties: {path: {type: 'string'}}, required: ['path'], additionalProperties: false}}};
+  const messages = [{role: 'system', content: 'x'.repeat(31200)}, {role: 'user', content: active.question},
+    ...paths.map((path, n) => ({role: 'tool', tool_call_id: 'call' + n, content: path + ' 原文：相同字串'}))];
+  const payload = {messages, tools: [read]};
+  const fit = () => sourceModelOptions(active, {id:'fixture'}, {}).onPayload(structuredClone(payload));
+  const sent = await fit();
+  assert.deepEqual(sent.messages, messages);
+  assert.deepEqual(sent.tools[0].function.parameters.properties.path.enum, paths);
+  assert.ok(active.budget.requests[0].inputUpperBound <= 32000);
+  messages[0].content += 'x'.repeat(5000);
+  await assert.rejects(fit, /预算/);
+  assert.equal(active.budget.requests.length, 1);
+});
+
+test('a verified empty mixed-case query reports both zero populations in its original scope', async () => {
+  const term = '对照词NordZZ99';
+  const question = '请在第1轮查询“' + term + '”是否有命中；另请分别报告全部消息共匹配到几条；助手正式回答共匹配到几条。';
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  const empty = observation('transcript_search','empty',{turn:1, query:term},
+    {matches:[], totalMatches:0, coverage:{turns:[1], turnsScanned:1, truncated:false}});
+  const intro = '第1轮“' + term + '”未命中。';
+  const counts = '第1轮全部消息共匹配到0条，助手正式回答共匹配到0条。';
+  const text = intro + '\n\n' + counts;
+  const result = evaluateSourceDraft({question,text,plan,observations:sourceObservations(plan,[empty],[]),
+    meaning:{claims:[{quote:intro,relation:'absence',polarity:'negative',fields:[]},
+      {quote:counts,relation:'execution',polarity:'positive',fields:[{name:'scannedTurn',value:1,literal:'第1轮'}]}]}});
+  assert.equal(result.status, 'completed', result.reason);
+  assert.equal(result.text, text);
+});
+
+test('only whole requested file identities admit a read, including names containing joiners', async () => {
+  const files = ['A.txt', '研究和开发.txt'].map((name, i) => ({name, id: String(i), relPath:'uploads/' + i + '-' + name,
+    versions:[{v: 1, sha256:digest(name)}]}));
+  const question = history + '同时读取附件“未附附件A.txt”和“研究和开发.txt”中的“依据”和“日期”，按文件分别给出。';
+  const plan = await prepareSourcePlan({question, attachments:files.map(f=>f.relPath)}, {session:{},
+    ctx:{store:{findMaterialByPath:path=>files.find(f=>f.relPath===path)}}});
+  const reads = plan.items.filter(i=>i.action === 'readAttachment');
+  assert.deepEqual(reads.filter(i=>i.path).map(i=>i.filename), ['研究和开发.txt']);
+  assert.deepEqual(reads.find(i=>i.path).fields, ['依据','日期']);
+  assert.ok(reads.some(i=>i.filename === '未附附件A.txt' && !i.path));
+  assert.ok(plan.gaps.some(g=>g.includes('未附附件A.txt')));
+});
+
+test('a coordinated visible quotation has one proof per named file, including when values coincide', async () => {
+  const field = '依据';
+  const value = '蓝色台账';
+  const files = ['A.txt','B.txt'].map((name, n) => {
+    const content = '序号：' + n + '\n依据：' + value + '\n';
+    return {name, id: name, relPath: 'uploads/' + name, content, versions: [{v: 1, sha256: digest(content)}]};
+  });
+  const question = history + '请读取 A.txt 与 B.txt 的“依据”，按文件给出。';
+  const plan = await prepareSourcePlan({question, attachments: files.map(f => f.relPath)}, {
+    session: {}, ctx: {store: {findMaterialByPath: path => files.find(f => f.relPath === path)}}});
+  const calls = files.map(f => ({name: 'read', id: f.id, args: {path: f.relPath}, success: true,
+    result: {content: [{type: 'text', text: f.content}]}}));
+  const same = 'A.txt 和 B.txt 的依据均为：蓝色台账。';
+  const separate = 'A.txt 的依据为：蓝色台账；B.txt 的依据为：蓝色台账。';
+  for (const line of [same, separate]) for (const both of [false, true]) {
+    const text = report + '\n\n' + line;
+    const result = evaluateSourceDraft({text, question, plan,
+      observations: sourceObservations(plan, [activeSearch,...(both ? calls : calls.slice(0,1))], [])});
+    assert.equal(result.status, both ? 'completed' : 'partial', line + ' ' + result.reason);
+    if (both) assert.equal(result.text, text);
+    else {
+      assert.match(result.reason, /B\.txt.*依据/);
+      assert.ok(!result.text.includes('B.txt'));
+    }
+  }
+});
+
+test('coincident counts in one sentence retain distinct field positions in the signed text', async () => {
+  const heading = '第1轮全部消息共匹配到一条，助手正式回答共匹配到一条，出处如下：';
+  const question = history + '全部消息和助手正式回答各匹配到几条？';
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  const text = heading + '\n\n' + report;
+  const result = evaluateSourceDraft({text, question, plan, observations:sourceObservations(plan,[activeSearch],[]),
+    meaning:{claims:[{quote:heading,relation:'execution',fields:[{name:'scannedTurn',literal:'第1轮',value:1}]}]}});
+  assert.equal(result.status,'completed',result.reason);
+  const proof = result.sourceDelivery.claims.find(c => c.searchCounts);
+  const spans = proof.searchCounts.fields.map(f => [f.name, f.visibleRange]);
+  const first = heading.indexOf('一条');
+  const last = heading.lastIndexOf('一条');
+  assert.deepEqual(spans, [['totalMatches',[first,first+2]],['assistantMatches',[last,last+2]]]);
+});

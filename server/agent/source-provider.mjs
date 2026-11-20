@@ -171,6 +171,20 @@ export function sourceModelOptions(active, model, options, configPayload) {
         return {...message, content: JSON.stringify(result)};
       });
     }
+    // This lane verifies whole uploaded snapshots. When the generic file reader
+    // would overflow a packet, offer exactly that operation on the admitted
+    // paths. Keep the real tool results, permission checks and byte limits.
+    if (allowed?.has('read') && Array.isArray(body.tools) && Buffer.byteLength(JSON.stringify(body)) > availableBytes) {
+      const paths = [...new Set(active.plan.items.filter(i => i.action === 'readAttachment' && i.path).map(i => i.path))];
+      body.tools = body.tools.map(tool => {
+        if (tool.function?.name !== 'read' || tool.function.parameters?.properties?.path?.type !== 'string' || !paths.length) return tool;
+        const fn = {...tool.function,
+          description: 'Read one complete requested attachment.',
+          parameters: {type: 'object', properties: {path: {type: 'string', enum: paths}},
+            required: ['path'], additionalProperties: false}};
+        return {...tool, function: fn};
+      });
+    }
     const encoded = JSON.stringify(body);
     // A byte upper bound deliberately overestimates BPE input. Never charge
     // host-only details, credentials or an earlier, unfitted transcript.

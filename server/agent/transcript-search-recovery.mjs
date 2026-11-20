@@ -158,9 +158,9 @@ export function resultReports(parts, targets, isSource) {
     const unclassified = [];
     for (const [, clause] of part.matchAll(CLAUSES)) {
       const text = queryKey(clause);
-      const terms = targets.filter(({ query }) => text.includes(query));
+      const terms = targets.filter(({ query }) => text.includes(queryKey(query)));
       let residue = text;
-      for (const { query } of terms) residue = residue.replaceAll(query, ' ');
+      for (const { query } of terms) residue = residue.replaceAll(queryKey(query), ' ');
       const absent = MISS.test(residue);
       const predicate = absent ? MISS : /(?:已|有|成功)?(?:命中|匹配到)(?:了)?/;
       const subjects = terms.length ? terms : targets.length === 1 ? targets : [];

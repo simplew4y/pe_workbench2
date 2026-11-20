@@ -45,11 +45,24 @@ function visibleMarkdown(markdown) {
   return leaves(Lexer.lex(markdown));
 }
 
-function units(text) {
+function units(text, attachments) {
   const result = [];
   let end = 0;
   for (const block of answerBlocks(text))
-    for (const value of block.parts) {
+    for (const value of block.parts.flatMap(part => {
+      if (!attachments.length || !attachments.some(i => part.includes(i.filename))) return [part];
+      // Retain separators on verified spans so two accepted quotes reproduce
+      // the exact original. A rejected second quote cannot invalidate the first.
+      const parts = [];
+      let start = 0;
+      for (const sep of part.matchAll(/[;；]\s*/gu)) {
+        const next = sep.index + sep[0].length;
+        if (!attachments.some(i => [i.filename, i.path].some(name => name && part.startsWith(name, next)))) continue;
+        parts.push(part.slice(start, sep.index + 1));
+        start = next;
+      }
+      return [...parts, part.slice(start)];
+    })) {
       const start = text.indexOf(value, end);
       if (start < 0) continue;
       end = start + value.length;
@@ -152,17 +165,25 @@ function quantity(token) {
 // with transcript matches.
 function visibleMatchCounts(text) {
   const fields = [];
-  for (const sentence of text.split(/[。；;！？\n]/u)) {
+  for (const sentenceMatch of text.matchAll(/[^。；;！？\n]+/gu)) {
+    const sentence = sentenceMatch[0];
     // In an introduction an unqualified number of results refers to the
     // scan. A named noun (e.g. number of citations) has its own evidence.
     const searchHeading = /(?:出处|来源|引用)如下/u.test(sentence);
     let subject;
-    for (const clause of sentence.split(/[，,：:]/u)) {
+    for (const clauseMatch of sentence.matchAll(/[^，,：:]+/gu)) {
+      const clause = clauseMatch[0];
+      // UTF-16 offsets in the visible Markdown of this signed claim, even
+      // when two populations use exactly the same number and literal.
+      const fieldRange = m => {
+        const start = sentenceMatch.index + clauseMatch.index + m.index;
+        return [start, start + m[0].length];
+      };
       const separate = countPopulation(clause);
       if (separate === 'uniqueWorkbooks' || separate === 'textOccurrences') {
         const quantified = separate === 'uniqueWorkbooks' ? /([零一二两三四五六七八九十百千万\d]+)\s*本/gu :
           /([零一二两三四五六七八九十百千万\d]+)\s*次/gu;
-        for (const m of clause.matchAll(quantified)) fields.push({name: separate, value: quantity(m[1]), literal: m[0],
+        for (const m of clause.matchAll(quantified)) fields.push({name: separate, value: quantity(m[1]), literal: m[0], visibleRange: fieldRange(m),
           qualified: /不止|至少|至多|不超过|并非|不是|约|多于|少于/u.test(clause)});
       }
       const search = /命中|匹配|检索结果|搜索结果|查到|查得|查出|找到/u.test(clause);
@@ -182,7 +203,7 @@ function visibleMatchCounts(text) {
         previousEnd = m.index + m[0].length;
         if (!subject && !searchHeading) continue;
         const qualified = /并非|并不|不是|没有|不止|不只|不足|至少|至多|超过|少于|多于|大约|大概|约有|不到|不超过|不低于/.test(prefix);
-        fields.push({name: subject ?? 'totalMatches', literal: m[0], value: quantity(m[1]), ...(qualified ? {qualified: true} : {})});
+        fields.push({name: subject ?? 'totalMatches', literal: m[0], value: quantity(m[1]), visibleRange: fieldRange(m), ...(qualified ? {qualified: true} : {})});
       }
     }
   }
@@ -480,6 +501,7 @@ export function evaluateSourceDraft({
   const accept = (unit, refs, owners, ws, relation) => {
     if (unit.countProof) {
       ws = [...ws, {callId: unit.countProof.callId}];
+      owners = [...new Set([...owners, ...unit.countOwners])];
       for (const item of unit.countOwners) {
         for (const {name} of unit.countProof.fields) item.delivered.add(name);
       }
@@ -493,23 +515,23 @@ export function evaluateSourceDraft({
     }
   }
   const gaps = [...plan.gaps, ...observations.recoveryGaps];
-  for (const unit of units(text)) {
+  for (const unit of units(text, attachments)) {
     const s = unit.value,
       visible = visibleMarkdown(s);
     const attachment = verifyAttachmentLine(visible.trim(), attachments, observations.attempts);
     if (attachment !== undefined) {
       const disputed = review?.openFindings?.some(f => f.excerpt && s.includes(f.excerpt));
       if (attachment && !disputed && !unsafeMarkdown.test(s)) {
-        const {item, field, callId} = attachment;
-        item.delivered.add(field);
-        unit.attachmentField = field;
-        accept(unit, [], [item], [{callId}], 'attachmentQuote');
+        for (const {item, field} of attachment) item.delivered.add(field);
+        unit.attachmentField = attachment[0].field;
+        unit.attachmentProofs = attachment.map(({item, field, callId}) => ({itemId: item.id, field, callId}));
+        accept(unit, [], attachment.map(p => p.item), attachment, 'attachmentQuote');
       } else rejected.push(s);
       continue;
     }
     const named = decisions.filter((i) => i.query && s.toLowerCase().includes(i.query.toLowerCase()));
     const selected = named.length ? named : decisions;
-    const countText = named.reduce((part, item) => part.replaceAll(item.query, ''), visible);
+    const countText = named.reduce((part, item) => part.replaceAll(item.query, ' '.repeat(item.query.length)), visible);
     const matchCounts = visibleMatchCounts(countText);
     const scans = matchCounts.length ? [...scopedScans(selected, observations)].map(({attempt, hits}) => ({
       callId: attempt.id,
@@ -1055,7 +1077,7 @@ export function evaluateSourceDraft({
       relation,
       itemIds,
       ...(unit.countProof ? {searchCounts: unit.countProof} : {}),
-      ...(unit.attachmentField ? {field: unit.attachmentField} : {}),
+      ...(unit.attachmentField ? {field: unit.attachmentField, attachmentQuotes: unit.attachmentProofs} : {}),
       citationIds: [...new Set(ws.map((w) => w.citation?.id).filter(Boolean))],
       callIds: [...new Set(ws.map((w) => w.callId))],
       sourceTurns: [...new Set(ws.map((w) => w.sourceTurnId ?? w.legacyAnchor).filter(Boolean))],

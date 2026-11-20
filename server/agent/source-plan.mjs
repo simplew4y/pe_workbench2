@@ -116,10 +116,31 @@ export function countPopulation(text) {
   return 'totalMatches';
 }
 
+const countRequest = /(?:命中|匹配)[^。？！；，,]{0,18}?(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数(?:量)?|总数)|(?:多少|几)(?:条|个)(?:消息|回答|答文).{0,8}?(?:命中|匹配)/u;
+
+// Separate repeated predicates at their own ends, regardless of how they
+// are joined. Several coordinated nouns may also share one final predicate.
+function* countOperands(sentence) {
+  const predicates = [...sentence.matchAll(new RegExp(countRequest, 'gu'))];
+  const breaks = new Map(predicates.slice(0, -1).map(m => {
+    const end = m.index + m[0].length;
+    return [end, {end, shared: false}];
+  }));
+  const joins = /[;；、]|以及|另请|并分别|[和与及，,](?=\s*(?:助手|全部|所有))/gu;
+  for (const m of sentence.matchAll(joins)) {
+    breaks.set(m.index, {end: m.index + m[0].length, shared: /^(?:[，,、和与及]|以及)$/u.test(m[0])});
+  }
+  let begin = 0;
+  for (const [end, cut] of [...breaks].sort(([a], [b]) => a - b)) {
+    if (end > begin) yield {begin, end, shared: cut.shared};
+    begin = Math.max(begin, cut.end);
+  }
+  if (begin < sentence.length) yield {begin, end: sentence.length, shared: false};
+}
+
 function admitCounts(question, plan) {
   const searches = plan.items.filter(i => i.action === 'search');
   const masked = assertionQuestion(question, plan);
-  const countRequest = /(?:命中|匹配)[^。？！；]{0,18}(?:几|多少)\s*(?:条|处|项|个)|(?:命中|匹配)(?:的)?(?:数(?:量)?|总数)|(?:多少|几)(?:条|个)(?:消息|回答|答文).{0,8}(?:命中|匹配)/u;
   const asksCount = text => countRequest.test(text) ||
     /出现|字串|字样|去重|不重复|不同(?:材料|工作簿)/u.test(text) && /几|多少|次数|数量|总数/u.test(text);
   for (const sentence of question.matchAll(/[^。？！!?\n]+/gu)) {
@@ -129,14 +150,11 @@ function admitCounts(question, plan) {
     const scoped = named.length ? named : searches;
     // Keep a shared subject for coordinated counts, but let an operand
     // or turn in an individual part narrow its own obligation.
-    let cursor = 0;
-    for (const part of context.split(/以及|另请|并分别|[和与](?=助手|全部|所有)/u)) {
-      const index = context.indexOf(part, cursor);
-      cursor = index + part.length;
-      const at = sentence.index + index;
-      const predicate = masked.slice(at, at + part.length);
-      const sharedCount = /(?:全部消息|所有消息|助手(?:正式)?(?:答文|回答|消息))(?:数)?$/u.test(predicate) &&
-        /^(?:[和与]|以及)(?:全部消息|所有消息|助手)/u.test(context.slice(cursor));
+    for (const {begin, end, shared} of countOperands(masked.slice(sentence.index, sentence.index + context.length))) {
+      const part = context.slice(begin, end);
+      const at = sentence.index + begin;
+      const predicate = masked.slice(at, sentence.index + end);
+      const sharedCount = shared && /(?:全部消息|所有消息|助手(?:正式)?(?:答文|回答|消息))(?:数)?\s*$/u.test(predicate);
       if (!asksCount(predicate) && !sharedCount) continue;
       const terms = scoped.filter(i => i.query && part.includes(i.query));
       const rounds = explicitTurns(predicate);
@@ -146,7 +164,10 @@ function admitCounts(question, plan) {
         plan.gaps.push('需确定检索命中数的统计对象及范围：' + part);
         continue;
       }
-      for (const item of owners) if (!item.fields.includes(population)) item.fields.push(population);
+      for (const item of owners) {
+        if (!item.fields.includes(population)) item.fields.push(population);
+        (item.countRequests ??= []).push({field: population, range: [at, sentence.index + end]});
+      }
     }
   }
 }

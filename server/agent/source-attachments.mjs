@@ -1,9 +1,45 @@
-// Resolve an upload through this turn's attachment list and project catalogue.
-// A workbook observation or a file from a preceding prompt cannot fill this item.
+const quoteMarks = /[「“‘"']([^」”’"'\n]+)[」”’"']/gu;
+
+// Read the whole filename between the naming operation (or list separator)
+// and its extension. A suffix inside a different upload never grants access.
+function fileMentions(text, byName) {
+  const names = [];
+  let end = 0;
+  for (const ext of text.matchAll(/\.[A-Za-z][A-Za-z0-9]{0,11}(?![A-Za-z0-9_.-])/gu)) {
+    const stop = ext.index + ext[0].length;
+    const prefix = text.slice(end, stop);
+    const quoted = prefix.match(/[「“‘"'`]([^「」“”‘’"'`\n]+)$/u);
+    const join = names.length && prefix.match(/^\s*[」”’"'`]?\s*(?:(?:以及|并列|[和与及、，,])\s*)+(?:附件|文件)?\s*/u);
+    const read = prefix.match(/(?:读取|读|摘录|抄录|read\s+|附件|文件)\s*(?:附件|文件)?\s*/iu);
+    const intro = join || read;
+    const name = quoted?.[1] ?? (intro ? prefix.slice(intro.index + intro[0].length) : prefix).trim();
+    if (name.length <= ext[0].length || (!byName.has(name) && !intro && !quoted)) continue;
+    names.push({name, start: stop - name.length, end: stop});
+    end = stop;
+  }
+  return names;
+}
+
+function requestedFields(tail) {
+  const operand = tail.match(/^\s*[」”’"']?\s*(?:(?:中|内|里)(?:的)?|的)\s*(.+)/u)?.[1];
+  if (!operand) return [];
+  const quoted = [...operand.matchAll(quoteMarks)].map(m => m[1]);
+  if (quoted.length) return [...new Set(quoted)];
+  return operand.split(/[,，]|并|逐字|按原文/u)[0].replace(/字段$/u, '').split(/[、]/u).map(x => x.trim()).filter(Boolean);
+}
+
+// Resolve each named file through this turn's attachments and catalogue. A
+// coordinated list shares the field that follows the list, never a read.
 export function attachmentRequests(question, attachments, catalog, proposals) {
-  const materials = [...new Set(attachments ?? [])]
-    .map(path => catalog?.findMaterialByPath?.(path))
-    .filter(file => file && file.relPath.startsWith('uploads/'));
+  const byName = new Map();
+  for (const path of new Set(attachments ?? [])) {
+    const file = catalog?.findMaterialByPath?.(path);
+    if (!file || file.relPath !== path || !path.startsWith('uploads/')) continue;
+    for (const alias of new Set([file.name, path, path.split('/').at(-1)])) {
+      if (!byName.has(alias)) byName.set(alias, []);
+      byName.get(alias).push(file);
+    }
+  }
   const items = [];
   const gaps = [];
   const handled = new Set();
@@ -12,28 +48,41 @@ export function attachmentRequests(question, attachments, catalog, proposals) {
     const proposed = proposals.filter(i => i.action === 'read' && typeof i.quote === 'string' &&
       i.quote && clause.includes(i.quote));
     if (!/读|摘录|逐字|抄录|原文|read|verbatim/i.test(clause) && !proposed.length) continue;
-    // A named but unavailable file remains an obligation even if the reader
-    // overlooked it. Ordinary workbook reads remain in the existing lane.
-    const filename = clause.match(/(?:附件|文件)\s*[「“"]?([\p{L}\d_.-]+\.[\w]+)/u)?.[1];
-    const named = materials.filter(m => filename
-      ? [m.name, m.relPath, m.relPath.split('/').at(-1)].includes(filename)
-      : clause.split(/[\s「」“”"：:，,、]/u).some(word => word === m.name || word === m.relPath));
-    if (/\.xls[xm]$/iu.test(filename ?? named[0]?.name ?? '')) continue;
-    if (!named.length && !filename) continue;
-    for (const i of proposed) handled.add(i);
-    const file = named.length === 1 ? named[0] : null;
-    const label = file?.name ?? filename ?? named.map(m => m.name).join('、');
-    const afterName = clause.slice(clause.indexOf(label) + label.length);
-    const quoted = [...afterName.matchAll(/[「“"]([^」”"\n]+)[」”"]/gu)].map(m => m[1]);
-    const operand = afterName.match(/^\s*(?:[」”"]\s*)?(?:(?:中|内|里)(?:的)?|的)\s*(.+?)(?=\s*(?:[，,]|并|并请|逐字|按原文|$))/u)?.[1];
-    const fields = [...new Set(quoted.length ? quoted : (operand ?? '').replace(/字段$/, '').split(/[、]/u).map(x => x.trim()).filter(Boolean))];
-    const resolved = file && fields.length && file.versions?.[0]?.sha256;
-    if (!resolved) gaps.push('需核实附件及所求原文字段：' + clause.trim());
-    items.push({
-      id: 'attachment-' + (items.length + 1), action: 'readAttachment', filename: label,
-      ...(resolved ? {path: file.relPath, materialId: file.id, version: file.versions[0].v, sha256: file.versions[0].sha256} : {}),
-      fields: fields.length ? fields : ['原文字段'], range: [match.index, match.index + clause.length],
-    });
+    const mentions = fileMentions(clause, byName);
+    const admitted = [];
+    let group = [];
+    for (const [index, mention] of mentions.entries()) {
+      group.push(mention);
+      const next = mentions[index + 1];
+      const tail = clause.slice(mention.end, next?.start);
+      if (next && /^[\s和与及以、，,「」“”‘’"']*$/u.test(tail)) continue;
+      const fields = requestedFields(tail);
+      for (const operand of group) {
+        if (/\.xls[xm]$/iu.test(operand.name)) continue;
+        const candidates = byName.get(operand.name) ?? [];
+        const file = candidates.length === 1 ? candidates[0] : null;
+        const resolved = file?.versions?.[0]?.sha256 && fields.length;
+        if (!resolved) gaps.push('需核实附件及所求原文字段：' + operand.name + ' ' + (fields.join('、') || clause.trim()));
+        const range = [match.index, match.index + clause.length];
+        let item = items.find(i => resolved ? i.path === file.relPath : !i.path && i.filename === operand.name);
+        if (!item) {
+          item = {id: 'attachment-' + (items.length + 1), action: 'readAttachment', filename: file?.name ?? operand.name,
+            ...(resolved ? {path: file.relPath, materialId: file.id, version: file.versions[0].v, sha256: file.versions[0].sha256} : {}),
+            fields: [], range, requests: []};
+          items.push(item);
+        }
+        const required = fields.length ? fields : ['原文字段'];
+        item.fields = [...new Set([...item.fields, ...required])];
+        item.requests.push({range, nameRange: [match.index + operand.start, match.index + operand.end], fields: required});
+        admitted.push({operand, item});
+      }
+      group = [];
+    }
+    for (const proposal of proposed) {
+      const material = proposal.material;
+      if (admitted.some(({operand, item}) => proposal.quote.includes(operand.name) &&
+          (!material || [operand.name, item.filename, item.path].includes(material)))) handled.add(proposal);
+    }
   }
   return {items, gaps, handled};
 }
@@ -68,23 +117,48 @@ export function verifyAttachmentLine(visible, decisions, attempts) {
     if (decisions.some(i => visible.includes(i.filename))) return null;
     return;
   }
-  const candidates = [];
-  for (const {item, field} of targets) {
-    for (const call of attempts) {
-      if (call.state !== 'success') continue;
-      for (const row of call.attachmentFields ?? []) {
-        if (row.itemId !== item.id || row.field !== field) continue;
-        const at = visible.indexOf(field);
-        const prefix = visible.slice(0, at).trim().replace(/^[-*]\s*/u, '');
-        const body = visible.slice(at + field.length).trim().replace(/^(?:字段)?\s*(?:原文)?\s*(?:为|是)?\s*[：:]?\s*/u, '');
-        if (![row.value, '“' + row.value + '”', '「' + row.value + '」'].some(
-          literal => body === literal || body === literal + '。' || body === literal + '.')) continue;
-        const named = prefix.replace(/^(?:附件|文件)\s*/u, '').replace(/(?:中的|中|内的|的|：|:)$/u, '').trim();
-        const qualified = named === item.filename || named === item.path;
-        if (!qualified && (targets.length !== 1 || !/^(?:该|这份)?(?:附件|备忘录|文件|原文)?(?:中|中的|内|的)?$/u.test(prefix))) continue;
-        candidates.push({item, field, callId: call.id, value: row.value});
+  for (const field of new Set(targets.map(t => t.field))) {
+    const at = visible.indexOf(field);
+    const prefix = visible.slice(0, at).trim().replace(/^[-*]\s*/u, '');
+    const body = visible.slice(at + field.length).trim()
+      .replace(/^(?:字段)?\s*(?:原文)?\s*(?:均|都)?(?:为|是)?\s*[：:]?\s*/u, '');
+    const names = prefix.replace(/^(?:附件|文件)\s*/u, '').replace(/(?:中的|中|内的|的|：|:)$/u, '').trim();
+    const eligible = decisions.filter(i => i.fields.includes(field));
+    let owners = eligible.filter(i => names === i.filename || names === i.path);
+    if (owners.length > 1) return null;
+    if (!owners.length) {
+      if (/^(?:该|这份)?(?:附件|备忘录|文件|原文)?(?:中|中的|内|的)?$/u.test(prefix) && eligible.length === 1) owners = eligible;
+      else {
+        // Consume the complete subject, including every coordinated name.
+        // An extra name, a negation or ambiguous display name invalidates it.
+        const aliases = eligible.flatMap(item => [item.filename, item.path].filter(Boolean).map(name => ({name, item})))
+          .sort((a,b) => b.name.length - a.name.length);
+        let rest = names;
+        while (rest) {
+          const match = aliases.find(a => rest.startsWith(a.name));
+          if (!match || aliases.some(a => a.name === match.name && a.item !== match.item)) break;
+          owners.push(match.item);
+          rest = rest.slice(match.name.length).trimStart();
+          if (!rest) break;
+          const separator = /^(?:以及|[和与及、，,])\s*(?:附件|文件)?\s*/u.exec(rest);
+          if (!separator) break;
+          rest = rest.slice(separator[0].length);
+          if (!rest) return null;
+        }
+        if (rest) continue;
       }
     }
+    if (!owners.length) continue;
+    const proofs = [];
+    for (const item of new Set(owners)) {
+      const proof = attempts.findLast(call => call.state === 'success' && call.attachmentFields?.some(row =>
+        row.itemId === item.id && row.field === field &&
+        [row.value, '“' + row.value + '”', '「' + row.value + '」'].some(literal =>
+          [literal, literal + '。', literal + '.', literal + '；', literal + ';'].includes(body))));
+      if (!proof) return null;
+      proofs.push({item, field, callId: proof.id});
+    }
+    return proofs;
   }
-  return new Set(candidates.map(c => c.item.id)).size === 1 ? candidates.at(-1) : null;
+  return null;
 }
