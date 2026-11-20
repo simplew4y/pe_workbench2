@@ -1,3 +1,4 @@
+import {Lexer} from 'marked';
 import {ordinal} from './answer-delivery.mjs';
 
 // Read the whole filename between the naming operation (or list separator)
@@ -198,27 +199,46 @@ export function verifyAttachmentLine(visible, decisions, attempts) {
   return proofs;
 }
 
+// Walk the rendered inline structure but keep positions in the raw Markdown.
+// Only emphasis can span a cut. Preserve its delimiters so that a surviving
+// field can still be rendered independently if its neighbour is rejected.
+function* attachmentSeparators(tokens, offset = 0, style = '') {
+  for (const token of tokens) {
+    if (token.type === 'html') return;
+    if (token.type === 'strong' || token.type === 'em') {
+      const marker = token.raw.slice(0, token.type === 'strong' ? 2 : 1);
+      yield* attachmentSeparators(token.tokens, offset + marker.length, style + marker);
+    } else if (token.type === 'text') {
+      for (const match of token.raw.matchAll(/[，,；;]/gu)) yield {index: offset + match.index, style};
+    }
+    offset += token.raw.length;
+  }
+}
+
 // Preserve a full verbatim value containing a separator. If there are two
 // assertions, the first may identify the subject even when its value is wrong.
 // Its sibling still has to match a successful read of that exact file.
 export function* attachmentParts(part, attachments, attempts, visibleMarkdown) {
   const names = attachments.flatMap(i => [i.filename, i.path].filter(Boolean));
   const fields = attachments.flatMap(i => i.fields);
-  let start = 0;
+  let start = 0, open = '';
   let attachmentOwners;
-  for (const separator of part.matchAll(/[，,；;]/gu)) {
-    const end = separator.index + 1;
-    const next = part.slice(end).trimStart();
+  const closing = style => [...style].reverse().join('');
+  const rendered = (from, to, opening, ending) =>
+    visibleMarkdown(opening + part.slice(from, to).trim() + closing(ending)).trim();
+  for (const {index, style} of attachmentSeparators(Lexer.lexInline(part))) {
+    const end = index + 1;
+    const next = rendered(end, part.length, style, '');
     const nextFile = names.some(name => next.startsWith(name));
     if (!nextFile && !fields.some(field => next.startsWith(field))) continue;
     const scope = attachmentOwners ?? attachments;
-    if (verifyAttachmentLine(visibleMarkdown(part.slice(start)).trim(), scope, attempts)?.length) break;
-    const left = visibleMarkdown(part.slice(start, separator.index)).trim();
-    const subject = attachmentAssertion(left, scope);
+    if (verifyAttachmentLine(rendered(start, part.length, open, ''), scope, attempts)?.length) break;
+    const subject = attachmentAssertion(rendered(start, index, open, style), scope);
     if (!subject && !nextFile) continue;
-    yield {value: part.slice(start, end), attachmentOwners};
+    yield {value: part.slice(start, end), attachmentOwners, open, close: closing(style)};
     start = end;
+    open = style;
     attachmentOwners = nextFile ? undefined : subject.owners;
   }
-  yield {value: part.slice(start), attachmentOwners};
+  yield {value: part.slice(start), attachmentOwners, open, close: ''};
 }

@@ -1283,3 +1283,142 @@ test('a stated field total cannot be closed by an incomplete attachment proposal
     readSourceLanguage:async () => ({kind:'mixed',items:[{action:'read',quote:'A.txt',material:'A.txt',fields:['依据']}]})});
   assert.ok(plan.gaps.some(reason => reason.includes('A.txt') && reason.includes('字段')), JSON.stringify(plan.gaps));
 });
+
+test('each occurrence of a search in a different turn keeps its own count and proof', async () => {
+  const question = '请核对所检索各轮的历史出处，给出单元格、材料版本和完整引用 ID。' +
+    [2, 1].map(n => '请在本会话第' + n + '轮查询“字面常量”，报告该轮的全部消息共匹配到几条。').join('');
+  const plan = await prepareSourcePlan({question}, {session: {}});
+  assert.deepEqual(plan.items.map(i => [i.query, i.turn, question.slice(...i.range), i.range[0]]),
+    [[query, 2, query, question.indexOf(query)], [query, 1, query, question.lastIndexOf(query)]]);
+  assert.deepEqual(plan.gaps, []);
+  const sources = '[Acceptance13.xlsx]Model!B2（材料版本 v1，引用 ID：' + original.id + '）。';
+  for (const equal of [false, true]) {
+    const calls = [1, 2].map(turn => {
+      const matches = [{...formalHit, turn, sourceTurnId: 'source-' + turn}];
+      if (!equal && turn === 1) matches.unshift({turn, role:'user'});
+      return observation('transcript_search', 'call-' + turn, {query, turn},
+        {totalMatches:matches.length, matches, coverage:{turns:[turn], truncated:false}});
+    });
+    for (const mode of ['joined','paragraph','reverse','missing','swapped']) {
+      if (equal && mode === 'swapped') continue;
+      const turns = mode === 'reverse' ? [2, 1] : mode === 'missing' ? [1] : [1, 2];
+      const lines = turns.map((n, index) => {
+        const value = equal ? 1 : mode === 'swapped' ? n : 3 - n;
+        const separator = index === turns.length - 1 ? '，出处如下：' : mode === 'paragraph' ? '。' : '，';
+        return {turn:n, value, quote:'第' + n + '轮“字面常量”的全部消息共匹配到' + value + '条' + separator};
+      });
+      const text = lines.map(x => x.quote).join(mode === 'paragraph' ? '\n\n' : '') + '\n\n' + sources;
+      const meaning = {claims: lines.map(row => ({quote:row.quote, relation:'execution', polarity:'positive',
+        fields:[{name:'scannedTurn',value:row.turn,literal:'第' + row.turn + '轮'}, {name:'totalMatches',value:row.value,literal:row.value+'条'}]}))};
+      const out = evaluateSourceDraft({text, question, plan, meaning, observations: sourceObservations(plan, calls, [])});
+      const complete = !['missing','swapped'].includes(mode);
+      assert.equal(out.status, complete ? 'completed' : 'partial', mode + ': ' + out.reason);
+      if (complete) {
+        assert.equal(out.text, text);
+        const shared = out.sourceDelivery.claims.find(c => c.citationIds.includes(original.id));
+        assert.deepEqual([...shared.callIds].sort(), ['call-1','call-2']);
+        assert.deepEqual([...shared.sourceTurns].sort(), ['source-1','source-2']);
+      }
+      if (mode === 'missing') assert.match(out.reason, /第2轮.*全部消息/);
+      const counted = out.sourceDelivery.claims.filter(c => c.searchCounts);
+      assert.equal(counted.length, mode === 'swapped' ? 0 : turns.length);
+      for (const c of counted) {
+        const item = plan.items.find(i => i.id === c.itemIds[0]);
+        assert.equal(c.searchCounts.callId, 'call-' + item.turn);
+        const field = c.searchCounts.fields[0];
+        assert.equal(out.text.slice(c.start + field.visibleRange[0], c.start + field.visibleRange[1]), field.literal);
+      }
+    }
+  }
+});
+
+test('attachment predicates use rendered labels and retain the corresponding signed Markdown', async () => {
+  const content = '来源：蓝色台账 MC-729\n审核人：林丙 073\n';
+  const file = {id:'memo', name:'A.txt', relPath:'uploads/memo-A.txt', versions:[{v:1,sha256:digest(content)}]};
+  const question = history + '同时读取附件 A.txt 中的“来源”和审核人，请逐字给出这两个字段。';
+  const plan = await prepareSourcePlan({question, attachments:[file.relPath]}, {session:{},
+    ctx:{store:{findMaterialByPath: () => file}}});
+  const read = {id:'exact-read',name:'read',args:{path:file.relPath},success:true,result:{content:[{type:'text',text:content}]}};
+  const observations = sourceObservations(plan, [activeSearch,read], []);
+  const left = 'A.txt 的来源为：蓝色台账 MC-729，';
+  for (const label of ['审核人', '**审核人**', '*审核人*', '`审核人`']) {
+    for (const valid of [true, false]) {
+      const right = label + '为：' + (valid ? '林丙 073' : '赵甲 913') + '。';
+      const text = report + '\n\n' + left + right;
+      const out = evaluateSourceDraft({question, plan, observations, text});
+      assert.equal(out.status, valid ? 'completed' : 'partial', label + ': ' + out.reason);
+      const claims = out.sourceDelivery.claims.filter(c => c.attachmentQuotes);
+      assert.deepEqual(claims.map(c => out.text.slice(c.start,c.end)), valid ? [left,right] : [left]);
+      for (const c of claims) assert.deepEqual(c.callIds,[read.id]);
+      if (valid) assert.equal(out.text,text);
+      else assert.match(out.reason,/A\.txt.*缺少审核人/);
+      const styled = report + '\n\n**' + left + right + '**';
+      if (label === '审核人') {
+        const common = evaluateSourceDraft({question,plan,observations,text:styled});
+        assert.equal(common.status, valid ? 'completed' : 'partial', common.reason);
+        assert.equal(common.text, valid ? styled : report + '\n\n**' + left + '**');
+        assert.deepEqual(common.sourceDelivery.claims.flatMap(c => c.attachmentQuotes ?? []).map(q => q.field),
+          valid ? ['来源','审核人'] : ['来源']);
+      }
+    }
+  }
+});
+
+test('a repeated query can be referenced by its distinct turns, with verified coverage for each requested number', async () => {
+  const question = '请在第1轮和第2轮查询“字面常量”的出处，分别给出两轮全部消息的匹配数和完整引用 ID。';
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  const line = '第1轮全部消息共匹配到一条，第2轮全部消息共匹配到一条，出处如下：';
+  const text = line + '\n\n[Acceptance13.xlsx]Model!B2，引用 ID 为 ' + original.id + '。';
+  const meaning = {claims:[{quote:line,relation:'execution',fields:[
+    {name:'scannedTurn',literal:'第1轮',value:1},{name:'scannedTurn',literal:'第2轮',value:2},
+    {name:'totalMatches',literal:'一条',value:1}]}]};
+  for (const c1 of [{turns:[1],truncated:false}, {turns:[1],truncated:true}, {turns:[2],truncated:false}, undefined]) {
+    const calls = [1,2].map(turn => observation('transcript_search','r'+turn, {turn,query}, {totalMatches:1,
+      matches:[{...formalHit,turn}], coverage:turn === 1 ? c1 : {turns:[2],truncated:false}}));
+    const result = evaluateSourceDraft({plan, question, text, meaning, observations:sourceObservations(plan,calls,[])});
+    const complete = c1?.turns[0] === 1 && c1.truncated === false;
+    assert.equal(result.status, complete ? 'completed' : 'partial', result.reason);
+    if (complete) assert.equal(result.text, text);
+    else {
+      assert.ok(!result.text.includes('第1轮全部消息共匹配到一条'), JSON.stringify(c1));
+      assert.match(result.reason,/第1轮.*全部消息/);
+    }
+    assert.ok(result.text.includes('第2轮全部消息共匹配到一条'));
+  }
+});
+
+test('search selectors on separate requests stay paired with the original occurrence and workbook', async () => {
+  for (const separator of ['。', '；', '，']) {
+    const question = '请在第1轮查询“字面常量”的历史出处，只看工作簿 A.xlsx，并报告全部消息的匹配数' + separator +
+      '再在第2轮查询“字面常量”的历史出处，只看工作簿 B.xlsx，并报告助手正式回答的匹配数。';
+    const plan = await prepareSourcePlan({question},{session:{}});
+    assert.deepEqual(plan.items.map(i => [i.turn,i.book,i.fields.filter(f => f.endsWith('Matches'))]),
+      [[1,'A.xlsx',['totalMatches']],[2,'B.xlsx',['assistantMatches']]], separator);
+  }
+});
+
+test('a missing final scan does not erase an earlier proven count and its own historical source', async () => {
+  const question = '请在第1轮和第2轮查询“字面常量”的出处，分别报告全部消息的匹配数和完整引用 ID。';
+  const plan = await prepareSourcePlan({question}, {session:{}});
+  const call = observation('transcript_search', 'only-turn2', {query, turn:2},
+    {totalMatches:1,matches:[{...formalHit,turn:2}],coverage:{turns:[2],truncated:false}});
+  const valid = '第2轮“字面常量”的全部消息共匹配到一条，';
+  const missing = '第1轮“字面常量”的全部消息共匹配到两条，出处如下：';
+  const location = '- 单元格：Model!B2';
+  const id = '- 完整引用 ID：' + original.id;
+  const meaning = {claims:[
+    {quote:valid,relation:'execution',fields:[{name:'totalMatches',literal:'一条',value:1}]},
+    {quote:missing,relation:'execution',fields:[{name:'totalMatches',literal:'两条',value:2}]},
+    {quote:location,relation:'current',polarity:'positive',fields:[{name:'locator',literal:'Model!B2'}]},
+    {quote:id,relation:'current',polarity:'positive',fields:[{name:'id',literal:original.id}]}]};
+  const result = evaluateSourceDraft({question,plan,text:valid+missing+'\n\n'+location+'\n'+id,meaning,
+    observations:sourceObservations(plan,[call],[])});
+  assert.equal(result.status,'partial',result.reason);
+  assert.ok(result.text.includes(valid) && result.text.includes(location) && result.text.includes(id));
+  assert.ok(!result.text.includes(missing));
+  assert.match(result.reason,/第1轮.*全部消息/);
+  for (const c of result.sourceDelivery.claims.filter(c => c.callIds.length)) {
+    assert.deepEqual(c.callIds,['only-turn2']);
+    assert.deepEqual(c.itemIds,[plan.items.find(i => i.turn === 2).id]);
+  }
+});

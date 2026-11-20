@@ -48,8 +48,9 @@ export function assertionQuestion(question, plan) {
   const chars = question.split('');
   for (const item of plan.items) {
     if (item.action !== 'search' || !item.query || !item.range) continue;
-    const [start, end] = item.range;
-    if (question.slice(start, end) === item.query) chars.fill(' ', start, end);
+    for (const [start, end] of item.ranges ?? [item.range]) {
+      if (normalize(question.slice(start, end)) === normalize(item.query)) chars.fill(' ', start, end);
+    }
   }
   return chars.join('');
 }
@@ -258,27 +259,25 @@ export async function prepareSourcePlan(active, entry) {
     return plan;
   if (!sourceRequest && !['history', 'mixed'].includes(interpretation?.kind))
     gaps.push('需确定所指的历史答文。');
-  const literalTerms = new Map(audited.terms.map((x) => [normalize(x.query), x]));
+  // Reconcile readings at the occurrence in the question. A spelling alone
+  // may name several searches, each with its own turn and material selector.
+  const byPosition = new Map(audited.terms.map(term => [term.range[0], term]));
   for (const term of proposal) {
-    if (current.test(term.query) && !literalTerms.has(term.query)) continue;
-    const range = span(question.toLowerCase(), term.query);
-    if (range) literalTerms.set(term.query, {query: question.slice(...range), range, turns: term.turns});
+    const [start, end] = term.range;
+    if (current.test(term.query) && !byPosition.has(start)) continue;
+    byPosition.set(start, {...term, query: question.slice(start, end)});
   }
+  const literalTerms = new Set([...byPosition.values()].map(t => normalize(t.query)));
   const modelItems = Array.isArray(interpretation?.items) ? interpretation.items : [];
   for (const item of modelItems) {
-    if (
-      item.action !== 'search' ||
-      !item.term ||
-      typeof item.term !== 'string' ||
-      !question.includes(item.term)
-    )
-      continue;
+    if (item.action !== 'search' || typeof item.term !== 'string' || !item.term.trim()) continue;
     const key = normalize(item.term);
-    if (
-      !literalTerms.has(key) &&
-      (audited.terms.length === 0 || audited.terms.some((t) => normalize(t.query) === key))
-    )
-      literalTerms.set(key, {query: item.term, range: span(question, item.term)});
+    if (literalTerms.has(key) || audited.terms.length) continue;
+    const range = span(question, item.term);
+    if (range) {
+      literalTerms.add(key);
+      byPosition.set(range[0], {query: item.term, range});
+    }
   }
   const count = question.match(/([两二三四五六七八九\d]+)个(?:关键词|词|对象)/);
   if (count) {
@@ -301,11 +300,26 @@ export async function prepareSourcePlan(active, entry) {
     fields.push('version');
   if (/工作簿|哪本|哪个文件/.test(question) && /报告|给出|哪本|哪个文件|出处/.test(question))
     fields.push('filename');
-  const terms = literalTerms.size ? [...literalTerms.values()] : [{query: null, range: [0, question.length]}];
+  const terms = literalTerms.size ? [...byPosition.values()].sort((a, b) => a.range[0] - b.range[0]) : [{query: null, range: [0, question.length]}];
+  const admitted = new Map();
+  const sentences = [...question.matchAll(/[^。；;！？\n]+/gu)];
   for (const term of terms) {
+    const sentence = sentences.find(m => m.index <= term.range[0] && term.range[0] < m.index + m[0].length);
+    const nextOperation = proposal.find(p => p.operationStart > term.range[0]);
+    const groupStart = Math.max(sentence?.index ?? 0, term.operationStart ?? 0);
+    const groupEnd = Math.min(sentence ? sentence.index + sentence[0].length : question.length,
+      nextOperation?.operationStart ?? question.length);
+    const localBooks = requestedWorkbooks(question.slice(groupStart, groupEnd));
+    const selectedBooks = localBooks.length ? localBooks : books;
     for (const round of term.turns?.length ? term.turns : scope.length ? scope : [null]) {
-      for (const book of books.length ? [...new Set(books)] : [null]) {
-        items.push({
+      for (const book of selectedBooks.length ? new Set(selectedBooks) : [null]) {
+        const key = JSON.stringify([term.query && normalize(term.query), round, book]);
+        const previous = admitted.get(key);
+        if (previous) {
+          (previous.ranges ??= [previous.range]).push(term.range);
+          continue;
+        }
+        const item = {
           id: 'i' + (items.length + 1),
           action: 'search',
           query: term.query,
@@ -315,7 +329,9 @@ export async function prepareSourcePlan(active, entry) {
           operation: existence ? 'exists' : 'source',
           fields: [...fields],
           needsLocator: !existence || /单元格|原格|出处|坐标|来源/.test(question),
-        });
+        };
+        admitted.set(key, item);
+        items.push(item);
       }
     }
   }

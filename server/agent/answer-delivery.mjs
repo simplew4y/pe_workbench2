@@ -178,13 +178,14 @@ export function ordinal(label) {
   return number + digit;
 }
 
-export function explicitTurns(text) {
-  const turns = new Set();
-  for (const match of text.matchAll(/第\s*([零一二三四五六七八九十百千\d]+)\s*(?:[轮次]|[个条段份则封篇]\s*(?:正式)?(?:答复|回复|回答|答文|回信|消息))|\bturn\s*#?(\d+)/gi)) {
-    turns.add(ordinal(match[1] || match[2]));
+export function* turnMentions(text) {
+  for (const match of text.matchAll(/第\s*([零一二三四五六七八九十百千\d]+)\s*(?:[轮次]|[个条段份则封篇]\s*(?:正式)?(?:答复|回复|回答|答文|回信|消息))|\bturn\s*#?(\d+)|首轮/gi)) {
+    yield {turn: ordinal(match[1] || match[2] || '一'), start: match.index, end: match.index + match[0].length};
   }
-  if (/首轮/.test(text)) turns.add(1);
-  return turns;
+}
+
+export function explicitTurns(text) {
+  return new Set(Array.from(turnMentions(text), match => match.turn));
 }
 
 function assertsCurrentVersion(description) {
@@ -412,8 +413,39 @@ function requestedItems(question) {
 
 // Keep the original Markdown for delivery. A table row is a single claim
 // unit, just as a sentence is in prose. Its header belongs to the retained rows.
+// A closing emphasis marker belongs to the preceding sentence. Marked's
+// raw token ranges distinguish that marker from the opening of the next one.
+function proseParts(raw) {
+  const breaks = /(?<=[。！？])|(?<=[.!?])(?=\s|$)|\n+/gu;
+  if (!/[。！？][*_]/u.test(raw)) return raw.split(breaks).map(s => s.trim()).filter(Boolean);
+  const closers = new Map();
+  function record(tokens, offset) {
+    for (const t of tokens) {
+      const end = offset + t.raw.length;
+      if (t.type === 'strong' || t.type === 'em') {
+        const width = t.type === 'strong' ? 2 : 1;
+        record(t.tokens, offset + width);
+        closers.set(end - width, end);
+      }
+      offset = end;
+    }
+  }
+  record(Lexer.lexInline(raw), 0);
+  const parts = [];
+  let start = 0;
+  for (const cut of raw.matchAll(breaks)) {
+    if (cut.index < start) continue;
+    let end = cut.index;
+    while (closers.has(end)) end = closers.get(end);
+    parts.push(raw.slice(start, end).trim());
+    start = end + cut[0].length;
+  }
+  parts.push(raw.slice(start).trim());
+  return parts.filter(Boolean);
+}
+
 export function answerBlocks(text) {
-  const prose = raw => ({ raw, parts: raw.split(/(?<=[。！？])|(?<=[.!?])(?=\s|$)|\n+/).map(s => s.trim()).filter(Boolean) });
+  const prose = raw => ({raw, parts: proseParts(raw)});
   if (!text.includes('|')) return [prose(text)];
   return Lexer.lex(text).map(token => {
     if (token.type !== 'table') return prose(token.raw);

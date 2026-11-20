@@ -12,6 +12,7 @@ import {
   blockingFinding,
   checkSourceFields,
   explicitTurns,
+  turnMentions,
   reportedLocatorEvidence,
   sourceFieldsOnly,
 } from './answer-delivery.mjs';
@@ -51,7 +52,9 @@ function visibleMarkdown(markdown) {
 function* countParts(part, decisions) {
   let start = 0;
   if (decisions.length > 1) {
-    const refs = queryReferences(part, decisions).filter(ref => ref.known);
+    const queries = queryReferences(part, decisions);
+    const turns = [...turnMentions(part)].filter(t => !queries.some(q => t.start < q.end && q.start < t.end));
+    const refs = [...queries.filter(q => q.known), ...turns].sort((a, b) => a.start - b.start);
     for (let i = 1; i < refs.length; i++) {
       // The two operands bound the intervening predicate. Split after its
       // last quantity, preserving Markdown closers and original punctuation.
@@ -77,13 +80,14 @@ function* units(text, attachments, decisions, attempts) {
   let end = 0;
   for (const part of answerBlocks(text).flatMap(block => block.parts)) {
     const isAttachment = attachments.some(item => part.includes(item.filename) || (item.path && part.includes(item.path)));
+    const parentStart = text.indexOf(part, end);
     const fragments = isAttachment ? attachmentParts(part, attachments, attempts, visibleMarkdown) : countParts(part, decisions);
     for (const fragment of fragments) {
       const value = fragment.value.trim();
       const start = text.indexOf(value, end);
       if (start < 0) continue;
       end = start + value.length;
-      yield {...fragment, value, start, end};
+      yield {...fragment, parentStart, value, start, end};
     }
   }
 }
@@ -535,7 +539,7 @@ export function evaluateSourceDraft({
   const gaps = [...plan.gaps, ...observations.recoveryGaps];
   for (const unit of units(text, attachments, decisions, observations.attempts)) {
     const s = unit.value,
-      visible = visibleMarkdown(s);
+      visible = visibleMarkdown((unit.open ?? '') + s + (unit.close ?? ''));
     const attachment = verifyAttachmentLine(visible.trim(), unit.attachmentOwners ?? attachments, observations.attempts);
     if (attachment !== undefined) {
       const disputed = review?.openFindings?.some(f => f.excerpt && s.includes(f.excerpt));
@@ -560,7 +564,12 @@ export function evaluateSourceDraft({
       if (refsInText.some(ref => !ref.known && /^(?:的)?(?:全部消息|助手|匹配|命中)/u.test(visible.slice(ref.end).trimStart())) || unsafeMarkdown.test(s))
         selected = [];
     }
-    const scans = matchCounts.length ? [...scopedScans(selected, observations)].map(({attempt, hits}) => ({
+    // A positive legacy hit may still establish its historical citation.
+    // A requested population count needs evidence that this scope was scanned.
+    const requiredCount = selected.some(i => matchCounts.some(f => i.fields.includes(f.name)));
+    const scans = matchCounts.length ? [...scopedScans(selected, observations)].filter(({attempt}) =>
+      !requiredCount || (attempt.details.coverage?.truncated === false &&
+        selected.every(i => !i.turn || attempt.details.coverage.turns?.includes(i.turn)))).map(({attempt, hits}) => ({
       callId: attempt.id,
       ...scanCounts(attempt, hits, observations),
     })) : [];
@@ -570,13 +579,19 @@ export function evaluateSourceDraft({
       const coverage = observations.attempts.find(a => a.id === countScan.callId)?.details?.coverage;
       unit.countOwners = coverage?.truncated === false ? selected.filter(i => !i.turn || coverage.turns?.includes(i.turn)) : [];
     }
-    const introducesFields = /(?:出处|来源|引用)(?:如(?:下|上)|如下所示)\s*[：:。.]?\s*$/u.test(s) &&
-      selected.length && selected.every((i) => i.hits.length) &&
+    const listHeading = /(?:出处|来源|引用)(?:如(?:下|上)|如下所示)\s*[：:。.]?\s*$/u.test(s);
+    const introducesFields = listHeading && selected.length && selected.every((i) => i.hits.length) &&
       [...explicitTurns(s)].every((round) => selected.every((i) => i.hits.some((w) => w.turn === round)));
     if (matchCounts.length && !countScan) {
       // A wrong count is not publishable. The heading still identifies
       // the subject of the list; every following field needs its own proof.
       historyFieldGroup = Boolean(introducesFields);
+      // If the last predicate is unproved, the shared list may still give
+      // the source of a proved sibling. Bind neutral rows only to that scan.
+      if (!historyFieldGroup && listHeading && !now.test(s) && !negative.test(s)) {
+        const siblings = accepted.filter(({unit: prior}) => prior.countProof && unit.parent && prior.parentStart === unit.parentStart);
+        if (siblings.length) historyFieldGroup = [...new Set(siblings.flatMap(({unit: prior}) => prior.countOwners))];
+      }
       rejectedChecks.push({start: unit.start, end: unit.end, relation: 'execution', fields: matchCounts, scans});
       rejected.push(s);
       continue;
@@ -627,6 +642,9 @@ export function evaluateSourceDraft({
     // subject. On recheck, use only the exact retained span and a witness
     // that still has the same identity; the row itself must remain neutral.
     const previous = retainedHistory.get(unit.start);
+    if (sourceFields && Array.isArray(historyFieldGroup) && !now.test(s)) {
+      selected = selected.filter(i => historyFieldGroup.includes(i));
+    }
     const witnessesHere = selected.flatMap((i) => i.hits);
     const previouslyBound = previous?.end === unit.end &&
       witnessesHere.some((w) => previous.citationIds.includes(w.citation.id) && previous.callIds.includes(w.callId));
@@ -778,11 +796,11 @@ export function evaluateSourceDraft({
     }
     const rounds = explicitTurns(s);
     const sourcesFor = (i) => (named.length ? i.hits : [...i.hits, ...i.related]);
-    const eligible = isRead
-      ? direct
-      : distinctWitnesses(
-          selected.flatMap((i) => sourcesFor(i).filter((w) => !rounds.size || rounds.has(w.turn))),
-        );
+    const inScope = isRead ? direct :
+      selected.flatMap(i => sourcesFor(i).filter(w => !rounds.size || rounds.has(w.turn)));
+    // Resolve the link once per citation identity. Keep the distinct tool
+    // observations establishing its use by each requested source turn.
+    const eligible = distinctWitnesses(inScope);
     const available = eligible.map((w) => w.citation);
     const explicitIds = [];
     maskCitationIds(s, available, (c) => {
@@ -989,13 +1007,13 @@ export function evaluateSourceDraft({
     }
     const touched = new Set([...refs.map((r) => r.citation.id), ...literals]);
     if (!touched.size) touched.add(fieldOwner.id);
-    const matches = eligible.filter((w) => touched.has(w.citation.id));
-    const answering = selected.filter((i) => i.hits.some((w) => touched.has(w.citation.id)));
+    const matches = inScope.filter(w => touched.has(w.citation.id));
+    const answering = selected.filter(i => i.hits.some(w => matches.includes(w)));
     const owners = isRead
       ? [currentDecision ?? optionalRead]
       : answering.length
         ? answering
-        : selected.filter((i) => sourcesFor(i).some((w) => touched.has(w.citation.id)));
+        : selected.filter(i => sourcesFor(i).some(w => matches.includes(w)));
     if (!owners.length) {
       rejected.push(s);
       continue;
@@ -1095,14 +1113,21 @@ export function evaluateSourceDraft({
   // Final coverage decides whether "nothing unverified" is true. Render
   // the selected units once so that all offsets refer to this exact text.
   let body = '', priorEnd = 0;
-  for (const {unit, refs, owners, ws, relation} of accepted) {
+  const adjacent = (a, b) => a && b && a.parentStart === b.parentStart && !text.slice(a.end, b.start).trim();
+  for (const [index, {unit, refs, owners, ws, relation}] of accepted.entries()) {
     if (relation === 'qualification' && gaps.length) continue;
     if (body) {
       const separator = text.slice(priorEnd, unit.start);
       body += /^\s*$/.test(separator) ? separator : '\n';
     }
     const offset = body.length;
-    body += unit.value;
+    const prev = accepted[index - 1]?.unit;
+    const next = accepted[index + 1]?.unit;
+    // Copy a shared emphasis marker only when its original partner belongs
+    // to omitted text. With both fields retained the Markdown is byte-exact.
+    const open = unit.open && !adjacent(prev, unit) ? unit.open : '';
+    const close = unit.close && !adjacent(unit, next) ? unit.close : '';
+    body += open + unit.value + close;
     priorEnd = unit.end;
     const itemIds = owners.map((item) => item.id);
     claims.push({
@@ -1138,8 +1163,9 @@ export function evaluateSourceDraft({
     !claims.some(
       (c) =>
         c.callIds.length &&
-        !['execution', 'ledgerCount'].includes(c.relation) &&
-        (c.relation !== 'searchResult' || decisions.some((i) => i.operation === 'exists')),
+        ((!['execution', 'ledgerCount'].includes(c.relation) &&
+          (c.relation !== 'searchResult' || decisions.some((i) => i.operation === 'exists'))) ||
+          c.searchCounts?.fields.some(f => decisions.some(i => c.itemIds.includes(i.id) && i.fields.includes(f.name)))),
     )
   ) {
     body = '';

@@ -34,7 +34,9 @@ export function requestedSearches(question) {
   // the search string. Keep adjacent quoted operands with their verb.
   let listTurns;
   let enumerated;
-  for (const [, clause, delimiter] of question.matchAll(CLAUSES)) {
+  let operationStart;
+  for (const match of question.matchAll(CLAUSES)) {
+    const [, clause, delimiter] = match;
     const continuation = listTurns && (/^\s*(?:以及|还有|和|及|与|、|and\b)?\s*[“「『"']/.test(clause) ||
       enumerated && !/说明|报告|返回|出处|完整|列出|给出|请|只看/.test(clause));
     // Find verbs outside quotes: a literal search term can contain “查询”.
@@ -44,13 +46,14 @@ export function requestedSearches(question) {
       continue;
     }
     if (verb) enumerated = /分别|(?:两|二|[三四五六七八九十\d]+)个(?:词|关键词)|以下(?:词|关键词)/.test(clause);
+    if (verb) operationStart = match.index;
     const operand = (verb ? clause.slice(verb.index + verb[0].length) : clause).trim()
       .replace(/^(?:以下)?(?:两|二|[三四五六七八九十\d]+)个(?:关键词|词)\s*[:：]?\s*/, '')
       .replace(/^(?:以及|还有)\s*/, '').replace(KEYWORD, '');
     const terms = [...operand.matchAll(/[“「『"']([^”」』"'\n]+)[”」』"']/g)];
     if (!terms.length && operand && !/轮|报告|回答|答文|出处|引用/.test(operand)) {
-      for (const item of (enumerated ? operand.split(/、/) : [operand])) {
-        if (item.trim()) terms.push({ 1: item, index: operand.indexOf(item), 0: item });
+      for (const piece of operand.matchAll(enumerated ? /[^、]+/gu : /.+/gu)) {
+        if (piece[0].trim()) terms.push({1: piece[0], index: piece.index, 0: piece[0]});
       }
     }
     let turns = verb ? explicitTurns(clause.slice(0, verb.index)) : listTurns;
@@ -62,7 +65,9 @@ export function requestedSearches(question) {
       const local = explicitTurns(prefix);
       if (local.size) turns = local;
       const scoped = turns.size ? turns : rounds.size === 1 ? rounds : [];
-      targets.push({ query: queryKey(term[1]), turns: [...scoped] });
+      const literal = term[1].trim();
+      const start = match.index + clause.lastIndexOf(operand) + term.index + term[0].indexOf(literal);
+      targets.push({query: queryKey(literal), turns: [...scoped], range: [start, start + literal.length], operationStart});
       end = term.index + term[0].length;
       listTurns = /^[，,]$/.test(delimiter) ? turns : undefined;
     }
