@@ -1194,5 +1194,5 @@ const correction = '结论保留。此前说法有误，正确的口径是合并
 const correctionSession = { messages: [], async prompt() {
   this.messages.push({ role: 'assistant', stopReason: 'stop', content: correction });
 } };
-const deliveredCorrection = await runWithPostAnswer({ session: correctionSession }, '请复核上一轮回答');
+const deliveredCorrection = await runWithPostAnswer({ session: correctionSession }, '请说明更正后的口径');
 assert.equal(deliveredCorrection.text, correction);

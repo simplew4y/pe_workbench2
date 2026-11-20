@@ -284,7 +284,7 @@ async function generateAnswer(entry, promptText, options, active) {
         continuationPrefix = null;
         const knownTarget = contextModelTarget(lintContext);
         const targetHint = knownTarget !== null ? `本会话/状态已有模型目标价 ${knownTarget}；` : '';
-        prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）与 westock_query 现价重写首句，格式“模型目标价 <值> vs 现价 <值>，空间 ≈ <X>%”；G1/G2 只是缺口 ID，禁止写成单元格，禁止用“没有独立目标价单元格/先纠正前提/无法精确回答”挡掉；券商目标价只作对照。${facingAnswer}`;
+        prompt = `目标价/偏离答文不合格：${targetErrors.map(item => `${item.message}：${item.excerpt}`).join('；')}。\n${targetHint}请用本轮工具或会话状态中的模型目标价（valuations 的 V*.output=target_price、workbook_trace 估值输出格或明确 target_price locator）重写首句。用户问偏离时，另外给出已核实的现价和上行空间；未取得现价就说明现价未获取、空间无法计算。G1/G2 只是缺口 ID，禁止写成单元格；券商目标价只作对照。${facingAnswer}`;
       } else if (unverified.length && correctionCount < 1) {
         correctionCount++;
         continuationPrefix = null;

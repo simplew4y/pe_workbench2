@@ -89,6 +89,8 @@ await run("config pins a specific OpenRouter model for chat and retrieval", asyn
 await run("systemHint scopes the investment first-screen contract", () => {
   const hint = systemHint({ name: "test", root: "/tmp/test" }, {});
   assert.match(hint, /回答结构随问题而定/);
+  assert.match(hint, /把核实结果并入原有解释/);
+  assert.doesNotMatch(hint, /最后一次工具调用之后/);
   assert.match(hint, /investment-framework/);
   assert.doesNotMatch(hint, /结论 → 需人工复核/);
   assert.doesNotMatch(hint, /报告链接/);

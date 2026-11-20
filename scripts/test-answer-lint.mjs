@@ -123,4 +123,8 @@ const unverifiedPrice = '模型目标价 752 港元 vs 现价未获取（westock
 assert.deepEqual(byCode(unverifiedPrice, { userAsksDeviation: true }, 'G3'), []);
 // A context-known target counts when the answer quotes it without the label.
 assert.deepEqual(byCode('752 港元 vs 现价 418.4 港元，空间约 +79.7%。', { userAsksDeviation: true, modelTargetPrice: 752 }, 'G3'), []);
+const missingQuote = '模型目标价为129元。没有现价，无法计算上行空间。';
+const knownTargetWithoutQuote = { modelTargetPrice: 129, userAsksDeviation: true };
+for (const code of ['G2', 'G3']) assert.deepEqual(byCode(missingQuote, knownTargetWithoutQuote, code), []);
+assert.equal(byCode('无法复现模型目标价。', knownTargetWithoutQuote, 'G2')[0].severity, 'error');
 console.log('target deviation lint G1-G3 passed');
