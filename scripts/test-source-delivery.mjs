@@ -507,6 +507,15 @@ test('an earlier assistant reply binds the requested fields even without a tool 
   assert.equal((await run('请用一句话说明什么是折旧。', [], definition)).record.status, 'completed');
 });
 
+test('searching a workbook and auditing the conversation keep their original checks', async () => {
+  for (const question of ['查一下模型', '自查前文']) {
+    const entry = {session: {messages: [{role: 'assistant'}]}};
+    const plan = await prepareSourcePlan({question, turnId: 'turn'}, entry);
+    assert.equal(plan.route, 'ordinary');
+    assert.deepEqual(plan.items, []);
+  }
+});
+
 test('a checked search heading governs field rows; independently stated current facts keep their time', () => {
   const heading = '第1轮命中1处，出处如下：';
   const lines = [

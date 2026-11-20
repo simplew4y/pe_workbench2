@@ -119,8 +119,9 @@ export async function prepareSourcePlan(active, entry) {
   const plain =
     !sourceRequest &&
     !ambiguous &&
+    !(previousAnswer && audited.terms.length && !audited.books.length) &&
     !audited.asksHistory &&
-    !proposal.length &&
+    !(proposal.length && /聊天|本会话|对话|答复|前文|记录里|transcript|conversation/i.test(question)) &&
     !implicitSubject &&
     !/以前|之前|方才|前面|当时|旧答|上文|过去|earlier|previous/i.test(question);
   plan.inventory = {rounds: scope, terms: audited.terms, books: audited.books, sourceRequest, plain};
