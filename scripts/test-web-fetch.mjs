@@ -220,11 +220,17 @@ async function main() {
       assert.match(result.content[0].text, /"items": \[/);
     });
 
-    await test("rejects PDF links with a clear next step", async () => {
-      const result = await tool.execute("call-8", { url: `${base}/pdf` });
-      assert.equal(result.isError, true);
-      assert.equal(result.details.error, "pdf_not_supported");
-      assert.match(result.content[0].text, /pdf_read/);
+    await test("reads PDF pages with provenance and reports scanned pages honestly", async () => {
+      const pdfTool=createWebFetchTool({allowPrivate:true,pdfExtractor:async()=>[
+        {page:1,text:'封面'}, {page:2,text:'经营现金流 123 百万元'}]});
+      const result=await pdfTool.execute('pdf',{url:`${base}/pdf`,query:'经营现金流'});
+      assert.equal(result.isError,undefined);
+      assert.match(result.content[0].text,/PDF第2页/);
+      assert.deepEqual(result.details.pages,[2]);
+      assert.equal(result.details.truncated,true);
+      assert.match(result.details.contentHash,/^[a-f0-9]{64}$/);
+      const empty=createWebFetchTool({allowPrivate:true,pdfExtractor:async()=>[{page:1,text:''}]});
+      assert.equal((await empty.execute('scan',{url:`${base}/pdf`})).details.error,'pdf_needs_ocr');
     });
 
     await test("reports empty JS-rendered pages instead of inventing text", async () => {

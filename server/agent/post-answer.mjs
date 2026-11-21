@@ -1,3 +1,5 @@
+import { accountingReasoningIssues } from '../../lib/research-reasoning.mjs';
+import { historicalSourceCalls } from '../../lib/research-evidence-scope.mjs';
 import { researchRecoverySources } from '../../lib/research-delivery.mjs';
 import { findingKey } from '../../lib/evidence-reconciliation.mjs';
 import { isResearchQuestion, isScenarioOnlyQuestion, researchExecutionGaps } from '../../lib/research-task.mjs';
@@ -316,7 +318,7 @@ async function generateAnswer(entry, promptText, options, active) {
         message.researchVerification.draftHash===createHash('sha256').update(joined).digest('hex');
       const reviewedCalculation = calculation?.completeAnswer && message.researchVerifiedCalculation && joined.trim() === calculation.body;
       const modelText = reviewedCalculation ? '' : distinctEditableText(joined.trim(), reserved);
-      const reviewedLimits = requestsEvidenceLimits(text) ? new Set(message.researchAnsweredLimits || []) : new Set();
+      const reviewedLimits = semanticReviewed ? new Set(message.researchAnsweredLimits || []) : new Set();
       const classified = !reviewedLimits.size ? modelText : modelText.replace(/(^|[。！？\n])([ \t]*(?:[-*][ \t]+)?)未核验[：:][ \t]*([^。！？\n]+)/gu,
         (line, start, indent, content) => reviewedLimits.has(content.trim()) ? start + indent + '判断还缺的资料：' + content : line);
       const {text:answer, removed:disclosureAdjustments} = prepareDisclosureAnswer(classified, pdfDisclosure, requestedItems, text);
@@ -367,7 +369,7 @@ async function generateAnswer(entry, promptText, options, active) {
       const turnCitations = rehydrateCitations({register:refreshedLedger,answer,thisTurnCitations,currentVersions,toolCalls:calls});
       entry.citationIndex = turnCitations;
       const pdfReports = await readCitedPdfReports(entry.ctx, active.attachments, calls, answer);
-      const lintContext = { ...baseLintContext, question:text, scenarioOnly, citations: turnCitations, toolCalls: calls, currentVersions, pdfReports, pdfDisclosure, calculation, ...(priorCitations.length ? { priorCitations } : {}) };
+      const lintContext = { ...baseLintContext, question:text, scenarioOnly, citations: turnCitations, toolCalls: calls, sourceCalls: historicalSourceCalls(entry.session.messages.slice(0,turnBoundary),text), currentVersions, pdfReports, pdfDisclosure, calculation, ...(priorCitations.length ? { priorCitations } : {}) };
       const workbookReads = calls.filter(call => call.name === 'workbook_query' || call.name === 'workbook_trace');
       const workbookEvidence = collectCitationsFromToolCalls(workbookReads).filter(c => currentCitation(c, currentVersions));
       const blocks = answerBlocks(answer);
@@ -396,6 +398,7 @@ async function generateAnswer(entry, promptText, options, active) {
           }),
           ...checkTurnTools({ answer: candidate, routes: context.routes, toolCalls: calls, workbookContext:workbookTurn }),
           ...scenarioInterpretationFindings(candidate, calculation?.receipt),
+          ...accountingReasoningIssues(candidate,{question:text,sourceQuestions:[...priorQuestions,text]}).map(i=>({rule:'research_reasoning',severity:'error',message:i.reason,excerpt:i.excerpt,expected:i.reason})),
         ];
         const chars = answerCharCount(candidate) + reservedChars;
         if (limit !== null && chars > limit) findings.push({
@@ -413,7 +416,7 @@ async function generateAnswer(entry, promptText, options, active) {
           (semanticReviewed && f.rule==='unsourced_number' && f.evidenceStatus==='missing_source' && f.field==='source'
             ? {...f,severity:'warning',evidenceStatus:'parser_unresolved',message:'语义复核已完成，自动数值对应仍需补核'} : f));
       };
-      const executionGaps = researchExecutionGaps(text, calls);
+      const executionGaps = pdfDisclosure ? [] : researchExecutionGaps(text, calls);
       if (executionGaps.length && evidenceRetryCount < 1 && !active.cancelled && entry.session.sendCustomMessage) {
         evidenceRetryCount++;
         latestMessage = null;
@@ -484,7 +487,8 @@ async function generateAnswer(entry, promptText, options, active) {
       const sourceQuestion = asksHistoricalSource(text);
       const searchGap = sourceQuestion && sourceSearchGap(text, answer, scanned, toolCalls, sourceReport.historical, blocks, coverage,
         clause => Boolean(locatorEvidence(clause).historical?.length) && !findingsFor(clause).some(blockingFinding));
-      const failedTool = [...latestTools.values()].find(call => !call.success &&
+      const resolvedFailures = new Set(semanticReviewed ? (message.researchResolvedToolFailures || []).map(item=>item.id) : []);
+      const failedTool = [...latestTools.values()].find(call => !call.success && !resolvedFailures.has(call.id) &&
         !(sourceQuestion && call.name === 'transcript_search') &&
         (call.name !== 'workbook_query' || candidateCalls.lastIndexOf(call) >= lastVerifiedRead));
       const toolGap = [searchGap, failedTool && `工具 ${failedTool.name} 执行失败。`].filter(Boolean).join('；');
@@ -582,7 +586,7 @@ async function generateAnswer(entry, promptText, options, active) {
         correctionCount++;
         continuationPrefix = null;
         const issues = [...new Set(errors.map(item => [item.message, item.excerpt, item.expected].filter(Boolean).join('；')))];
-        prompt = `以下主张需要核对。工作簿派生值绑定已读出处；题设计算使用用户原始输入，不要求虚构单元格；公开披露回查原文。先保留足以回答各问项的结论和有证据的关键数字。多余数字直接删去，题目要求的事实未能核对时再注明。\n${issues.join('\n')}\n${facingAnswer}`;
+        prompt = `以下主张需要核对。工作簿派生值绑定已读出处；题设计算使用用户原始输入，不要求虚构单元格；公开披露回查原文。交付修订后的完整答复，保持原题要求的条数和每项理由，不写“原结论不变”“改了什么”等修改说明。先保留足以回答各问项的结论和有证据的关键数字。多余数字直接删去，题目要求的事实未能核对时再注明。\n${issues.join('\n')}\n${facingAnswer}`;
         if (calculation && !sourceQuestion && !toolGap && !unverified.length) {
           prompt = [
             '你在一份已有计算段的答复下续写解释，读者已看到下面的计算。根据原题重新写这一小段，逐项说清为什么。',
@@ -640,7 +644,7 @@ async function generateAnswer(entry, promptText, options, active) {
           // Never retain a disproved amount or a source claim that has no review
           // receipt merely because the answer is labelled partial.
           let omit = part => findingsFor(part, { ...lintContext, requiredSections: [] }).some(f =>
-            blockingFinding(f) && ['unsourced_number','scenario_value','fact_identity','unverified_locator'].includes(f.rule));
+            blockingFinding(f) && ['unsourced_number','scenario_value','fact_identity','unverified_locator','research_reasoning'].includes(f.rule));
           if (needsExplanation) {
             // A bad cell reference does not disqualify an independent explanation
             // of what is missing from the scenario. Keep it labeled for review.

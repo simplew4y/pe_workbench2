@@ -125,7 +125,7 @@ for (const initial of [[user], capped]) {
   assert.equal(message.stopReason, 'stop');
   assert.match(message.content[0].text, /应观察售价/);
   if (initial === capped) assert.ok(requestTools.every(names => !names.length), 'capped report must never request tools');
-  else assert.deepEqual(requestTools[0], ['read', 'write'], 'normal research keeps the declared tools');
+  else assert.deepEqual(requestTools[0], ['read'], 'answer-only research keeps reads without unsolicited report writes');
   assert.deepEqual(requestTools.at(-1), [], 'final answer-only recovery advertises no tools');
   assert.equal(JSON.stringify(messages), original);
 }

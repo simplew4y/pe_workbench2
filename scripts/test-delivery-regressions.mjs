@@ -140,4 +140,8 @@ const toolHistory=[{role:'user',content:'旧问题'},{role:'assistant',content:[
 const recoveredTools=researchRecoveryToolEvidence(toolHistory);
 assert.equal(recoveredTools.length,2);assert.ok(recoveredTools[0].text.includes('140.4'));assert.equal(recoveredTools[1].isError,true);
 assert.ok(!JSON.stringify(recoveredTools).includes('旧数据'));
-console.log('PASS recovery retains current-turn external evidence and failures, excluding old turns');
+console.log('PASS recovery retains current-turn external evidence and failures, excluding unconfirmed old sources');
+
+const priorRead=researchRecoveryToolEvidence(toolHistory.map(m=>m.toolCallId==='old'?{...m,isError:false}:m));
+assert(priorRead.some(m=>m.historical && m.arguments.url==='old'));
+assert(!researchRecoveryToolEvidence([...toolHistory.slice(0,3),{role:'user',content:'新问题'}].map(m=>m.toolCallId==='old'?{...m,isError:true}:m)).length);
