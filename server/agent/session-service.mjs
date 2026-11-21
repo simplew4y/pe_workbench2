@@ -176,7 +176,7 @@ export function createSessionService({
         cwd: ctx.root,
         agentDir: config.agentDir,
         model: config.model,
-        thinkingLevel: "off",
+        thinkingLevel: config.model?.reasoning ? "high" : "off",
         sessionManager,
         resourceLoader: loader,
         tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],

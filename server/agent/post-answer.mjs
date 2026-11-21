@@ -287,11 +287,13 @@ async function generateAnswer(entry, promptText, options, active) {
     }
     if (event.type === 'agent_settled' && event.aborted) active.cancelled = true;
   });
-  const previousThinkingLevel = entry.session.thinkingLevel;
-  const enableResearchThinking = researchTurn && entry.session.model?.reasoning === true &&
-    previousThinkingLevel === 'off' && typeof entry.session.setThinkingLevel === 'function';
+  // All workbench answers default to reasoning, including vague attachment
+  // requests and restored sessions. Research keywords only shape the task.
+  const enableDefaultThinking = entry.session.model?.reasoning === true &&
+    (!entry.session.thinkingLevel || entry.session.thinkingLevel === 'off') &&
+    typeof entry.session.setThinkingLevel === 'function';
   try {
-    if (enableResearchThinking) entry.session.setThinkingLevel('high', {persist:false});
+    if (enableDefaultThinking) entry.session.setThinkingLevel('high', {persist:false});
     const priorCitations = Array.isArray(entry.citationIndex) ? entry.citationIndex : [];
     let boundary = entry.session.messages.length;
     if (active.cancelled) return interrupted('用户已取消本次回答。');
@@ -694,6 +696,5 @@ async function generateAnswer(entry, promptText, options, active) {
   } finally {
     await Promise.allSettled(registrationJobs);
     unsubscribe?.();
-    if (enableResearchThinking && entry.session.thinkingLevel === 'high') entry.session.setThinkingLevel(previousThinkingLevel, {persist:false});
   }
 }

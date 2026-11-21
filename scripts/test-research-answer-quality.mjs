@@ -40,7 +40,7 @@ async function deliver(drafts, question, thinking = false, source = cite, verifi
  const levels=[];
  const session={messages,...(thinking?{model:{reasoning:true},thinkingLevel:'off',setThinkingLevel(level){levels.push(level);this.thinkingLevel=level;}}:{}),sessionManager:{appendCustomEntry(type,data){records.push({type,data});}},
   async prompt(){
-   if (thinking) assert.equal(this.thinkingLevel,/为什么|关键假设/.test(question)?'high':'off');
+   if (thinking) assert.equal(this.thinkingLevel,'high');
    const text=drafts[index++]; assert.notEqual(text,undefined,'recovery must be bounded');
    messages.push({role:'assistant',content:[{type:'toolCall',id:'read-'+index,name:'workbook_query',arguments:{}}]},
     {role:'toolResult',toolName:'workbook_query',toolCallId:'read-'+index,isError:false,content:[{type:'text',text:'source'}],details:{citations:[source]}},
@@ -170,10 +170,12 @@ assert.ok(lintFactIdentity('2026年收入为1百万元。',memory).length);
 console.log('PASS fresh explicit observations use source validation; conflicting numbers and unsupported memory claims still fail');
 
 const researchMode=await deliver([complete],context.question,true);
-assert.deepEqual(researchMode.levels,['high','off']);assert.equal(researchMode.thinkingLevel,'off');
+assert.deepEqual(researchMode.levels,['high']);assert.equal(researchMode.thinkingLevel,'high');
 const lookupMode=await deliver([answer],'目标价是多少？',true);
-assert.deepEqual(lookupMode.levels,[]);assert.equal(lookupMode.thinkingLevel,'off');
-console.log('PASS reasoning enabled for research turns and restored; simple lookups keep their original mode');
+assert.deepEqual(lookupMode.levels,['high']);assert.equal(lookupMode.thinkingLevel,'high');
+const vagueMode=await deliver([answer],'看一下这个文件',true);
+assert.deepEqual(vagueMode.levels,['high']);assert.equal(vagueMode.thinkingLevel,'high');
+console.log('PASS reasoning defaults on for research, lookups and vague file requests, including restored off sessions');
 
 const percentageGraph={sheets:[{name:'PL',numberFormats:{B2:'0.0%',B3:'0"%"',B4:'0\\%'},contextCells:[['PL!A1',null,'Rmb mn',1,1,'','']]}],edges:[],cells:[['PL!B2',null,.0913375,2,2,'YoY',''],['PL!B3',null,20,3,2,'Revenue',''],['PL!B4',null,20,4,2,'Revenue','']]};
 const percentCell=queryGraph(percentageGraph,'PL!B2',{maxCells:1}).cells[0];
