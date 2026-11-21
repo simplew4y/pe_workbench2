@@ -275,12 +275,14 @@ async function loadPdfPage(number, { query = '' } = {}) {
     pane.innerHTML = `<div class="prev-state">这一页没有内容。</div>`;
     return;
   }
+  const needsOcr = block.scanned && !block.ocr;
+  const scanLabel = block.ocr ? 'OCR 文字，请核对原图' : needsOcr ? '图片或扫描页，需要 OCR' : '';
   const head = `<div class="pdf-page-head">
       <span class="pdf-page-no">p.${block.page}</span>
-      <span class="pdf-page-meta">${block.scanned ? '无文字页' : `${formatInt(block.chars)} 字`}</span>
-      ${block.scanned ? `<span class="pdf-page-warn">${icon('info', 11)} 图片/扫描页，需要 OCR</span>` : ''}
+      <span class="pdf-page-meta">${needsOcr ? '无文字页' : `${formatInt(block.chars)} 字`}</span>
+      ${scanLabel ? `<span class="pdf-page-warn">${icon('info', 11)} ${scanLabel}</span>` : ''}
     </div>`;
-  if (block.scanned) {
+  if (needsOcr) {
     pane.innerHTML = `${head}<div class="pdf-scan-note">这一页没有可提取的文字${block.images ? `（含 ${block.images} 张图片）` : ''}。原文视图仍可查看，但 Agent 读不到正文；如需分析需先做 OCR。</div>`;
     return;
   }

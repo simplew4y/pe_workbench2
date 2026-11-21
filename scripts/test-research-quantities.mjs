@@ -46,6 +46,10 @@ const cases=[
  ['original correct values','模型2026E HBM毛利率65%（Assumption!AH42），收入占比约2.055%（Assumption!AH32）；2030E归母净利745398.925百万元，约7453.989亿元（PL!BE25）。均为缓存预测，不代表实绩。'],
  ['original period sum','2026Q3单季收入2690.2亿。实际前三季度累计收入=50800145545.85+150310076758+269024106510.18=4701亿元，已超过全年模型预测3549亿元。','comparison_basis'],
  ['wrong adjacent amounts','2026E HBM收入72.93亿元，毛利4.74045亿元。','numeric_units'],
+ ['inconsistent scenario gross profit','情景毛利额 41.53 亿元，较基期 74.88 亿元为 −65.3%，而不是上文的 −56.7%。','numeric_units'],
+ ['consistent scenario gross profit','情景毛利额 51.92 亿元，较基期 74.88 亿元为 −30.7%。'],
+ ['withdrawn scenario gross profit','不能将情景毛利额 41.53 亿元，较基期 74.88 亿元为 −65.3% 作为结论。'],
+ ['compatible rounded amounts','情景毛利额 0.13 亿元，较基期 0.30 亿元为 −57.3%。'],
 ];
 const results=[];
 for(const [name,draft,expected,timeline=[source]] of cases) {
@@ -59,10 +63,10 @@ const provider=async()=>{
  const message={role:'assistant',stopReason:'stop',content:[{type:'text',text:JSON.stringify({checks:Object.fromEntries(AUDIT_CHECKS.map(k=>[k,'pass'])),issues:[]})}]};
  const stream=createAssistantMessageEventStream();stream.push({type:'done',reason:'stop',message});stream.end();return stream;
 };
-for(const index of [0,6,10,15,18]) {
+for(const index of [0,6,10,15,18,cases.findIndex(([name])=>name==='inconsistent scenario gross profit')]) {
  const [name,draft,expected]=cases[index];
  const result=await auditResearch(provider,{}, {messages:[{...source,content:[{type:'text',text:finance}]}]}, {},draft,{workbookEvidence:cells});
  assert.equal(result.ok,!expected,`audit integration: ${name}`);
 }
 if(process.env.RESULT_PATH)fs.writeFileSync(process.env.RESULT_PATH,JSON.stringify(results,null,2));
-console.log(`PASS ${cases.length} targeted cases + 5 audit integration cases; no external model calls`);
+console.log(`PASS ${cases.length} targeted cases + 6 audit integration cases; no external model calls`);

@@ -8,7 +8,8 @@ import path from "node:path";
 import {toolDisplayOutput} from "../../lib/tool-display-output.mjs";
 import {applyPatch} from "diff";
 import {turnTimeline} from "./turn-delivery.mjs";
-import {adoptedCitations, joinContinuation} from "./answer-delivery.mjs";
+import {adoptedCitations, explicitTurns, joinContinuation} from "./answer-delivery.mjs";
+import { TRANSCRIPT_SEARCH_CONTEXT_CHARS } from "../../lib/transcript-search-tool.mjs";
 import {readLedgerSync, pendingMerges} from "../../lib/ledger.mjs";
 import {CONTEXT_BUDGET_FAILURE, isContextBudgetError} from "../../lib/context-budget.mjs";
 import {presentUserAnswer} from "../../ui/chat/user-facing-answer.js";
@@ -239,6 +240,23 @@ function answerMessage(turn, { allowProcessFallback = true } = {}) {
     ...(delivery?.reason ? { reason: delivery.reason } : {}),
     ...(delivery ? { finishedAt: delivery.finishedAt } : {}),
   };
+}
+
+// Only the answer actually shown on this branch can establish a prior position.
+export function referencedJudgments(session, question, beforeTurnId) {
+  if (!/保留|修订|修正|撤回|重写|更新.{0,8}(?:判断|命题|框架)/u.test(question)) return [];
+  const requested = explicitTurns(question);
+  const previous = /上一轮|上轮/u.test(question);
+  if (!requested.size && !previous) return [];
+  const turns = conversationTurns(session, { beforeTurnId }).filter(turn => turn.start || turn.user);
+  if (previous && turns.length) requested.add(turns.length);
+  const budget = Math.floor(TRANSCRIPT_SEARCH_CONTEXT_CHARS / (requested.size || 1));
+  return [...requested].sort((a, b) => a - b).map(number => {
+    const source = turns[number - 1];
+    const answer = source && answerMessage(source, { allowProcessFallback: false });
+    if (!answer?.text || answer.failure || ['failed', 'cancelled', 'pending'].includes(answer.status)) return { turn: number, text: null };
+    return { turn: number, text: answer.text.slice(0, budget), ...(answer.text.length > budget ? { truncated: true } : {}) };
+  });
 }
 
 function toolCitationIndex(ctx, threadId) {

@@ -9,7 +9,8 @@ import {PdfStore} from '../lib/pdf-store.mjs';
 import {createPdfTool} from '../lib/pdf-tool.mjs';
 import {FactMemory} from '../lib/fact-memory/store.mjs';
 import {withFactCapture} from '../lib/fact-memory/tools.mjs';
-import {extractPdfFacts} from '../lib/fact-memory/pdf-semantic.mjs';
+import {extractPdfFacts,pdfReportIssuer} from '../lib/fact-memory/pdf-semantic.mjs';
+import {financialEvidenceFindings} from '../lib/financial-evidence.mjs';
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'pe-pdf-facts-')),workspace=path.join(root,'project'),dataDir=path.join(root,'data');fs.mkdirSync(path.join(workspace,'uploads'),{recursive:true});fs.mkdirSync(path.join(dataDir,'blobs'),{recursive:true});
 const db=new DatabaseSync(path.join(dataDir,'workbench.db')),store=new Store(db,{workspace,dataDir,projectId:'p'});store.migrate();
 const memory=new FactMemory({store}),pdfs=new PdfStore({store});
@@ -45,6 +46,23 @@ doc.new_page();doc.save(p)
    const result=extractPdfFacts({page:1,text});assert.ok(!result.candidates.length || result.candidates.every(f=>f.semantic_review));
  }
  assert.equal(extractPdfFacts({page:1,text:base+' Revenue: 100',scanned:true}).candidates.length,0);
+ const issuer=pdfReportIssuer({pages:[{paragraphs:['獨立核數師報告', '致示例控股有限公司股東']}]});
+ assert.equal(issuer,'示例控股有限公司');
+ const page={page:8,issuer,text:[
+   '管理層討論及分析','截至十二月三十一日止年度','二零二四年 二零二三年',
+   '（人民幣百萬元）','收入 660,257 609,015','收入成本 (311,011) (315,906)',
+ ].join('\n')};
+ assert.equal(extractPdfFacts({...page,scanned:true}).candidates.length,0);
+ const ctx={question:'2024年收入是多少？',toolCalls:[{
+   name:'pdf_read',success:true,details:{materialId:'pdf',version:1,filename:'示例.pdf',evidence:[page]},
+ }]};
+ assert.deepEqual(financialEvidenceFindings('2024年收入为 6,602.57 亿元（PDF 第8页）。',ctx,[]),[]);
+ for(const answer of [
+   '2023年收入为 6,602.57 亿元（PDF 第8页）。',
+   '2024年收入为 6,602.57 亿元（PDF 第9页）。',
+   '2024年收入为 6,602.57 亿元（其它.pdf 第8页）。',
+   '2024年合并收入为 6,602.57 亿元（PDF 第8页）。',
+ ]) assert.ok(financialEvidenceFindings(answer,ctx,[]).length,answer);
  const orphan=extractPdfFacts({page:2,text:'continued',page_context:'Entity: Delta; Scope: consolidated; Unit: RMB million; continued',table:{index:1,data:[['Revenue','100','110']]}});
  assert.ok(orphan.candidates.every(f=>f.semantic_review && !f.identity.period));
  const unknown=extractPdfFacts({page:1,text:'Revenue: 100'}).candidates[0];assert.equal(unknown.identity.entity,'');assert.equal(unknown.identity.period,'');

@@ -36,6 +36,27 @@ await test("审校不可调用工具，错误及截断响应不视作通过",asy
  assert.equal(r.ok,true);assert.deepEqual(captured.tools,[]);
  assert.equal((await auditResearch(()=>stream("","error"),{}, {messages:[]},{},bad)).ok,false);
 });
+await test('逐项审校看到正式计算和补充文字；已回答的证据缺口必须是原题所问并与正文逐字相同', async () => {
+  let payload;
+  const gap = '需要多年的现金流和当前买入价格';
+  const draft = '单年分红不足以判断投资回报。\n未核验：' + gap + '。';
+  const extra = {question:'能按这一个年度判优吗？列缺口。',calculatedAnswer:'经营现金流减资本开支后计算分红覆盖倍数。'};
+  const provider = (_m, c) => {
+    payload = JSON.parse(c.messages[0].content[0].text);
+    return stream(JSON.stringify({...pass,answeredLimits:[gap,'模型虚构的缺口']}));
+  };
+  const review = await auditResearch(provider,{}, {messages:[]},{},draft,extra);
+  assert.equal(payload.draft, extra.calculatedAnswer+'\n\n'+draft);
+  assert.equal(payload.editableDraft,draft);
+  assert.deepEqual(payload.limitsToClassify,[gap]);
+  assert.deepEqual(review.answeredLimits,[gap]);
+  const required = await auditResearch(provider,{}, {messages:[]},{},draft,{...extra,question:'查实当前买入价格并给出处。'});
+  assert.equal(required.answeredLimits,undefined);
+  assert.ok(!Object.hasOwn(payload,'limitsToClassify'));
+  const incomplete = parseAudit(JSON.stringify({checks:{...pass.checks,task_completion:'fail'},issues:[{check:'task_completion',excerpt:gap,reason:'明确要求的价格尚未提供'}],answeredLimits:[gap]}),draft);
+  assert.equal(incomplete.ok,false);
+  assert.equal(incomplete.answeredLimits,undefined);
+});
 await test("历史时间线保留作者、顺序、失败状态及工具参数",()=>{
  const t=evidenceTimeline([{role:"user",content:"你说过50%"},{role:"assistant",content:[{type:"text",text:"来源待核实"}]},
  {role:"toolResult",toolCallId:"f",toolName:"edit",isError:true,content:[{type:"text",text:"not found"}]}]);
@@ -132,6 +153,10 @@ try {
 await test("百分数方向矛盾与已存在公式路径的否定由直接证据拦截",()=>{
  assert.ok(deterministicEvidenceIssues("65%远高于整体84.5%。",[]).length);
  assert.equal(deterministicEvidenceIssues("65%低于整体84.5%。",[]).length,0);
+ assert.equal(deterministicEvidenceIssues("下一期单项占比高于23.3%，且前四项合计高于58.3%。",[]).length,0);
+ assert.equal(deterministicEvidenceIssues("以复购率49.4%为基准，若下一期低于49.4%就推翻预测。",[]).length,0);
+ assert.equal(deterministicEvidenceIssues("−5%高于−10%。",[]).length,0);
+ assert.ok(deterministicEvidenceIssues("−5%低于−10%。",[]).length);
  const timeline=[{role:"toolResult",text:'chartEvidence xRange=T12:T19 downstreamPaths N35 -> N38 -> H27'}];
  assert.ok(deterministicEvidenceIssues("与趋势线的斜率和截距没有直接挂接。",timeline).length);
  assert.equal(deterministicEvidenceIssues("系数经N38用于H27估值。",timeline).length,0);

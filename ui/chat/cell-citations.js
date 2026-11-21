@@ -38,7 +38,7 @@ function bareButton(state, rawCell, lookup) {
   if (!state.source) return null;
   const coord = rawCell.replace(/\$/g, "").toUpperCase();
   const citation = lookup.get(`${state.sheet}!${coord}`.toLowerCase(), state.source);
-  return citation ? citationButton(citation, rawCell) : null;
+  return citation ? state.renderCitation(citation, rawCell) : null;
 }
 
 function citationTitle(citation) {
@@ -50,19 +50,20 @@ function citationTitle(citation) {
   return `打开 ${parts.join(" · ")}`;
 }
 
-export function citationButton(citation, label) {
+export function citationButton(citation, label, { number } = {}) {
   const version = Number(citation.version);
   const locator = normalizeLocator(citation.locator) || String(citation.locator);
   const attrs = [
     'type="button"',
-    'class="cell-cite"',
+    `class="cell-cite${number ? ' cell-cite-compact' : ''}"`,
     "data-cell-cite",
     `data-material-id="${escapeHTML(citation.materialId)}"`,
     `data-locator="${escapeHTML(locator)}"`,
     `title="${escapeHTML(citationTitle(citation))}"`,
   ];
+  if (number) attrs.push(`aria-label="${escapeHTML(`查看来源 ${number}：${citation.filename || '工作簿'} · ${locator}`)}"`);
   if (Number.isInteger(version) && version >= 1) attrs.splice(4, 0, `data-version="${version}"`);
-  return `<button ${attrs.join(" ")}>${escapeHTML(label)}</button>`;
+  return `<button ${attrs.join(" ")}>${escapeHTML(number ? `[${number}]` : label)}</button>`;
 }
 
 function unverifiedSpan(label) {
@@ -167,7 +168,7 @@ function linkText(html, lookup, state, citations) {
     const prefix = offset > 0 ? raw.slice(0, offset) : "";
     output += rawSlice(start, start + prefix.length);
     output += resolved.citation
-      ? citationButton(resolved.citation, resolved.raw)
+      ? state.renderCitation(resolved.citation, resolved.raw)
       : unverifiedSpan(resolved.raw);
     state.sheet = sheetOf(resolved.locator);
     state.source = resolved.citation ? citationIdentity(resolved.citation) : null;
@@ -181,7 +182,7 @@ function linkText(html, lookup, state, citations) {
  * @param {string} textHtml already-escaped/sanitized message HTML
  * @param {Array<object>} citations this message's verified citations
  */
-export function linkCitations(textHtml, citations) {
+export function linkCitations(textHtml, citations, { compact = false } = {}) {
   const html = String(textHtml ?? "");
   const lookup = citationLookup(citations);
   if (!lookup.size || !html) return html;
@@ -190,7 +191,14 @@ export function linkCitations(textHtml, citations) {
   // locator link when the message has no separate, written workbook coordinate.
   const visible = html.replace(/<[^>]*>/g, '');
   const metadata = new RegExp(LOCATOR_SOURCE).test(maskCitationIds(visible, citations)) ? citations : [];
-  const state = { sheet: null, sep: false };
+  // Number by first appearance, scoped to this message and material version.
+  // Repeated citations keep the same number; no new source is invented.
+  const numbers = new Map();
+  const state = { sheet: null, sep: false, renderCitation(citation, label) {
+    const key = citationIdentity(citation) + ':' + normalizeLocator(citation.locator);
+    if (!numbers.has(key)) numbers.set(key, numbers.size + 1);
+    return citationButton(citation, label, compact ? {number:numbers.get(key)} : {});
+  } };
   const reset = () => {
     state.sheet = null;
     state.sep = false;
@@ -221,6 +229,13 @@ export function linkCitations(textHtml, citations) {
   if (cursor < html.length) {
     const text = html.slice(cursor);
     output += skipDepth > 0 ? text : linkText(text, lookup, state, metadata);
+  }
+  if (compact) {
+    // Source-only parentheses add visual noise around already bracketed numbers.
+    // Keep explanatory parentheses and unverified locators unchanged.
+    const button = String.raw`<button\b[^>]*data-cell-cite\b[^>]*>[^<]*</button>`;
+    const group = new RegExp(String.raw`[（(]\s*(${button}(?:[\s、,，]*${button})*)\s*[）)]`, 'g');
+    output = output.replace(group, (_, links) => `<span class="cell-cite-group">${links.replace(/<\/button>[\s、,，]*(?=<button)/g, '</button>')}</span>`);
   }
   return output;
 }

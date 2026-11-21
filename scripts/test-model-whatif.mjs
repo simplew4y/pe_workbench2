@@ -21,5 +21,12 @@ try {
  assert.equal(yes.isError,undefined); assert.equal(yes.details.results[0].before,4); assert.equal(yes.details.results[0].after,6); assert.equal(recalcCalls,2);
  const formula=await tool.execute('formula',{path:'model.xlsx',inputs:[{cell:'Discount PE!B1',value:3}],targets:['Discount PE!B1']}); assert.equal(formula.isError,true); assert.match(formula.content[0].text,/公式/);
  assert.deepEqual(await fsp.readFile(file),source); assert.equal((await tool.execute('outside',{path:'../outside.xlsx',inputs:[],targets:[]})).isError,true);
- console.log('model whatif: ok');
+ let writes=0;
+ const invalidTool=createModelWhatifTool({workspace:dir,calcInfo:{available:true},engine:{
+   async readCells(input,refs,opts){return Object.fromEntries(refs.map(r=>[r,opts?.formulas?2:'#NAME?']));},
+   async recalculateXlsx(input){return input;},async writeCells(){writes++;}
+ }});
+ const invalid=await invalidTool.execute('bad-baseline',{path:'model.xlsx',inputs:[{cell:'Discount PE!A1',value:3}],targets:['Discount PE!B1']});
+ assert.equal(invalid.isError,true);assert.equal(invalid.details.stage,'baseline');assert.equal(writes,0);
+ console.log('model whatif: ok; invalid baseline stops before scenario mutation');
 } finally {await fsp.rm(dir,{recursive:true,force:true});}

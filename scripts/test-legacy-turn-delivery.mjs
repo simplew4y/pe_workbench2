@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createTranscriptSearchTool } from "../lib/transcript-search-tool.mjs";
-import { snapshotMessages, transcriptMessages } from "../server/agent/snapshot.mjs";
+import { referencedJudgments, snapshotMessages, transcriptMessages } from "../server/agent/snapshot.mjs";
 import { startTurn, saveTurnDelivery } from "../server/agent/turn-delivery.mjs";
 
 const [citeA, citeB] = [1, 2].map(n => ({ id: "cite-" + n, materialId: "book", version: 1, locator: "Model!A" + n }));
@@ -89,6 +89,24 @@ await test("Pi legacy correction restores only the replacement and its citations
   assert.match(answer.processText, /首稿/);
   assert.deepEqual(await query("首稿"), []);
   assert.deepEqual((await query("改稿"))[0]?.citations, [citeB]);
+});
+
+await test("revisions compare against the answer shown on the active branch", async t => {
+  const f = await fixture(t);
+  f.correction();
+  const session = { sessionManager: f.manager, messages: [] };
+  const entry = { session };
+  startTurn(entry, { turnId: 'second', question: 'Q2' });
+  f.user('Q2');
+  f.assistant('内部候选，不应送给复盘');
+  saveTurnDelivery(entry, { turnId: 'second', status: 'partial', text: '实际交付的现金流判断' });
+  startTurn(entry, { turnId: 'third', question: 'Q3' });
+  saveTurnDelivery(entry, { turnId: 'third', status: 'cancelled', text: '已经取消的内容' });
+  startTurn(entry, { turnId: 'fourth', question: 'Q4' });
+  assert.deepEqual(referencedJudgments(session, '相较首轮和第二轮，标出保留或撤回的判断', 'fourth'),
+    [{ turn: 1, text: revision }, { turn: 2, text: '实际交付的现金流判断' }]);
+  assert.deepEqual(referencedJudgments(session, '修订上轮的结论', 'fourth'), [{ turn: 3, text: null }]);
+  assert.deepEqual(referencedJudgments(session, '第一轮引用了哪个单元格', 'fourth'), []);
 });
 
 await test("a legacy transcript hit carries only sources used by the final answer", async t => {
