@@ -295,7 +295,7 @@ def parse_with_pdfplumber(path):
     return pages, headings, scanned, "pdfplumber"
 
 
-def parse_with_pypdf(path):
+def open_pypdf(path):
     try:
         from pypdf import PdfReader
     except Exception as error:
@@ -306,6 +306,11 @@ def parse_with_pypdf(path):
         raise PdfError(f"无法打开 PDF：{error}")
     if reader.is_encrypted:
         raise PdfError("PDF 已加密，无法读取正文；请先解除密码后重新上传。")
+    return reader
+
+
+def parse_with_pypdf(path):
+    reader = open_pypdf(path)
     pages = []
     headings = []
     scanned = []
