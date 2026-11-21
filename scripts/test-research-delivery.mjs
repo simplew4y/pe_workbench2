@@ -125,7 +125,7 @@ for (const initial of [[user], capped]) {
   assert.equal(message.stopReason, 'stop');
   assert.match(message.content[0].text, /应观察售价/);
   if (initial === capped) assert.ok(requestTools.every(names => !names.length), 'capped report must never request tools');
-  else assert.deepEqual(requestTools[0], ['read', 'write'], 'normal research keeps the declared tools');
+  else assert.deepEqual(requestTools[0], ['read'], 'answer-only research keeps reads without unsolicited report writes');
   assert.deepEqual(requestTools.at(-1), [], 'final answer-only recovery advertises no tools');
   assert.equal(JSON.stringify(messages), original);
 }
@@ -187,8 +187,8 @@ function scriptedProvider(replies) {
 const reply = (stopReason, text) => ({ stopReason, content: [{ type: 'text', text }] });
 const allowed = { ok: true, issues: [] };
 const denied = excerpt => ({ ok: false, issues: [{ check: 'threshold_provenance', excerpt, reason: '缺少证据。' }] });
-async function managedResearch(replies, verdict = () => allowed, initial = []) {
-  const auditDrafts = [], requests = [], messages = [...initial];
+async function managedResearch(replies, verdict = () => allowed, initial = [], question = '请解释模型假设。') {
+  const auditDrafts = [], auditInputs = [], requests = [], messages = [...initial];
   const session = {
     messages, sessionManager: { appendCustomEntry() {} },
     async prompt(text) { messages.push({ role: 'user', content: text }); await generate(); },
@@ -201,9 +201,12 @@ async function managedResearch(replies, verdict = () => allowed, initial = []) {
   const guarded = guardResearchDelivery(scriptedProvider(replies), {
     getSessionMessages: () => messages,
     getContinuation: () => entry.activeTurn?.continueResearchAnswer,
-    audit: async (_source, _model, context, _options, draft) => {
-      assert.equal(context.messages.filter(m => m.role === 'user').at(-1).content, '请解释模型假设。');
+    getCalculation: () => entry.activeTurn?.calculation,
+    getPriorAnswers: () => entry.activeTurn?.priorAnswers,
+    audit: async (_source, _model, context, _options, draft, extra) => {
+      assert.equal(context.messages.filter(m => m.role === 'user').at(-1).content, question);
       auditDrafts.push(draft);
+      auditInputs.push(extra);
       return verdict(draft, auditDrafts.length);
     },
   });
@@ -212,10 +215,31 @@ async function managedResearch(replies, verdict = () => allowed, initial = []) {
     const stream = await guarded({}, { messages: providerMessages }, {});
     messages.push(await stream.result());
   }
-  const record = await runWithPostAnswer(entry, '请解释模型假设。');
-  return { record, auditDrafts, requests, messages: messages.filter(m => m.role === 'assistant') };
+  const record = await runWithPostAnswer(entry, question);
+  return { record, lint:entry.answerLint, auditDrafts, auditInputs, requests, messages: messages.filter(m => m.role === 'assistant') };
 }
 const first = '该假设依赖交付节奏。', second = '若订单推迟，确认收入也会推迟。';
+const falsify = '把品牌寿命写成可证伪命题。';
+const backwards = '份额会下降。若份额下降就推翻它。';
+const opposite = '预计下一年份额下降。若下一年份额持平或上升，就推翻这个判断。';
+const directionReview = await managedResearch([reply('stop', backwards), reply('stop', opposite)],
+  draft => draft === backwards ? { ok: false, issues: [{ check: 'task_completion', excerpt: '若份额下降就推翻它。', reason: '同一方向支持下降，不能推翻下降。' }] } : allowed, [], falsify);
+assert.deepEqual(directionReview.auditDrafts, [backwards, opposite]);
+assert.equal(directionReview.auditInputs[0].question, falsify);
+assert.equal(directionReview.record.text, opposite);
+
+const approved = '预计份额下降，若明年份额回升就推翻判断。同时比较收入，以排除其他品牌突然萎缩带来的影响。';
+const shorter = '预计份额下降。';
+const compactGuard = guardResearchDelivery(scriptedProvider([reply('stop', shorter)]), {
+  getCompactAnswer: () => ({ prompt: '缩短正文', approvedDraft: approved }),
+  audit: async (_provider, _model, _context, _options, draft, extra) => {
+    assert.equal(draft, shorter);
+    assert.deepEqual([extra.question, extra.beforeShortening], [falsify, approved]);
+    return { ok: false, issues: [{ check: 'task_completion', excerpt: shorter, reason: '删去了足以推翻它的观察。' }] };
+  },
+});
+const retained = await (await compactGuard({}, { messages: [{ role: 'user', content: falsify }] }, {})).result();
+assert.equal(retained.content[0].text, approved);
 for (const prefix of [first, '']) {
   const turn = await managedResearch([reply('length', prefix), reply('stop', second)]);
   assert.deepEqual(turn.requests, ['pe_answer_continue']);
@@ -242,7 +266,8 @@ const repairLength = await managedResearch([
 assert.deepEqual(repairLength.messages[0].content, [], 'a truncating repair cannot leak a known rejected passage');
 assert.deepEqual([repairLength.record.text, repairLength.requests], [second, ['pe_answer_continue']]);
 const tooShort = await managedResearch([reply('length', ''), reply('length', '')]);
-assert.deepEqual([tooShort.record.status, tooShort.record.text, tooShort.requests], ['failed', '', ['pe_answer_continue']]);
+assert.deepEqual([tooShort.record.status, tooShort.requests], ['failed', ['pe_answer_continue']]);
+assert.match(tooShort.record.text,/未能形成可交付/);
 const shortAnswer = '我先分析结果：原模型每股129元，情景每股142元。本轮维持原预测。';
 const short = await scenario([shortAnswer], [allowed]);
 assert.equal(short.calls, 1);
@@ -267,6 +292,40 @@ const historical = [user, call('workbook_query', 'old'), {
 }];
 const concise = await managedResearch([reply('stop', first)], () => allowed, historical);
 assert.equal(concise.record.text, first);
+const baseDcf = '假设公司基期FCFF100，未来1至3年每年增10%，第3年后永续增长3%，WACC10%，净债务200，股数200，现金流年末发生。DCF计算企业价值、每股价值和终值占比，列公式。';
+const nextDcf = '只把WACC改12%，其他不变，重算企业价值、每股价值及相对原情景变化。';
+const withBasis = await managedResearch([reply('stop', '固定净债务使股权价值的变动比例与企业价值不同。')], () => allowed,
+  [{ role: 'user', content: baseDcf }], nextDcf);
+assert.equal(withBasis.record.status, 'completed');
+assert.equal(withBasis.auditInputs.length, 1, 'scenario follow-up must enter review even without a workbook read');
+const basis = withBasis.auditInputs[0].calculationBasis;
+assert.deepEqual(basis.sourceQuestions, [{ userTurn: 1, text: baseDcf }, { userTurn: 2, text: nextDcf }]);
+assert.deepEqual(basis.inputs.adjustedDiscount, { value: '12%', userTurn: 2 });
+assert.equal(basis.outputs.perShare.value, '5.87');
+assert.match(basis.outputs.perShare.expression, /12%/);
+assert.match(withBasis.auditInputs[0].calculatedAnswer, /每股价值 5\.87/);
+const tested = [baseDcf,nextDcf,'有人用第3年FCFF直接除以WACC减永续增速，忘乘1.03。指出错误，并计算在WACC12%时对每股价值造成的差额。',
+  '回到WACC10%，永续增长改10%，模型是否有有限估值？'].map(content=>({role:'user',content}));
+const restore = '恢复WACC10%、永续增长3%。用紧凑表总结已测试的有效和无效情景，说明DCF的两种虚假精确性。限400字。';
+const complete = await managedResearch([reply('stop','与题设无关的额外评论。')],()=>allowed,tested,restore);
+assert.deepEqual(complete.auditDrafts,['']);
+assert.equal(complete.record.status,'completed',JSON.stringify(complete.lint?.findings));
+assert.equal(complete.record.text,complete.auditInputs[0].calculatedAnswer);
+assert.match(complete.record.text,/7\.86[\s\S]*无有限值[\s\S]*都是估计[\s\S]*对一点变化就越敏感/u);
+const additional = '另须说明如何调整现金流预测。';
+const extended = await managedResearch([reply('stop',additional)],()=>allowed,tested,restore+'解释怎样做新的预测。');
+assert.deepEqual(extended.auditDrafts,[additional]);
+assert.ok(extended.record.text.includes(additional));
+const retried = await managedResearch([reply('stop',additional)],(_draft,n)=> n === 1 ? denied('原假设') : allowed,tested,restore);
+assert.deepEqual(retried.auditDrafts,['',additional]);
+assert.ok(retried.record.text.includes(additional));
+const basePortfolio = '虚构组合A、B各50%，预期年收益10%、6%，年波动20%、10%，相关系数0.5。算组合预期收益与波动率。';
+const portfolioQuestion = '总结框架：哪些输入是假设、输出是条件计算、关键风险未建模？给3条监控规则，不编造风险承受能力，不下买卖指令。限400字。';
+const withOptionalGap = await managedResearch([reply('stop', '未核验：材料未提供风险承受能力和用于确定阈值的历史收益。')], () => allowed,
+  [{ role: 'user', content: basePortfolio }], portfolioQuestion);
+assert.equal(withOptionalGap.record.status, 'completed');
+assert.match(withOptionalGap.record.text, /未建模风险[\s\S]*监控规则.*1\).*2\).*3\)/);
+assert.doesNotMatch(withOptionalGap.record.text, /未核验/);
 console.log('PASS managed research length, empty drafts, split-claim audit, internal repairs and concise answers');
 
 const originalMessages = [user];
@@ -301,3 +360,26 @@ const receiptResult = await (await guardedReceipt({}, { messages: failedThenCorr
   m.role === 'custom' ? { role: 'user', content: m.content } : m) }, {})).result();
 assert.match(receiptResult.content[0].text, /文件尚未保存：exports\/analysis.md/);
 console.log('PASS managed internal prompts retain audit allowance, actual user question and report receipts');
+
+
+{
+ const recovery={question:'解释估值结构与风险',draft:'待修复草稿',sources:[{id:'nav',value:752,display_unit:'元/股'}],findings:[]};
+ const history=[{role:'user',content:recovery.question},{role:'assistant',content:[{type:'text',text:'huge old draft'}]}];
+ let requests=0,audits=0;
+ const provider=async(_model,ctx)=>{
+  requests++;
+  assert.deepEqual(ctx.tools,[]);
+  assert.equal(ctx.messages.length,1);
+  assert.ok(!JSON.stringify(ctx).includes('huge old draft'));
+  assert.deepEqual(JSON.parse(ctx.messages[0].content[0].text),{...recovery,userContext:[recovery.question],toolEvidence:[]});
+  const message={role:'assistant',content:[{type:'text',text:'估值取决于核心业务盈利，若增长不能兑现，应下调盈利假设。'}],stopReason:'stop'};
+  const stream=createAssistantMessageEventStream();stream.push({type:'done',reason:'stop',message});stream.end();return stream;
+ };
+ const stream=await guardResearchDelivery(provider,{getRecovery:()=>recovery,getSessionMessages:()=>history,
+  audit:async(_p,_m,context)=>{audits++;assert.deepEqual(context.messages,history);return {ok:true,status:'reviewed',issues:[]};}
+ })({}, {messages:history}, {});
+ for await(const e of stream){}
+ assert.equal(requests,1);assert.equal(audits,1);
+ assert.match((await stream.result()).content[0].text,/核心业务/);
+ console.log('PASS bounded final recovery retains source evidence and still undergoes independent review');
+}

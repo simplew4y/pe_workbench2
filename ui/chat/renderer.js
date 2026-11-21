@@ -278,7 +278,7 @@ function messageHTML(m, { openGroups } = {}) {
     : renderMarkdownHTML(m.text || '', '', highlightBudget);
   const citations = m.citations ?? (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
   // The vm-based renderer test intentionally omits the module binding.
-  if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations);
+  if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations, { compact: !isUser });
   if (!isUser && m.status && m.status !== 'completed') {
     const label = { partial: '部分完成', failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
     if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
@@ -368,7 +368,7 @@ function liveMessageHTML() {
       <span class="msg-avatar">${icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
-        <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations) : liveBody) : ''}</div>
+        <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations, { compact: true }) : liveBody) : ''}</div>
         ${inlineStatus}
         <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
       </div>
@@ -386,7 +386,7 @@ function updateLiveMessage() {
     if (shownLive) {
       const markdown = renderMarkdownHTML(shownLive, '');
       const citations = citationsFromTools(live.tools);
-      const html = citations.length ? linkCitations(markdown, citations) : markdown;
+      const html = citations.length ? linkCitations(markdown, citations, { compact: true }) : markdown;
       if (body.innerHTML !== html) {
         const template = document.createElement('template');
         template.innerHTML = html;

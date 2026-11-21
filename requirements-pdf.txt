@@ -1,0 +1,2 @@
+# Text-based local and remote PDF extraction. Install with python3 -m pip install -r requirements-pdf.txt
+PyMuPDF==1.28.2

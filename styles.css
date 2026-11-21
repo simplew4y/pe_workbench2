@@ -190,6 +190,9 @@ svg{display:block}
 .file-inline svg{color:var(--muted)}
 .file-inline span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-cite{display:inline-flex;align-items:center;gap:3px;padding:0 4px;border:1px solid var(--line-2);border-radius:4px;background:var(--surface-2);color:#3C5A6B;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;line-height:1.45;vertical-align:baseline;cursor:pointer;transition:border-color .14s,background .14s}
+.cell-cite-group{white-space:nowrap}
+.cell-cite.cell-cite-compact{font-family:inherit;font-size:.75em;line-height:1.3;min-width:22px;min-height:22px;justify-content:center;padding:0 3px;border-color:transparent;background:transparent;color:var(--muted);vertical-align:super}
+.cell-cite.cell-cite-compact:hover{color:var(--blue-fg);background:var(--surface-2)}
 .cell-cite:hover{border-color:#B7B0A0;background:var(--surface)}
 .cell-cite:focus-visible{outline:2px solid var(--blue-fg);outline-offset:1px}
 .cell-ref-unverified{border-bottom:1px dashed #B9B3A7;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;cursor:help}

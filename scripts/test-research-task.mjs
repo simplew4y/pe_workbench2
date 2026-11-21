@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { isResearchQuestion, isScenarioOnlyQuestion } from '../lib/research-task.mjs';
+import { checkTurnTools } from '../lib/turn-context.mjs';
+for (const question of ['建立投资框架','检查估值','解读模型','算组合收益与风险','给出证伪条件']) assert.ok(isResearchQuestion(question),question);
+assert.ok(isResearchQuestion('只把折现率改为12%，其他不变','计算DCF企业价值'));
+assert.ok(isResearchQuestion('压缩为五条','分析长期投资价值'));
+for (const question of ['你好','谢谢','列出文件','新建项目']) assert.equal(isResearchQuestion(question,'解释估值'),false);
+assert.ok(isScenarioOnlyQuestion('只把参数改为12%','虚构公司，仅用题设参数计算'));
+assert.equal(isScenarioOnlyQuestion('比较附件工作簿与题设参数','虚构公司'),false);
+assert.deepEqual(checkTurnTools({answer:'相关系数不影响组合预期收益。',routes:['dependency'],toolCalls:[]}),[]);
+assert.ok(checkTurnTools({answer:'工作簿capex不进入估值。',routes:['dependency'],toolCalls:[],workbookContext:true}).length);
+console.log('PASS research routing, scenario scope, follow-up inheritance and workbook-only path checks');

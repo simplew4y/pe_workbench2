@@ -1348,11 +1348,13 @@ await test("Issue #10 regressions through uploads, Pi chat, delivery and refresh
   const config = await loadConfig({ root, env: {
     ASR: "0", WATCH_SCHEDULER: "0", TRACKING_SCHEDULER: "0", MONITOR_SCHEDULER: "0", SOURCE_SCHEDULER: "0",
   } });
-  // Each case starts a new session. Its index calls summarize newly registered workbook facts.
+  // New sessions must create source-linked topics without extra model requests on delivery.
   const topicIndex = registerFauxProvider();
   t.after(() => topicIndex.unregister());
   const topicSummary = "已核验的工作簿指标";
+  let topicProposalCalls = 0;
   const proposeSummary = () => {
+    topicProposalCalls++;
     topicIndex.appendResponses([proposeSummary]);
     return fauxAssistantMessage(JSON.stringify({ summary: topicSummary }));
   };
@@ -1447,7 +1449,9 @@ for filename, value in [('A.xlsx', 111), ('B.xlsx', 222)]:
         assert.equal(record.status, "completed");
         assert.equal(record.text, response);
         const ledger = await readLedger(entry.ctx.root, entry.id);
-        assert.ok(ledger.topics.some(topic => topic.summary === topicSummary && topic.factIds.length));
+        assert.ok(ledger.topics.some(topic => topic.summary && topic.factIds.length &&
+          topic.factIds.every(id => ledger.facts.some(fact => fact.id === id))));
+        assert.equal(topicProposalCalls, 0, 'navigation summaries must not make paid model calls during delivery');
       });
     }
   }

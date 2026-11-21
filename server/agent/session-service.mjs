@@ -1,3 +1,4 @@
+import { reconcileEvidence, reviewEvidenceBindings } from '../../lib/evidence-reconciliation.mjs';
 import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/tools.mjs';
 /**
  * Session lifecycle and persistence.
@@ -175,7 +176,7 @@ export function createSessionService({
         cwd: ctx.root,
         agentDir: config.agentDir,
         model: config.model,
-        thinkingLevel: "off",
+        thinkingLevel: config.model?.reasoning ? "high" : "off",
         sessionManager,
         resourceLoader: loader,
         tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
@@ -190,12 +191,21 @@ export function createSessionService({
         const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens);
         if (!assessContextBudget(messages, model, options?.maxTokens).ok) return contextBudgetFailureStream(model);
         const request = { messages };
-        if (!config.modelPayload) return stream(model, request, options);
         return stream(model, request, {
           ...options,
           onPayload: async (payload, requestModel) => {
             const transformed = await options?.onPayload?.(payload, requestModel);
-            return config.modelPayload(transformed ?? payload, requestModel);
+            const outgoing = config.modelPayload ? await config.modelPayload(transformed ?? payload, requestModel) : transformed ?? payload;
+            // Record only non-secret execution settings, never request content or keys.
+            if (entry?.activeTurn && !entry.activeTurn.modelRequestRecorded) {
+              entry.activeTurn.modelRequestRecorded = true;
+              session.sessionManager?.appendCustomEntry('pe_model_request', {
+                turnId:entry.activeTurn.turnId,model:requestModel?.id || model.id,
+                thinkingType:outgoing?.thinking?.type || null,
+                reasoningEffort:outgoing?.reasoning_effort || outgoing?.reasoning?.effort || null,
+              });
+            }
+            return outgoing;
           },
         });
       };
@@ -209,10 +219,22 @@ export function createSessionService({
         recordAudit,
         getSessionMessages: () => session.messages,
         getContinuation: () => entry?.activeTurn?.continueResearchAnswer,
-        audit: (source, model, context, options, draft) =>
-          auditResearch(source, model, context, options, draft, { workbookEvidence: researchReview.evidenceSnapshot() }),
+        getRecovery: () => entry?.activeTurn?.researchRecovery,
+        getAnswerLengthHint: () => entry?.activeTurn?.answerLengthHint,
+        getCalculation: () => entry?.activeTurn?.calculation,
+        getCompactAnswer: () => entry?.activeTurn?.compactAnswer,
+        getPriorAnswers: () => entry?.activeTurn?.priorAnswers,
+        getPdfDisclosure: () => entry?.activeTurn?.pdfDisclosure,
+        audit: (source, model, context, options, draft, extra) =>
+          auditResearch(source, model, context, options, draft, { ...extra, workbookEvidence: researchReview.evidenceSnapshot() }),
         onContext: (model, context, options) => {
           researchReview.restoreEvidence(context.messages);
+          if (entry) entry.reconcileEvidence = async (answer, findings, lintContext) => {
+            const result=await reconcileEvidence(findings,lintContext,pending=>
+              reviewEvidenceBindings(provider,model,options,entry.activeTurn?.question || '',answer,pending));
+            recordAudit({kind:'answer_binding',at:new Date().toISOString(),status:result.status,accepted:result.accepted,usage:result.usage});
+            return result;
+          };
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
               ...extra, workbookEvidence: researchReview.evidenceSnapshot(),

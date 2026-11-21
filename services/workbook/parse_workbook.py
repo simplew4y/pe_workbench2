@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 12
+PARSER_VERSION = 13
 
 try:
     import openpyxl
@@ -445,6 +445,7 @@ def parse_sheet(
     values: dict[tuple[int, int], Any] = {}
     sheet_formulas: dict[tuple[int, int], str] = {}
     computed: dict[tuple[int, int], Any] = {}
+    number_formats: dict[str, str] = {}
 
     for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
         for cell in row:
@@ -454,6 +455,8 @@ def parse_sheet(
             if raw is None:
                 continue
             values[(cell.row, cell.column)] = raw
+            if "%" in str(cell.number_format):
+                number_formats[cell.coordinate] = str(cell.number_format)[:MAX_VALUE_CHARS]
             if isinstance(raw, str) and raw.startswith("="):
                 sheet_formulas[(cell.row, cell.column)] = raw
                 if values_ws is not None:
@@ -508,6 +511,7 @@ def parse_sheet(
 
     sheet = {
         "contextCells": context_cells,
+        "numberFormats": number_formats,
         "name": ws.title,
         "rows": max_row,
         "cols": max_col,

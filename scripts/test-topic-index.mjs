@@ -23,11 +23,11 @@ try {
  assert.equal(l.facts.find(f=>f.id==='OLD').status,'superseded');
  const rejected=await validateTopicProposal({id:topic.id,title:topic.title,summary:'数字 999 亿',factIds:['NEW']},l);
  assert.equal(rejected.ok,false);assert.equal(rejected.reason,'unsourced_number');
- assert(!JSON.stringify((await readLedger(root,'old')).topics).includes('999'));
+ assert(!(await readLedger(root,'old')).topics.some(t=>String(t.summary).includes('999')));
  const tool=createLedgerTool({ctx:{root},getSessionId:()=> 'old',getTurn:()=>2});
  const unauthorized=await tool.execute('x',{kind:'fact',claim:'回答数字',value:999,unit:'亿元'});
  assert.equal(unauthorized.isError,true);assert.match(unauthorized.content[0].text,/only from successful structured tool/);
- assert(!JSON.stringify((await readLedger(root,'old')).topics).includes('999'));
+ assert(!(await readLedger(root,'old')).topics.some(t=>String(t.summary).includes('999')));
  const rows=[];for(let i=0;i<60;i++)rows.push({id:`MISS${i}`,claim:`无关指标${i}`,value:1000+i,unit:'亿元',binding:{company:`C${i}`,metric:`无关指标${i}`,period:'2024',unit:'亿元'},status:'current'});
  l=await readLedger(root,'old');l.facts.push(...rows);
  const selected={topicIds:[topic.id],parsed:{company:'A 公司',metric:'营业收入',periods:['2024']},clarification:{needed:false,missing:[]}};
