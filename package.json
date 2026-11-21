@@ -57,11 +57,12 @@
     "test:topic-index": "node scripts/test-topic-index.mjs",
     "test:topic-retrieve-live": "node scripts/test-topic-retrieve-live.mjs",
     "test:fact-memory": "node scripts/test-fact-memory.mjs && node scripts/test-fact-memory-tools.mjs && node scripts/test-fact-memory-boundaries.mjs && node scripts/test-framework-bindings.mjs && node scripts/test-pdf-fact-semantics.mjs && node scripts/test-fact-maintenance.mjs && node scripts/test-fact-memory-crashes.mjs",
-    "test:p0": "node scripts/test-workbook-references.mjs && node scripts/test-workbook-semantics.mjs && node scripts/test-research-policy.mjs && node scripts/test-westock-identity.mjs && node scripts/test-research-review.mjs && node scripts/test-research-delivery.mjs && node scripts/test-trace-hook.mjs && node scripts/test-research-reliability.mjs && node scripts/test-research-answer-quality.mjs",
+    "test:p0": "node scripts/test-workbook-references.mjs && node scripts/test-workbook-semantics.mjs && node scripts/test-research-policy.mjs && node scripts/test-westock-identity.mjs && node scripts/test-research-review.mjs && node scripts/test-research-delivery.mjs && node scripts/test-trace-hook.mjs && node scripts/test-research-reliability.mjs && node scripts/test-research-answer-quality.mjs && node scripts/test-research-protocol-recovery.mjs && node scripts/test-number-delivery.mjs && node scripts/test-research-evidence-boundaries.mjs",
     "test:research": "node scripts/test-research-all.mjs",
     "test:research:reproduction": "node scripts/test-research-reproduction.mjs",
     "test:research:quantities": "node scripts/test-research-quantities.mjs",
-    "test:research:answer-quality": "node scripts/test-research-answer-quality.mjs && node scripts/test-delivery-regressions.mjs && node scripts/test-evidence-reconciliation.mjs && node scripts/test-research-task.mjs && node scripts/test-research-pipeline-scope.mjs"
+    "test:research:answer-quality": "node scripts/test-research-answer-quality.mjs && node scripts/test-delivery-regressions.mjs && node scripts/test-evidence-reconciliation.mjs && node scripts/test-research-task.mjs && node scripts/test-research-pipeline-scope.mjs",
+    "test:research:protocol": "node scripts/test-research-protocol-recovery.mjs"
   },
   "keywords": [],
   "author": "",

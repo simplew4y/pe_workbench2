@@ -1,3 +1,4 @@
+import { guardToolProtocol } from '../../lib/tool-call-protocol.mjs';
 import { reconcileEvidence, reviewEvidenceBindings } from '../../lib/evidence-reconciliation.mjs';
 import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/tools.mjs';
 /**
@@ -203,6 +204,7 @@ export function createSessionService({
                 turnId:entry.activeTurn.turnId,model:requestModel?.id || model.id,
                 thinkingType:outgoing?.thinking?.type || null,
                 reasoningEffort:outgoing?.reasoning_effort || outgoing?.reasoning?.effort || null,
+                toolNames:(outgoing?.tools || []).map(tool=>tool.function?.name || tool.name).filter(Boolean),
               });
             }
             return outgoing;
@@ -211,13 +213,15 @@ export function createSessionService({
       };
       researchReview.restoreEvidence(session.messages);
       // Use the configured provider for review and repair requests as well as chat.
-      const provider = session.agent.streamFunction;
+      const provider = guardToolProtocol(session.agent.streamFunction);
       const recordAudit = record => {
         fs.appendFileSync(path.join(ctx.root, ".pi", "research-audit.jsonl"), JSON.stringify(record) + "\n");
       };
       session.agent.streamFunction = guardResearchDelivery(provider, {
         recordAudit,
         getSessionMessages: () => session.messages,
+        getReportDraft: () => researchReview.draftSnapshot(),
+        getArtifacts: () => researchReview.artifactSnapshot(),
         getContinuation: () => entry?.activeTurn?.continueResearchAnswer,
         getRecovery: () => entry?.activeTurn?.researchRecovery,
         getAnswerLengthHint: () => entry?.activeTurn?.answerLengthHint,
@@ -237,7 +241,7 @@ export function createSessionService({
           };
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
-              ...extra, workbookEvidence: researchReview.evidenceSnapshot(),
+              ...extra, workbookEvidence: researchReview.evidenceSnapshot(),deliveredFiles:researchReview.artifactSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });
             return verdict;
@@ -273,6 +277,7 @@ export function createSessionService({
     }
 
     entry = {
+      artifactSnapshot:researchReview.artifactSnapshot,
       id: session.sessionId,
       sessionTools,
       automated: Boolean(automated || writeRoots),

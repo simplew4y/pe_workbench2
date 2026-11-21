@@ -5,6 +5,7 @@ import { queryGraph } from '../lib/workbook-query.mjs';
 import { financialEvidenceFindings } from '../lib/financial-evidence.mjs';
 import { runWithPostAnswer } from '../server/agent/post-answer.mjs';
 import { researchTaskInstructions } from '../lib/research-task.mjs';
+import {bindVerifiedPassages} from '../lib/passage-verification.mjs';
 
 // Real Tencent layout, reduced to the conflicting headings and target output.
 const headings = [['SOTP!B1', null, 'USD to RMB', 1, 2], ['SOTP!J2', null, 'HK$/sh', 2, 10],
@@ -45,7 +46,7 @@ async function deliver(drafts, question, thinking = false, source = cite, verifi
    messages.push({role:'assistant',content:[{type:'toolCall',id:'read-'+index,name:'workbook_query',arguments:{}}]},
     {role:'toolResult',toolName:'workbook_query',toolCallId:'read-'+index,isError:false,content:[{type:'text',text:'source'}],details:{citations:[source]}},
     ...(toolFailure?[{role:'assistant',content:[{type:'toolCall',id:'failed-'+index,name:toolFailure,arguments:{}}]},{role:'toolResult',toolCallId:'failed-'+index,toolName:toolFailure,isError:true,content:[{type:'text',text:'tool unavailable'}]}]:[]),
-     {role:'assistant',stopReason:'stop',content:[{type:'text',text}],...(verification?{researchVerification:{status:verification.status,draftHash:createHash('sha256').update(verification.wrongHash?'different draft':text).digest('hex')}}:{})});
+     {role:'assistant',stopReason:'stop',content:[{type:'text',text}],...(verification?{researchVerification:{status:verification.status,draftHash:createHash('sha256').update(verification.wrongHash?'different draft':text).digest('hex'),verifiedPassages:bindVerifiedPassages(text,(verification.passages || []).map(p=>({text:p,evidenceIds:[verification.sourceId || 'read-'+index]})))}}:{})});
   },
   async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
  };
@@ -205,6 +206,21 @@ assert.equal(operating.metricContext.label,'Operating profit, GAAP, new def');
 assert.equal(operating.amount.unit,'百万元');
 assert.deepEqual(quantityIssues('比集团经营利润277542百万元（IS!AE133）高13.3%',[operating]),[]);
 assert.ok(quantityIssues('经营利润277542亿元（IS!AE133）',[operating]).length);
+{
+ const prior={file:'model.xlsx',ref:'PL!B25',value:362324.741,rowLabel:'Net profit',period:'2027E',amount:{unit:'百万元'}};
+ const first={...prior,ref:'Valuation!H20'};
+ const later={...prior,ref:'Valuation!K20',value:745398.9254,period:'2030E'};
+ const sentence='2027年净利从362324.741百万元（Valuation!H20）增至745398.9254百万元（Valuation!K20）。';
+ assert.deepEqual(quantityIssues(sentence,[prior]),[],'unseen explicit aliases cannot inherit an unrelated period source');
+ assert.deepEqual(quantityIssues(sentence,[prior,first,later]),[],'each amount uses its adjacent citation');
+ assert.ok(quantityIssues(sentence.replace('745398.9254百万元','745.4亿元'),[first,later]).some(i=>i.check==='numeric_units'),'a tenfold error at the second citation remains blocked');
+ assert.ok(quantityIssues(sentence.replace('362324.741百万元','362.3亿元'),[first,later]).some(i=>i.check==='numeric_units'),'a tenfold error at the first citation remains blocked');
+ assert.deepEqual(quantityIssues('净利从362324.741百万元（Valuation!H20）增至745398.9254百万元',[first]),[],'a preceding value citation cannot certify a later uncited value');
+ assert.deepEqual(quantityIssues('2027年前三季实际净利132040.1百万元，单季净利54435百万元',[prior]),[],'actual interim disclosure must not bind to annual workbook forecast');
+ assert.deepEqual(quantityIssues('2027年实际披露净利132040.1百万元',[prior]),[],'actuals do not inherit forecast identity');
+ assert.deepEqual(quantityIssues('会改变判断的信号：2027年净利达到1320亿元',[prior]),[],'a proposed threshold is reviewed for provenance, not equality to an annual forecast');
+ assert.ok(quantityIssues('2027E净利362.3亿元',[prior]).some(i=>i.check==='numeric_units'),'unambiguous forecast conversion remains checked');
+}
 console.log('PASS GAAP operating profit ends inherited margin section and keeps monetary units');
 
 const qualifiedDelivery=await deliver([answer+'\n\n'+explanation],context.question,false,{...cite,currency:'',raw_unit:'元/股',display_unit:'元/股'});
@@ -227,6 +243,18 @@ const reviewedConflict=await deliver([wrong,wrong,wrong],context.question,false,
 assert.notEqual(reviewedConflict.record.status,'completed');
 assert.ok(!reviewedConflict.record.text.includes('999'));
 console.log('PASS only exact-draft complete semantic review can qualify parser misses; limited/stale receipts and real conflicts remain blocked');
+
+const partialReceipt=await deliver([proseEvidence],context.question,false,cite,{status:'limited',passages:[proseEvidence]},'model_whatif');
+assert.equal(partialReceipt.record.status,'partial');
+assert.ok(partialReceipt.record.text.includes(proseEvidence),'A separately failed tool must not discard independently audited prose');
+assert.equal(partialReceipt.index,1,'A valid passage receipt avoids needless model recovery');
+for(const patch of [{wrongHash:true},{sourceId:'invented'}]) {
+ const invalidReceipt=await deliver([proseEvidence,proseEvidence,proseEvidence],context.question,false,cite,{status:'limited',passages:[proseEvidence],...patch});
+ assert.ok(!invalidReceipt.record.text.includes('10亿元'));
+}
+const conflictReceipt=await deliver([wrong,wrong,wrong],context.question,false,cite,{status:'limited',passages:[wrong]});
+assert.ok(!conflictReceipt.record.text.includes('999'),'A passage receipt cannot override a numeric contradiction');
+console.log('PASS actual delivery consumes partial passage receipts, rejects stale/fake receipts and preserves hard source conflicts');
 
 const failedScenario=await deliver([answer+'\n\n'+explanation],context.question,false,cite,null,'model_whatif');
 assert.equal(failedScenario.record.status,'partial');

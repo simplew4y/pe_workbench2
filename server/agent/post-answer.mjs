@@ -1,4 +1,6 @@
 import { accountingReasoningIssues } from '../../lib/research-reasoning.mjs';
+import {artifactDeliveryFindings,artifactDeliverySummary} from '../../lib/artifact-delivery.mjs';
+import {applyPassageVerification} from '../../lib/passage-verification.mjs';
 import { historicalSourceCalls } from '../../lib/research-evidence-scope.mjs';
 import { researchRecoverySources } from '../../lib/research-delivery.mjs';
 import { findingKey } from '../../lib/evidence-reconciliation.mjs';
@@ -63,6 +65,13 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       };
     }
     if (!active.cancelled && active.pdfDisclosure) outcome = appendDisclosure(outcome, active.pdfDisclosure);
+    if(!active.cancelled && ['completed','partial'].includes(outcome.status)) {
+      const summary=artifactDeliverySummary(entry.artifactSnapshot?.() || []);
+      // A requested strict length remains binding; the visible file cards
+      // already carry saved artifacts when there is no room for this note.
+      const max=requestedAnswerLength(text);
+      if(summary && (!max?.strict || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
+    }
     try {
       const framework = outcome.status === 'completed' || outcome.status === 'partial'
         ? frameworkForTurn(entry.session, entry.ctx, turn.turnId, active.frameworkEdits)
@@ -429,6 +438,9 @@ async function generateAnswer(entry, promptText, options, active) {
         continue;
       }
       const findings = findingsFor(answer);
+      findings.splice(0,findings.length,...applyPassageVerification(findings,joined,message.researchVerification,calls));
+      for(const finding of findings)if(finding.evidenceStatus==='semantic_supported')reconciled.set(findingKey(finding),finding);
+      findings.push(...artifactDeliveryFindings(answer,entry.artifactSnapshot?.() || []));
       if (researchTurn && !asksHistoricalSource(text) && entry.reconcileEvidence && !active.cancelled) {
         try {
           const result=await entry.reconcileEvidence(answer,findings,lintContext);
@@ -536,7 +548,7 @@ async function generateAnswer(entry, promptText, options, active) {
           reason: [...new Set([...blocking.map(f => f.message),qualified.reason,toolGap].filter(Boolean))].join('；') };
       }
       if (blocking.length || !answer || toolGap) {
-        safeText = researchTurn && !sourceQuestion ? researchPortion(answer, part => findingsFor(part, { ...lintContext, requiredSections: [] }), findings, available) : verifiedPortion(answer, blocks, locatorEvidence,
+        safeText = researchTurn && !sourceQuestion ? researchPortion(answer, part => findingsFor(part, { ...lintContext, requiredSections: [] }), findings, available, {maxChars:reviewBudget}) : verifiedPortion(answer, blocks, locatorEvidence,
           part => findingsFor(part, { ...lintContext, requiredSections: [] }), coverage,
           part => hasOcrPageSource(part, calls, currentVersions));
         safeCitations = adoptedCitations(safeText, locatorEvidence(safeText).citations);

@@ -762,22 +762,76 @@ export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage
 // Research delivery retains complete, independently supported paragraphs and
 // conditional reasoning. Historical-source queries still use verifiedPortion.
 // Never promote a dependent conclusion after removing its disputed premise.
-export function researchPortion(answer, findingsFor, findings, citations = []) {
-  const kept=[];
-  for (const paragraph of answer.split(/\n\s*\n|\n(?=\s*(?:[-*+]\s|\d+[.)、]\s))/)) {
-    const plain=paragraph.replace(/[*#`]/g,'').trim();
-    if (plain.length<30 || findingsFor(paragraph).some(blockingFinding)) continue;
-    if (/^(?:因此|所以|由此|据此|综上|总之|结论[：:])/.test(plain) || /明显低估|明显高估|已经兑现|已被证伪/.test(plain)) continue;
-    const hasSource=adoptedCitations(paragraph,citations).length>0;
-    const conditional=/如果|若|取决于|仍需|尚需|无法确定|不能确定|需要|可能|不代表|不能据此|不能把|需核验|需对齐|需区分/.test(plain);
-    if (hasSource || conditional) kept.push(paragraph.trim());
+export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity}={}) {
+  // Findings are bound to the complete current draft. Re-linting isolated
+  // paragraphs loses issuer, period, heading and reconciled source context.
+  // A missing locator in a short paragraph is not new contradictory evidence.
+  const kept=[],blocking=findings.filter(blockingFinding);
+  const span=f=>f.sourceText || f.excerpt;
+  const plain=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
+  const overlaps=(a,b)=>!!plain(a) && !!plain(b) && (plain(a).includes(plain(b)) || plain(b).includes(plain(a)));
+  const dependent=s=>/^(?:因此|所以|由此|据此|综上|总之|结论[：:]|这个|这些|上述|这(?:说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(plain(s)) || /明显低估|明显高估|已经兑现|已被证伪/.test(plain(s));
+  const presentation=s=>((s.match(/\*\*/g) || []).length%2?s.replace(/\*\*/g,''):s).trim();
+  const citationOnly=s=>{
+    let value=s;
+    if(/^(?:计算|复算|模型测算|模型(?:分产品收入|资本开支)测算)[。.]?$/.test(plain(value)))return true;
+    // Older recorded drafts can already contain a stranded closing source
+    // fragment from an upstream split inside a citation's semicolon.
+    if(/^(?:公告|来源|出处)\s*(?:19|20)\d{2}[-年]/.test(plain(value)) && /[\]】][。.]?$/.test(value.trim()))return true;
+    for(const r of extractLocatorMatches(value).reverse())value=value.slice(0,r.index)+value.slice(r.index+r.raw.length);
+    return !value.replace(/\[[^\]]+\]|[A-Z]{1,3}\d+|模型全模型重算|模型重算|全模型重算|[\s、，；;。.*`]/g,'');
+  };
+  let sectionRejected=false,notice=false,contentCount=0;
+  const omit=()=>{sectionRejected=true;if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
+  const retain=raw=>{
+    if(!raw.trim())return;
+    const issues=blocking.filter(f=>span(f) && overlaps(raw,span(f)));
+    // The host appends actual per-file receipts. A false save-status sentence
+    // is not a missing financial premise for the rest of this section.
+    if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
+    if(!issues.length) {
+      if(sectionRejected && dependent(raw)){omit();return;}
+      if(citationOnly(raw))return;
+      kept.push(presentation(raw));contentCount++;return;
+    }
+    // Preserve independent complete sentences. If an issue spans multiple
+    // sentences, keep the whole span blocked; never guess its numeric target.
+    const sentences=raw.match(/[^。！？\n]+[。！？]?/g) || [];
+    const multi=sentences.length>1 && issues.every(f=>sentences.some(s=>plain(s).includes(plain(span(f)))));
+    if(!multi){omit();return;}
+    for(const sentence of sentences) {
+      if(issues.some(f=>overlaps(sentence,span(f))) || sectionRejected && dependent(sentence))omit();
+      else if(!citationOnly(sentence)){kept.push(presentation(sentence));contentCount++;}
+    }
+  };
+  for(const token of Lexer.lex(answer)) {
+    if(token.type==='space')continue;
+    if(token.type==='heading') {
+      // Numeric assertions in headings need the same check as body claims.
+      if(blocking.some(f=>span(f) && overlaps(token.raw,span(f)))){omit();continue;}
+      kept.push(token.raw.trim());sectionRejected=false;notice=false;continue;
+    }
+    if(token.type==='list')for(const item of token.items)retain(item.raw);
+    else if(token.type==='table') {
+      const lines=token.raw.trimEnd().split(/\r?\n/),rows=lines.slice(2);
+      const rejected=rows.map(row=>blocking.some(f=>span(f) && overlaps(row,span(f))));
+      const keptRows=rows.filter((row,i)=>!rejected[i] && !(rejected.some(Boolean) && /合计|总计|因此|据此|结论/.test(row)));
+      if(keptRows.length){kept.push([...lines.slice(0,2),...keptRows].join('\n'));contentCount++;}
+      if(keptRows.length!==rows.length)omit();
+    }
+    else if(token.type==='code' && blocking.some(f=>span(f) && overlaps(token.raw,span(f))))omit();
+    else retain(token.raw);
   }
+  if(!contentCount)return '';
   if (!kept.length) return '';
   const labels={value:'数值',unit:'单位',currency:'币种',period:'期间',metric:'指标口径',basis_type:'实际与预测口径',dependency:'计算依据',source:'来源'};
   const gaps=[...new Set(findings.filter(blockingFinding).map(f=>
     f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
     f.rule==='delivery_gap' ? f.message : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
   ))].slice(0,6);
-  return '本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。\n\n'+
+  const body='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。\n\n'+
     kept.join('\n\n')+'\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
+  // Let the existing sentence-aware bounded fallback handle strict budgets.
+  // Never truncate a number, source, table or JSON object by character slicing.
+  return answerCharCount(body)<=maxChars ? body : '';
 }
