@@ -51,13 +51,28 @@ def read_cells(
     workbook, load_warnings = load_workbook_resilient(
         file, data_only=data_only, read_only=True
     )
-    values = {}
+    values = dict.fromkeys(refs)
+    targets = {}
     try:
         for ref in refs:
             sheet, cell = split_ref(ref)
             if sheet not in workbook.sheetnames:
                 raise ValueError(f"sheet not found: {sheet}")
-            values[ref] = workbook[sheet][cell].value
+            column, row = openpyxl.utils.cell.coordinate_from_string(cell)
+            col = openpyxl.utils.cell.column_index_from_string(column)
+            targets.setdefault(sheet, {}).setdefault(row, []).append((col, ref))
+        # Read-only worksheets stream XML. Looking up each address separately
+        # reparses the same rows once per disclosure in a reconciliation.
+        for sheet, rows in targets.items():
+            columns = [col for cells in rows.values() for col, _ in cells]
+            first_col = min(columns)
+            records = workbook[sheet].iter_rows(
+                min_row=min(rows), max_row=max(rows),
+                min_col=first_col, max_col=max(columns), values_only=True,
+            )
+            for row, record in enumerate(records, min(rows)):
+                for col, ref in rows.get(row, ()):
+                    values[ref] = record[col - first_col]
     finally:
         workbook.close()
     return values, load_warnings
