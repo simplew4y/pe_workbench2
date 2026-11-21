@@ -126,8 +126,11 @@ test('a compression checklist uses the topics or count the user explicitly reque
 });
 
 test('ordinary word counts are targets and explicit maxima stay hard limits', () => {
-  for (const wording of ['限４００字', '约400字', '400字左右', '控制在400字']) {
+  for (const wording of ['约400字', '400字左右']) {
     assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: false });
+  }
+  for (const wording of ['限４００字', '限制在400字', '控制在400字']) {
+    assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: false, cap: true });
   }
   for (const wording of ['严格限400字', '不超过400字', '请正文最多400字', '400字以内', '硬上限为400字']) {
     assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: true });
@@ -1282,7 +1285,7 @@ console.log('target deviation post-answer correction passed');
     const nearTarget = softQuestion.replace('150字', `${answerCharCount(completeFive) - 10}字`);
     const slightOver = await runScript([{ text: completeFive }], nearTarget);
     assert.deepEqual([slightOver.record.status, slightOver.record.text], ['completed', completeFive]);
-    assert.match(slightOver.requests[0].content, /篇幅目标约/);
+    assert.match(slightOver.requests[0].content, /正文控制在 \d+ 字以内/);
     const compactGood = await runScript([{ text: longFive }, { text: completeFive }], softQuestion);
     assert.deepEqual([compactGood.record.status, compactGood.record.text], ['completed', completeFive]);
     assert.match(compactGood.requests.at(-1).content, /可整理得更短，完整保留/);

@@ -2,6 +2,7 @@ import { accountingReasoningIssues } from '../../lib/research-reasoning.mjs';
 import {artifactDeliveryFindings,artifactDeliverySummary} from '../../lib/artifact-delivery.mjs';
 import {applyPassageVerification} from '../../lib/passage-verification.mjs';
 import { historicalSourceCalls } from '../../lib/research-evidence-scope.mjs';
+import { calcFailureRecovery } from '../../lib/tool-failure-recovery.mjs';
 import { researchRecoverySources } from '../../lib/research-delivery.mjs';
 import { findingKey } from '../../lib/evidence-reconciliation.mjs';
 import { isResearchQuestion, isScenarioOnlyQuestion, researchExecutionGaps } from '../../lib/research-task.mjs';
@@ -189,7 +190,7 @@ async function generateAnswer(entry, promptText, options, active) {
   const turn = priorQuestions.length + 1;
   const length = requestedAnswerLength(text);
   const limit = length?.strict ? length.chars : null;
-  const rewriteThreshold = length && !length.strict ? Math.floor(length.chars * 1.2) : null;
+  const rewriteThreshold = length && !length.strict ? Math.floor(length.chars * (length.cap ? 1.15 : 1.2)) : null;
   let calculation = calculateUserScenario(text, priorQuestions);
   if (calculation && limit !== null && answerCharCount(calculation.body) >= limit) calculation = null;
   if (calculation) {
@@ -502,10 +503,16 @@ async function generateAnswer(entry, promptText, options, active) {
       const searchGap = sourceQuestion && sourceSearchGap(text, answer, scanned, toolCalls, sourceReport.historical, blocks, coverage,
         clause => Boolean(locatorEvidence(clause).historical?.length) && !findingsFor(clause).some(blockingFinding));
       const resolvedFailures = new Set(semanticReviewed ? (message.researchResolvedToolFailures || []).map(item=>item.id) : []);
-      const failedTool = [...latestTools.values()].find(call => !call.success && !resolvedFailures.has(call.id) &&
+      // Calc items are superseded item by item by a later equivalent success,
+      // independent of the semantic review of the rest of the answer.
+      const calcRecovery = new Map(calcFailureRecovery(candidateCalls).map(entry => [entry.id, entry]));
+      const unresolvedCalc = call => calcRecovery.get(call.id)?.unresolved || [];
+      const failedTool = [...latestTools.values()].find(call => (call.name === 'calc' ? unresolvedCalc(call).length : !call.success) && !resolvedFailures.has(call.id) &&
         !(sourceQuestion && call.name === 'transcript_search') &&
         (call.name !== 'workbook_query' || candidateCalls.lastIndexOf(call) >= lastVerifiedRead));
-      const toolGap = [searchGap, failedTool && `工具 ${failedTool.name} 执行失败。`].filter(Boolean).join('；');
+      const failedItems = failedTool?.name === 'calc' ? [...new Set([...latestTools.values()].filter(call => call.name === 'calc' && !resolvedFailures.has(call.id))
+        .flatMap(unresolvedCalc).map(item => item.name || item.expression).filter(Boolean))] : [];
+      const toolGap = [searchGap, failedTool && `工具 ${failedTool.name} 执行失败${failedItems.length ? `（未成功重算：${failedItems.join('、')}）` : ''}。`].filter(Boolean).join('；');
       if (reviewedCalculation && !blocking.length && !toolGap) return {status:'completed',text:'',citations:[]};
       const deliverable = answer && !blocking.length && !toolGap;
       const draftChars = answerCharCount(answer) + reservedChars;
@@ -514,7 +521,7 @@ async function generateAnswer(entry, promptText, options, active) {
       }
       // Only attempt an optional rewrite when the requested sections can be
       // checked again, and retain the already approved version if it loses any.
-      const softCompaction = deliverable && !sourceQuestion && !lengthRewritten && (compactItemHint || summaryItems.length) &&
+      const softCompaction = deliverable && !sourceQuestion && !lengthRewritten &&
         findings.some(item => item.rule === 'answer_length_target');
       if (observedYear && lengthRewritten && tooLong && blocking.length === 1 && !toolGap && !sourceQuestion) {
         // Length alone may be repaired locally. Keep the list and every
@@ -543,7 +550,8 @@ async function generateAnswer(entry, promptText, options, active) {
           !coverage.unsupported.size) {
         const qualified=evidenceCaveat(answer,findings);
         const toolNames={model_whatif:'模型情景重算',calc:'派生数值计算',unit_convert:'单位换算',web_fetch:'外部资料获取',deepseek_fetch:'外部资料获取',westock_query:'行情查询',workbook_query:'附件读取',workbook_trace:'模型依赖追溯'};
-        const scope=toolGap ? `\n\n**核验范围**：有一项${toolNames[failedTool?.name] || '补充核验'}未成功，相应结果尚不能确认。以上分析以已取得的资料为限。` : '';
+        const failedScope=failedItems.length ? `${toolNames.calc}未成功：${failedItems.join('、')}` : `有一项${toolNames[failedTool?.name] || '补充核验'}未成功`;
+        const scope=toolGap ? `\n\n**核验范围**：${failedScope}，相应结果尚不能确认。以上分析以已取得的资料为限。` : '';
         return { status: 'partial', text: (toolGap ? '' : '> **待复核**\n\n')+qualified.text+scope, citations: adopted,
           reason: [...new Set([...blocking.map(f => f.message),qualified.reason,toolGap].filter(Boolean))].join('；') };
       }

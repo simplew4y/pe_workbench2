@@ -770,7 +770,15 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
   const span=f=>f.sourceText || f.excerpt;
   const plain=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
   const overlaps=(a,b)=>!!plain(a) && !!plain(b) && (plain(a).includes(plain(b)) || plain(b).includes(plain(a)));
-  const dependent=s=>/^(?:因此|所以|由此|据此|综上|总之|结论[：:]|这个|这些|上述|这(?:说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(plain(s)) || /明显低估|明显高估|已经兑现|已被证伪/.test(plain(s));
+  // A rejected premise contaminates later explicit conclusions anywhere in the
+  // draft, not only inside the same section: headings must not silently reset
+  // the dependency check, and verdict sentences ("…被…推翻/证实", "判断：…")
+  // count as dependent even when they do not start with a connector.
+  const dependent=s=>/^(?:因此|所以|由此|据此|综上|总之|结论[：:]|判断[：:]|这个|这些|上述|这(?:说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(plain(s)) ||
+    /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定|推翻)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(plain(s));
+  // "更正：…并非…" paragraphs narrate an internal draft repair the user never
+  // saw; in degraded delivery they are process leakage, not research content.
+  const internalEdit=s=>/^(?:更正|订正|修正|勘误|更正说明)[：:：]/.test(plain(s));
   const presentation=s=>((s.match(/\*\*/g) || []).length%2?s.replace(/\*\*/g,''):s).trim();
   const citationOnly=s=>{
     let value=s;
@@ -781,6 +789,11 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     for(const r of extractLocatorMatches(value).reverse())value=value.slice(0,r.index)+value.slice(r.index+r.raw.length);
     return !value.replace(/\[[^\]]+\]|[A-Z]{1,3}\d+|模型全模型重算|模型重算|全模型重算|[\s、，；;。.*`]/g,'');
   };
+  // This fallback only runs when blocking findings exist, so every explicit
+  // verdict sentence ("因此/综上/结论：…", "…被…推翻") is potentially dependent
+  // on removed or disputed premises — including verdicts that appear before the
+  // rejected span. Drop them everywhere; factual sentences stay.
+  const contaminated=blocking.length>0;
   let sectionRejected=false,notice=false,contentCount=0;
   const omit=()=>{sectionRejected=true;if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
   const retain=raw=>{
@@ -790,7 +803,8 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     // is not a missing financial premise for the rest of this section.
     if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
     if(!issues.length) {
-      if(sectionRejected && dependent(raw)){omit();return;}
+      if(internalEdit(raw)){omit();return;}
+      if(contaminated && dependent(raw)){omit();return;}
       if(citationOnly(raw))return;
       kept.push(presentation(raw));contentCount++;return;
     }
@@ -800,7 +814,7 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     const multi=sentences.length>1 && issues.every(f=>sentences.some(s=>plain(s).includes(plain(span(f)))));
     if(!multi){omit();return;}
     for(const sentence of sentences) {
-      if(issues.some(f=>overlaps(sentence,span(f))) || sectionRejected && dependent(sentence))omit();
+      if(internalEdit(sentence) || issues.some(f=>overlaps(sentence,span(f))) || contaminated && dependent(sentence))omit();
       else if(!citationOnly(sentence)){kept.push(presentation(sentence));contentCount++;}
     }
   };
@@ -809,7 +823,9 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     if(token.type==='heading') {
       // Numeric assertions in headings need the same check as body claims.
       if(blocking.some(f=>span(f) && overlaps(token.raw,span(f)))){omit();continue;}
-      kept.push(token.raw.trim());sectionRejected=false;notice=false;continue;
+      // A verdict heading is itself dependent on possibly removed premises.
+      if(contaminated && dependent(token.raw)){omit();continue;}
+      kept.push(token.raw.trim());notice=false;continue;
     }
     if(token.type==='list')for(const item of token.items)retain(item.raw);
     else if(token.type==='table') {

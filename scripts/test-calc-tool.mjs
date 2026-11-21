@@ -217,3 +217,40 @@ assert.equal(calculate({expression:'100',currency:'CNY',toCurrency:'HKD',rate:'1
 assert.equal((await tool.execute('missing-unit',{expression:'revenue/100',bindings:{revenue:source}})).isError,true);
 
 assert.equal((await tool.execute('shared-batch-unit',{outputUnit:'%',expressions:[{expression:'revenue',bindings:{revenue:source}}]})).isError,true);
+
+// P1-04: typesetting controls copied from PDF text are normalized, never silently deleted.
+const soft = await tool.execute('soft-hyphen',{expressions:[
+ {name:'储能毛利额',expression:'249.5916612781-158.0085329138',outputUnit:'亿元'},
+ {name:'逆变器毛利额',expression:'291.27038840­90-201.2800552330',outputUnit:'亿元'}]});
+assert.equal(soft.isError,undefined);
+assert.equal(soft.details.results[1].value,'89.990333176');
+assert.equal(soft.details.results[1].normalization[0].code,'U+00AD');
+assert.match(soft.content[0].text,/已移除算式中的排版控制符/);
+assert.throws(()=>value('1​2'),/无效算式符号|多余算式符号/);
+// A batch item failure keeps the other receipts and never counts as success.
+const partialBatch = await tool.execute('partial',{expressions:[
+ {name:'ok',expression:'1+1'},
+ {name:'bad',expression:'1+#'}]});
+assert.equal(partialBatch.isError,undefined);
+assert.equal(partialBatch.details.partial,true);
+assert.equal(partialBatch.details.results.length,1);
+assert.equal(partialBatch.details.failures[0].name,'bad');
+assert.match(partialBatch.content[0].text,/第 2 项（bad）失败/);
+assert.equal((await tool.execute('all-bad',{expressions:[{expression:'1+#'},{expression:'2+#'}]})).isError,true);
+// Rational exponents: CAGR-style roots with a bounded denominator.
+assert.equal(value('16^(1/4)',{precision:12}),'2.000000000000');
+assert.equal(value('2^0.25',{precision:12}),'1.189207115003');
+assert.equal(value('(-8)^(-1/3)',{precision:12}),'-0.500000000000');
+assert.equal(value('8^(2/3)',{precision:12}),'4.000000000000');
+assert.throws(()=>value('2^0.123'),/分数幂的分母/);
+assert.throws(()=>value('(-1)^(1/2)'),/不能为负数/);
+// P2-04: a % label on an unscaled fraction is ambiguous, not a percentage point.
+const ambiguous = await tool.execute('ambiguous',{expression:'705.148/778.57',outputUnit:'%'});
+assert.equal(ambiguous.details.results[0].unit,null);
+assert.equal(ambiguous.details.results[0].requestedUnit,'%');
+assert.match(ambiguous.content[0].text,/应写作 0\.905696340727 decimal = 90\.5696340727%/);
+assert.equal(ambiguous.details.results[0].unitAmbiguity.length>0,true);
+const scaled = await tool.execute('scaled',{expression:'705.148/778.57*100',outputUnit:'%'});
+assert.equal(scaled.details.results[0].unit,'%');
+assert.equal(scaled.details.results[0].ratioEncoding,'percentage_points');
+console.log('PASS calc typesetting normalization, per-item batch isolation, rational exponents, percent label ambiguity');

@@ -8,10 +8,19 @@ import {artifactDeliveryFindings,artifactDeliverySummary} from '../lib/artifact-
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {runWithPostAnswer} from '../server/agent/post-answer.mjs';
-const [input,output,projectRoot]=process.argv.slice(2);
-if(!input || !output)throw new Error('Usage: node scripts/replay-research-delivery.mjs session.jsonl output-dir');
+const args=process.argv.slice(2);
+const turnArg=args.find(arg=>arg.startsWith('--turn='));
+const [input,output,projectRoot]=args.filter(arg=>!arg.startsWith('--'));
+if(!input || !output)throw new Error('Usage: node scripts/replay-research-delivery.mjs session.jsonl output-dir [project-root] [--turn=N]');
 globalThis.fetch=()=>{throw new Error('Network disabled in recorded replay');};
-const rows=fs.readFileSync(input,'utf8').trim().split('\n').map(JSON.parse);
+const allRows=fs.readFileSync(input,'utf8').trim().split('\n').map(JSON.parse);
+// A multi-round session is replayed one user turn at a time. Earlier turns are
+// restored as prior history; later turns are never fed into this turn.
+const turnStarts=allRows.flatMap((row,index)=>row.customType==='pe_turn_started'?[index]:[]);
+const turn=turnArg?Number(turnArg.slice('--turn='.length)):null;
+if(turn!==null && !(Number.isInteger(turn) && turn>=1 && turn<=turnStarts.length))throw new Error(`--turn must be 1..${turnStarts.length}`);
+const rows=turn===null?allRows:allRows.slice(turnStarts[turn-1],turnStarts[turn] ?? allRows.length);
+const priorMessages=turn===null?[]:allRows.slice(0,turnStarts[turn-1]).filter(r=>r.message).map(r=>r.message);
 const messages=rows.filter(r=>r.message).map(r=>r.message);
 const text=m=>typeof m?.content==='string'?m.content:(m?.content || []).filter(p=>p.type==='text').map(p=>p.text).join('\n');
 const question=text(messages.find(m=>m.role==='user'));
@@ -68,7 +77,7 @@ fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:
 // Replay the actual final-delivery state machine too. The model is a tape of
 // recorded drafts, tools are already-recorded results, and fetch is disabled.
 // This cannot predict how a live model will rewrite after a changed audit.
-const records=[],requests=[],sessionMessages=[];let generations=0;
+const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
 const firstDraftAt=messages.indexOf(draftMessages[0]);
 const toolHistory=messages.slice(0,firstDraftAt).filter(m=>m.role==='toolResult' || m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'));
 const session={messages:sessionMessages,sessionManager:{appendCustomEntry(type,data){records.push({type,data});}},
