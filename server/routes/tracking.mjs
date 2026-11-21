@@ -1,7 +1,9 @@
 import fs from "node:fs";
+import { disclosureInventory, mapDisclosure } from "../../lib/model-disclosure.mjs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { normalizeActuals } from "../../lib/model-actuals.mjs";
 
 export async function handleTracking({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
@@ -151,7 +153,7 @@ export async function handleTracking({ req, res, url, app, ctx }) {
     return json(res, 405, { error: "method not allowed" });
   }
 
-  const modelMatch = pathname.match(/^\/api\/trackings\/([^/]+)\/model(?:\/(prepare|bindings))?$/);
+  const modelMatch = pathname.match(/^\/api\/trackings\/([^/]+)\/model(?:\/(prepare|bindings|disclosure))?$/);
   if (modelMatch) {
     let trackingId;
     try {
@@ -177,7 +179,7 @@ export async function handleTracking({ req, res, url, app, ctx }) {
     if (action === "prepare" && req.method === "POST") {
       try {
         const prepared = await prepareWorkingModel({ ctx, tracking, state, stateRel: relPath });
-        broadcastMaterial(prepared.material, ctx.id);
+        app.broadcastMaterial(prepared.material, ctx.id);
         return json(res, 200, {
           trackingId,
           model: prepared.state.model,
@@ -190,6 +192,16 @@ export async function handleTracking({ req, res, url, app, ctx }) {
 
     if (action === "bindings" && req.method === "POST") {
       const body = await readJson(req);
+      let selected;
+      if (body.disclosureFile) {
+        selected = await disclosureInventory(ctx, body.disclosureFile);
+        if (!selected.facts.length || selected.issues.length || selected.sha256 !== body.disclosureSha256) {
+          return json(res, 409, { error: "公告无法确认或已变化，请重新查看映射", issues: selected.issues });
+        }
+        const mapping = await mapDisclosure(ctx, selected, state.model?.working_file, body.actuals);
+        if (!mapping.actuals.length) return json(res, 409, { error: "没有可确认的映射" });
+        body.actuals = mapping.actuals;
+      }
       const bindings = Array.isArray(body.bindings) ? body.bindings : [];
       const outputs = Array.isArray(body.outputs) ? body.outputs : [];
       const normalizedBindings = bindings
@@ -210,13 +222,30 @@ export async function handleTracking({ req, res, url, app, ctx }) {
           cell: String(output.cell).trim().toUpperCase(),
         }));
       state.model = state.model && typeof state.model === "object" ? state.model : {};
+      if (Object.hasOwn(body, "actuals")) {
+        try {
+          state.model.actuals = normalizeActuals(body.actuals);
+        } catch (error) {
+          return json(res, 400, { error: error.message });
+        }
+      }
       state.model.bindings = normalizedBindings;
+      if (selected) {
+        state.model.disclosure_file = selected.source;
+        state.model.disclosure_sha256 = selected.sha256;
+      }
       state.model.outputs = normalizedOutputs;
       state.model.write_enabled = body.writeEnabled === true;
       await writeTrackingState(ctx, relPath, state, { note: "模型绑定确认", reason: "model bindings" });
       return json(res, 200, { trackingId, model: state.model });
     }
 
+    if (action === "disclosure" && req.method === "POST") {
+      const body = await readJson(req);
+      const inventory = await disclosureInventory(ctx, body.disclosureFile);
+      const mapping = await mapDisclosure(ctx, inventory, state.model?.working_file || state.subject?.model_file);
+      return json(res, 200, { inventory, ...mapping });
+    }
     return json(res, 405, { error: "method not allowed" });
   }
 
@@ -361,7 +390,7 @@ export async function handleTracking({ req, res, url, app, ctx }) {
       if (!Number.isFinite(beforeVersion) || beforeVersion < 1) continue;
       const material = ctx.store.restoreVersion(change.objectId, beforeVersion);
       if (material) {
-        broadcastMaterial(material, ctx.id);
+        app.broadcastMaterial(material, ctx.id);
         reverted.push({ objectType: change.objectType, objectId: change.objectId, version: beforeVersion });
       }
     }
