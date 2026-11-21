@@ -19,7 +19,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 2. `投资框架报告.md` —— 七节视图，正文用 ID 引用状态对象。
 3. 附件（可选）—— 复算表、图表；不改源模型。
 
-状态文件与报告放在同一个 `exports/` 目录，文件名固定。
+版本化框架的草稿状态和 Markdown 放在同一个 `drafts/<framework_id>/` 目录，最终文件由宿主导出到 `exports/fact-memory/<framework_id>/rN/`。没有版本化提交工具时，按普通研究 Markdown 的审核流程保存报告。
 
 
 ## 项目数字事实与版本化交付
@@ -32,7 +32,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 - `source_checked` 仅表示结构化来源支持该取数与身份；公式缓存、缺少主体/口径、PDF 文本语义尚未核实的记录保留 `needs_review`。`fact_bind` 可补身份候选，但不能自行宣布核验通过。
 - 计算使用固定 `fact_id` 与 `fact_version` 的 `fact_calculate`。支持 ratio/add/subtract/multiple；跨币种或期间不静默计算，复杂模型仍走既有工具和审批。
 - 明确更正时用 `fact_correct` 指定事实 ID、预期版本与完整身份。新值是待核用户主张；修改工作模型或已有研究产物仍走原审批。
-- 新版框架先写草稿并 `validate_state`，再用 `framework_audit` 校验数字绑定，最后用 `framework_commit` 固定引用版本。使用返回的 `exports/fact-memory/<framework_id>/rN/` 交付路径。`pending` 是导出待完成，不是已发布；用 retry_export 重试，不重复新建修订。
+- 新版框架先用 `write` 写入 `drafts/<framework_id>/analysis-state.json` 和 `drafts/<framework_id>/report.md`，不调用 `review_research` 保存这两份草稿。调用 `validate_state`，再用 `framework_audit` 校验数字绑定，最后用 `framework_commit` 固定引用版本。使用返回的 `exports/fact-memory/<framework_id>/rN/` 交付路径。`pending` 是导出待完成，不是已发布；用 retry_export 重试，不重复新建修订。
 - 当前提交只验证事实引用版本及 JSON/报告一致导出，`numeric_validation=references_only`。它没有验证报告每一处数字或状态里每个字段与引用逐一对应，不能说“全文事实已核验”。
 - 不直接写 `.pi/ledger`、事实库文件或 `exports/fact-memory` 发布目录。已发布视图损坏需报告，不逆向覆盖事实。
 - 后台任务保留 `run_id`，仅登记待核候选，不自动变成已核事实，不自动发布新框架。
@@ -42,7 +42,7 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 
 - 确认研究对象、证券/主体、模型文件、研究问题、信息截止日与输出目录。只有对象或文件不明确时才追问。
 - 记录模型文件的相对路径、修改时间与大小；有 bash 时再算内容指纹（如 `shasum -a 256`），供后续版本对比。
-- 源文件只读。复算、图表、状态、报告都另存到 `exports/`。
+- 源文件只读。复算和图表可另存到 `exports/`；版本化框架的状态与报告草稿放在 `drafts/`。
 - 先读同目录已有的 `analysis-state.json` 和报告；有则沿用 ID 和未受影响的结论，不另起一套。
 
 ## 七节结构
