@@ -171,11 +171,11 @@ function toolRowHTML(tool) {
     </div>${card ? `<div class="tool-card-slot">${card}</div>` : ''}`;
 }
 
-function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, open = false } = {}) {
+function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, settled = false, open = false } = {}) {
   if (!tools.length && !processText) return '';
   const errors = tools.filter(tool => tool.status === 'error').length;
   const label = live ? liveStatusText() : (tools.length ? `过程 · ${tools.length} 个工具调用` : '过程');
-  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : '已完成'));
+  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : settled ? '已结束' : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : '已完成'));
   const status = live ? ' id="liveStatus" aria-live="polite"' : '';
   return `<details class="tool-group"${open ? ' open' : ''}>
       <summary class="tool-summary">
@@ -273,15 +273,43 @@ function messageHTML(m, { openGroups } = {}) {
   const isUser = m.role === 'user';
   const delivered = !isUser && Boolean(m.turnId);
   const cancelled = !isUser && m.status === 'cancelled';
+  // Older deliveries persisted this host-generated banner in the body. Move
+  // only that exact leading banner to diagnostics; never rewrite saved text,
+  // user quotations, research conclusions or specific evidence limitations.
+  const legacyNotice='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。';
+  const relocateNotice=!isUser && m.status==='partial' &&
+    ((m.text || '')===legacyNotice || (m.text || '').startsWith(legacyNotice+'\n\n'));
+  let answerText=relocateNotice?m.text.slice(legacyNotice.length).trimStart():m.text || '';
+  const relocatedSections=[];
+  if(!isUser && m.status==='partial') {
+    const hostSectionNotice='本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。';
+    let fence=null;
+    answerText=answerText.split('\n').filter(line=>{
+      const marker=line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if(marker) {
+        if(!fence)fence=marker[1];
+        else if(marker[1][0]===fence[0] && marker[1].length>=fence.length)fence=null;
+        return true;
+      }
+      if(!fence && line==='> '+hostSectionNotice){relocatedSections.push(hostSectionNotice);return false;}
+      return true;
+    }).join('\n');
+  }
   let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
-    : renderMarkdownHTML(m.text || '', '', highlightBudget);
+    : renderMarkdownHTML(answerText, '', highlightBudget);
   const citations = m.citations ?? (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
   // The vm-based renderer test intentionally omits the module binding.
   if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations, { compact: !isUser });
   if (!isUser && m.status && m.status !== 'completed') {
-    const label = { partial: '部分完成', failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
-    if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
+    if(m.status==='partial') {
+      const note=answerText.trim() ? '部分结论仍待核实，请结合答复中的适用条件阅读。' : '本次分析尚未形成可交付答复。';
+      const details=[...new Set([relocateNotice?legacyNotice:'',...relocatedSections,m.reason].filter(Boolean))];
+      body+=`<aside class="answer-note"><p role="status">${note}</p>${details.length ? `<details class="answer-diagnostics"><summary>查看核验详情</summary>${details.map(text=>`<p>${esc(text)}</p>`).join('')}</details>` : ''}</aside>`;
+    } else {
+      const label = { failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
+      if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
+    }
   } else if (!isUser && m.failure?.detail) body = `<p class="msg-failure">${esc(m.failure.detail)}</p>`;
   const showFramework = !isUser && !cancelled && (!delivered || m.status === 'completed' || m.status === 'partial');
   const framework = showFramework ? renderFrameworkPresentation(m.analysisState, {
@@ -292,7 +320,8 @@ function messageHTML(m, { openGroups } = {}) {
   const callId = m.tools?.find(tool => tool.id)?.id;
   const groupKey = m.turnId ? 'turn:' + m.turnId : callId ? 'call:' + callId : '';
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '',
-    open: openGroups?.has(groupKey), highlightBudget, incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
+    open: openGroups?.has(groupKey), highlightBudget, settled: delivered && m.status==='partial',
+    incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
   const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}"${group && groupKey ? ` data-process-key="${esc(groupKey)}"` : ''}>
       <span class="msg-avatar">${isUser ? '林' : icon('spark', 15)}</span>

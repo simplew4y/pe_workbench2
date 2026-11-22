@@ -32,6 +32,7 @@
     "test:monitoring:store": "node scripts/test-monitoring-store.mjs",
     "test:calc": "node scripts/test-calc-engine.mjs",
     "test:review-boundaries": "node scripts/test-review-boundaries.mjs",
+    "test:evidence-retention": "node scripts/test-research-evidence-retention.mjs && node scripts/test-financial-claim-matching.mjs && node scripts/test-task-delivery-consistency.mjs",
     "test:report-publication": "node scripts/test-report-publication.mjs",
     "test:delivery-bundle": "node scripts/test-delivery-bundle.mjs",
     "test:model": "node scripts/test-model-writer.mjs",

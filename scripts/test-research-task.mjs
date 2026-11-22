@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { isResearchQuestion, isScenarioOnlyQuestion } from '../lib/research-task.mjs';
 import { checkTurnTools } from '../lib/turn-context.mjs';
 for (const question of ['建立投资框架','检查估值','解读模型','算组合收益与风险','给出证伪条件']) assert.ok(isResearchQuestion(question),question);
+for(const q of ['理解这份模型，主要驱动是什么？','帮我梳理业务的关键影响因素','讲解这份报表','读懂公司的商业模式']) {
+  assert.equal(isResearchQuestion(q),true,q);
+  for(const file of ['普通附件.xlsx','估值分析.xlsx','为什么投资.pdf'])assert.equal(isResearchQuestion(q+'\n\n[已上传资料]\n- '+file),isResearchQuestion(q));
+}
+for(const q of ['列出文件','你好','查询A1单元格的值'])for(const file of ['估值分析.xlsx','情景.pdf'])
+  assert.equal(isResearchQuestion(q+'\n\n[已上传资料]\n- '+file),isResearchQuestion(q));
+assert.equal(isResearchQuestion('继续','读取A1\n\n[已上传资料]\n- 估值分析.xlsx'),false);
 assert.ok(isResearchQuestion('只把折现率改为12%，其他不变','计算DCF企业价值'));
 assert.ok(isResearchQuestion('压缩为五条','分析长期投资价值'));
 for (const question of ['你好','谢谢','列出文件','新建项目']) assert.equal(isResearchQuestion(question,'解释估值'),false);

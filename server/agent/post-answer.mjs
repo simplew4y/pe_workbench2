@@ -2,7 +2,7 @@ import { accountingReasoningIssues } from '../../lib/research-reasoning.mjs';
 import {artifactDeliveryFindings,artifactDeliverySummary} from '../../lib/artifact-delivery.mjs';
 import {applyPassageVerification} from '../../lib/passage-verification.mjs';
 import { historicalSourceCalls } from '../../lib/research-evidence-scope.mjs';
-import { calcFailureRecovery } from '../../lib/tool-failure-recovery.mjs';
+import { calcFailureRecovery, recoveredUnitConversions } from '../../lib/tool-failure-recovery.mjs';
 import { researchRecoverySources } from '../../lib/research-delivery.mjs';
 import { findingKey } from '../../lib/evidence-reconciliation.mjs';
 import { isResearchQuestion, isScenarioOnlyQuestion, researchExecutionGaps } from '../../lib/research-task.mjs';
@@ -150,12 +150,14 @@ async function generateAnswer(entry, promptText, options, active) {
   let continuationCount = 0;
   const userHistory=entry.session.messages.filter(m=>m.role==='user' && !m.peInternal && !m.customType).map(m=>textOfContent(m.content)).join('\n');
   const researchTurn=isResearchQuestion(text,userHistory);
+  entry.session.sessionManager?.appendCustomEntry('pe_task_route',{turnId,question:text,research:researchTurn,version:2});
   const scenarioOnly=isScenarioOnlyQuestion(text,userHistory);
   let lengthRewritten = false;
   let summaryRewritten = false;
   let safeText = '';
   let safeCitations = [];
   let beforeSoftCompaction;
+  const attemptedRepairs=new Set();
   const recordLint = data => {
     entry.session.sessionManager?.appendCustomEntry('pe_answer_lint', data);
     entry.answerLint = data;
@@ -509,6 +511,7 @@ async function generateAnswer(entry, promptText, options, active) {
       const searchGap = sourceQuestion && sourceSearchGap(text, answer, scanned, toolCalls, sourceReport.historical, blocks, coverage,
         clause => Boolean(locatorEvidence(clause).historical?.length) && !findingsFor(clause).some(blockingFinding));
       const resolvedFailures = new Set(semanticReviewed ? (message.researchResolvedToolFailures || []).map(item=>item.id) : []);
+      for(const id of recoveredUnitConversions(candidateCalls))resolvedFailures.add(id);
       // Calc items are superseded item by item by a later equivalent success,
       // independent of the semantic review of the rest of the answer.
       const calcRecovery = new Map(calcFailureRecovery(candidateCalls).map(entry => [entry.id, entry]));
@@ -566,6 +569,13 @@ async function generateAnswer(entry, promptText, options, active) {
           {maxChars:reviewBudget,question:text,visibleHistory:correctionHistory}) : verifiedPortion(answer, blocks, locatorEvidence,
           part => findingsFor(part, { ...lintContext, requiredSections: [] }), coverage,
           part => hasOcrPageSource(part, calls, currentVersions));
+        if(safeText && researchTurn && !sourceQuestion) {
+          const normalize=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
+          const retainedWarnings=findings.filter(f=>f.severity==='warning' &&
+            normalize(f.sourceText || f.excerpt) && normalize(safeText).includes(normalize(f.sourceText || f.excerpt)));
+          const qualified=evidenceCaveat(safeText,retainedWarnings).text;
+          if(answerCharCount(qualified)<=reviewBudget)safeText=qualified;
+        }
         safeCitations = adoptedCitations(safeText, locatorEvidence(safeText).citations);
       } else if (!softCompaction) {
         const qualified=evidenceCaveat(answer,findings);
@@ -699,6 +709,12 @@ async function generateAnswer(entry, promptText, options, active) {
         continuationCount++;
         continuationPrefix = joined;
         prompt = ['上一条回答在句中截断，请从断点继续补完，不要重复已写内容。补齐该判断的理由及余下问项。', lengthHint, calculationHint].filter(Boolean).join('\n');
+      }
+      if(customType==='pe_answer_correct' || customType==='pe_answer_recover') {
+        const fingerprint=JSON.stringify({answer,findings:blocking.map(f=>[f.rule,f.field,f.excerpt,f.expected]),
+          evidence:calls.map(c=>[c.id,c.success]),toolGap});
+        if(attemptedRepairs.has(fingerprint))return interrupted('同一答稿与证据的核验问题未发生变化，保留可交付部分，停止重复改写。');
+        attemptedRepairs.add(fingerprint);
       }
       if (active.cancelled) return interrupted('用户已取消本次回答。');
       active.continueResearchAnswer = continuationPrefix === null ? null : delta => joinContinuation(continuationPrefix, delta);

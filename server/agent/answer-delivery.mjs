@@ -5,6 +5,7 @@ import { citationFilenames, citationIdentity, extractLocatorMatches, LOCATOR_SOU
 import { answerCharCount } from '../../lib/answer-length.mjs';
 import { answerDependencies } from '../../lib/answer-dependencies.mjs';
 import {closeResearchDocument} from '../../lib/research-document-closure.mjs';
+import {researchStatementSpans} from '../../lib/research-text-boundaries.mjs';
 export { adoptedCitations };
 
 // A search hit vouches for what an earlier answer cited. It supplies a
@@ -775,6 +776,7 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
   // Identify conclusions, then resolve their scope against the full draft.
   const dependent=s=>{
     const value=plain(s).replace(/^(?:更正说明|更正|订正|修正|勘误)[：:]\s*/, '');
+    if(/^这是一(?:份|个|种|套|张)(?:[^。！？]{0,30})(?:模型|报告|年报|报表|工作簿|估值方法)/.test(value))return false;
     return /^(?:因此|所以|由此|据此|综上|总之|综合上述|总体(?:上|而言)|整体(?:上|而言)|结论[：:]|判断[：:]|这个|这些|上述|这(?:是|说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(value) ||
       /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(value);
   };
@@ -799,7 +801,7 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
   const retain=(raw,token)=>{
     if(!raw.trim())return;
     const issues=blocking.filter(f=>span(f) && overlaps(raw,span(f)));
-    const sentences=raw.match(/[^。！？\n]+[。！？]?/g) || [];
+    const sentences=researchStatementSpans(raw);
     // The host appends actual per-file receipts. A false save-status sentence
     // is not a missing financial premise for the rest of this section.
     if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
@@ -846,8 +848,10 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
     f.rule==='delivery_gap' ? (f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
   ))].slice(0,6);
-  const body='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。\n\n'+
-    closeResearchDocument(answer,kept.join('\n\n')).text+'\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
+  // Lead with the supported answer. The partial delivery state and its reason
+  // belong to the host's disclosure; specific limits still stay with the text.
+  const body=closeResearchDocument(answer,kept.join('\n\n')).text+
+    '\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
   // Let the existing sentence-aware bounded fallback handle strict budgets.
   // Never truncate a number, source, table or JSON object by character slicing.
   return answerCharCount(body)<=maxChars ? body : '';

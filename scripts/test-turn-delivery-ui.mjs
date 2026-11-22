@@ -12,6 +12,30 @@ const citation = { id: 'b', materialId: 'workbook-b', version: 1, locator: 'Mode
 const unused = { id: 'a', materialId: 'workbook-a', version: 1, locator: 'Model!A1' };
 const tool = { id: 'c', name: 'read', status: 'done', citations: [unused, citation] };
 
+// Persisted legacy banners move to disclosure without editing the original
+// delivery or hiding the answer's substantive caveats.
+{
+  const banner='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。';
+  const text=banner+'\n\n核心驱动是销量和利润率。分部利润口径仍需核对。';
+  const record={role:'assistant',turnId:'legacy-note',status:'partial',text,reason:'指标待核 <script>'};
+  const html=messageHTML(record),main=html.split('<aside class="answer-note">')[0];
+  assert.doesNotMatch(main,/本次尚未完成全部核验/);
+  assert.match(main,/核心驱动是销量和利润率/);assert.match(main,/分部利润口径仍需核对/);
+  assert.ok(html.indexOf(banner)>html.indexOf('<details class="answer-diagnostics">'));
+  assert.match(html,/指标待核 &lt;script&gt;/);assert.doesNotMatch(html,/answer-diagnostics" open/);
+  assert.equal(record.text,text);assert.equal(record.status,'partial');
+  assert.match(messageHTML({role:'user',text}),/本次尚未完成全部核验/);
+  assert.match(messageHTML({...record,text:'引用：'+text}).split('<aside')[0],/本次尚未完成全部核验/);
+  assert.match(messageHTML({...record,text:banner}),/本次分析尚未形成可交付答复/);
+  const section='本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。';
+  const sectionHTML=messageHTML({...record,text:'核心驱动是销量。\n\n> '+section+'\n\n利润口径仍需核对。'});
+  assert.doesNotMatch(sectionHTML.split('<aside')[0],/本节部分内容/);
+  assert.match(sectionHTML.split('<aside')[0],/利润口径仍需核对/);
+  assert.ok(sectionHTML.indexOf(section)>sectionHTML.indexOf('<details'));
+  const quoted=messageHTML({...record,text:'示例：\n```text\n> '+section+'\n```'});
+  assert.match(quoted.split('<aside')[0],/本节部分内容/);
+}
+
 function page() {
   const state = { messages: [], streaming: false, live: { text: '', tools: [] } };
   const noop = () => {};
@@ -67,7 +91,12 @@ for (const [status, body, label] of [
     assert.doesNotMatch(html, /初稿 A|迟到 A|data-material-id="workbook-a"/);
     if (body.includes('B2')) assert.match(html, /data-material-id="workbook-b"/);
     assert.match(html, /<details class="tool-group">/);
-    if (label) assert.ok(html.includes(label + ' · 原因'));
+    if (status==='partial') {
+      assert.match(html,/部分结论仍待核实/);
+      assert.match(html,/<details class="answer-diagnostics"><summary>查看核验详情<\/summary><p>原因<\/p><\/details>/);
+      assert.doesNotMatch(html,/部分完成 ·|answer-diagnostics" open/);
+      assert.match(html,/tool-summary-meta">已结束/);
+    } else if (label) assert.ok(html.includes(label + ' · 原因'));
     client.handle(final);
     assert.equal(messageHTML(client.state.messages[1]), html);
     const fresh = page();
@@ -76,6 +105,8 @@ for (const [status, body, label] of [
   }
 }
 const legacy = messageHTML({ role: 'assistant', text: '旧答 Model!A1。', tools: [tool] });
+assert.match(messageHTML({role:'assistant',status:'partial',text:'',reason:'<script>bad()</script>'}),/尚未形成可交付答复/);
+assert.doesNotMatch(messageHTML({role:'assistant',status:'partial',text:'',reason:'<script>bad()</script>'}),/<script>/);
 assert.match(legacy, /旧答/);
 assert.match(legacy, /data-material-id="workbook-a"/);
 console.log('turn delivery UI: rewrite, continuation, all terminal states, replay, refresh, tools and legacy citations passed');

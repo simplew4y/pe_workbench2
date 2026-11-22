@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {financialEvidenceFindings} from '../lib/financial-evidence.mjs';
+import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
 import {researchPortion} from '../server/agent/answer-delivery.mjs';
+import {isResearchQuestion} from '../lib/research-task.mjs';
+import {questionWithoutAttachments} from '../lib/answer-length.mjs';
 import {findingKey} from '../lib/evidence-reconciliation.mjs';
 import {artifactDeliveryFindings,artifactDeliverySummary} from '../lib/artifact-delivery.mjs';
 import {createHash} from 'node:crypto';
@@ -26,7 +28,11 @@ const priorMessages=priorRows.filter(r=>r.message).map(r=>r.message);
 const visibleHistory=priorRows.filter(r=>r.customType==='pe_turn_delivery').map(r=>r.data?.text).filter(Boolean);
 const messages=rows.filter(r=>r.message).map(r=>r.message);
 const text=m=>typeof m?.content==='string'?m.content:(m?.content || []).filter(p=>p.type==='text').map(p=>p.text).join('\n');
-const question=text(messages.find(m=>m.role==='user'));
+const persistedQuestion=text(messages.find(m=>m.role==='user'));
+const startedTurn=rows.find(r=>r.customType==='pe_turn_started')?.data;
+const question=startedTurn?.question ?? questionWithoutAttachments(persistedQuestion);
+const researchTurn=isResearchQuestion(question,priorMessages.filter(m=>m.role==='user').map(text).join('\n'));
+const attachments=startedTurn?.attachments || persistedQuestion.split('\n\n[已上传资料]\n')[1]?.split('\n').filter(s=>s.startsWith('- ')).map(s=>s.slice(2)) || [];
 const calls=[],pending=new Map(),files=new Map(),recordedReceipts=new Map();
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const fileReceipts=()=>[...new Map([...files].map(([filename,content])=>[filename,hash(content)]).concat([...recordedReceipts])).entries()].flatMap(([filename,digest])=>{
@@ -59,24 +65,26 @@ for(const row of rows) {
  if(row.customType!=='pe_answer_lint')continue;
  draftMessages.push(draftMessage);lintRecords.push(row.data);
  const citations=row.data.citations || [],context={question,citations,toolCalls:calls};
- const started=performance.now();const findings=financialEvidenceFindings(draft,context,[]);
+ const started=performance.now();const findings=lintLedgerAnswer(draft,{facts:[]},{...context,locatorFindings:row.data.findings});
  const summary=Object.fromEntries([...new Set(findings.map(f=>f.evidenceStatus))].map(key=>[key,findings.filter(f=>f.evidenceStatus===key && f.severity==='error').length]));
  const receipts=new Map((row.data.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
  const artifacts=fileReceipts();
- const merged=[...findings.map(f=>({...f,...receipts.get(findingKey(f)),sourceText:f.sourceText})),...(row.data.findings || []).filter(f=>!['unsourced_number','evidence_identity_mismatch'].includes(f.rule)),...artifactDeliveryFindings(draft,artifacts)];
- let retained=researchPortion(draft,()=>{throw new Error('Isolated paragraph must not be revalidated');},merged,citations,{visibleHistory,question});
+ const merged=[...findings.map(f=>({...f,...receipts.get(findingKey(f)),sourceText:f.sourceText})),...(row.data.findings || []).filter(f=>!['unsourced_number','evidence_identity_mismatch','orphaned_number'].includes(f.rule)),...artifactDeliveryFindings(draft,artifacts)];
+ // This is a research-span diagnostic, not an alternate task router. Lookup
+ // turns are validated only by the actual finalizer below.
+ let retained=researchTurn?researchPortion(draft,()=>{throw new Error('Isolated paragraph must not be revalidated');},merged,citations,{visibleHistory,question}):'';
  const normalize=s=>s.replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
  const leaked=merged.filter(f=>f.severity==='error' && (f.sourceText || f.excerpt) && normalize(retained).includes(normalize(f.sourceText || f.excerpt)));
  assert.equal(leaked.length,0,JSON.stringify(leaked.map(f=>({rule:f.rule,excerpt:f.excerpt})),null,2));
  const delivery=artifactDeliverySummary(artifacts);
  if(delivery)retained+='\n\n'+delivery;
- const result={index:++index,draftChars:draft.length,retainedChars:retained.length,elapsedMs:performance.now()-started,toolCalls:calls.length,files:artifacts,blockedSpanLeaks:leaked.length,summary,findings:merged,recordedFindings:row.data.findings};
+ const result={index:++index,diagnosticRoute:researchTurn?'research':'skipped_lookup',draftChars:draft.length,retainedChars:retained.length,elapsedMs:performance.now()-started,toolCalls:calls.length,files:artifacts,blockedSpanLeaks:leaked.length,summary,findings:merged,recordedFindings:row.data.findings};
  fs.writeFileSync(path.join(output,`draft-${index}.md`),draft);
  fs.writeFileSync(path.join(output,`retained-${index}.md`),retained);
  fs.writeFileSync(path.join(output,`draft-${index}.json`),JSON.stringify(result,null,2));
  results.push({...result,findings:undefined,recordedFindings:undefined});console.log(results.at(-1));
 }
-fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:false,question,toolCalls:calls.length,drafts:results},null,2));
+fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:false,question,attachments,researchTurn,toolCalls:calls.length,drafts:results},null,2));
 
 // Replay the actual final-delivery state machine too. The model is a tape of
 // recorded drafts, tools are already-recorded results, and fetch is disabled.
@@ -84,13 +92,18 @@ fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:
 const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
 const branch=structuredClone(priorRows);
 const appendMessage=message=>{sessionMessages.push(message);branch.push({type:'message',message});};
-const firstDraftAt=messages.indexOf(draftMessages[0]);
-const toolHistory=messages.slice(0,firstDraftAt).filter(m=>m.role==='toolResult' || m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'));
+let replayCursor=0;
 const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,appendCustomEntry(type,data){records.push({type,data});branch.push({type:'custom',customType:type,data});}},
  async prompt(){
   assert(generations<8,'Unexpected replay loop; do not call a paid provider');
-  if(!generations)for(const message of structuredClone(toolHistory))appendMessage(message);
-  appendMessage(structuredClone(draftMessages[Math.min(generations++,draftMessages.length-1)]));
+  const next=draftMessages[Math.min(generations++,draftMessages.length-1)];
+  const at=messages.indexOf(next);
+  // Retries can read or recalculate between drafts. Replay those receipts at
+  // their original point, never discard them or leak them into earlier drafts.
+  for(const message of structuredClone(messages.slice(replayCursor,at).filter(m=>m.role==='toolResult' ||
+    m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'))))appendMessage(message);
+  replayCursor=Math.max(replayCursor,at+1);
+  appendMessage(structuredClone(next));
  },
  async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
 };
@@ -116,7 +129,7 @@ try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artif
   const recorded=lintRecords[draftMessages.findIndex(m=>text(m)===answer)];
   const accepted=new Map((recorded?.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
   return {findings:findings.map(f=>({...f,...accepted.get(findingKey(f)),sourceText:f.sourceText})),status:'recorded_replay'};
- }},question);
+ }},question,{attachments});
  if(published.length)fs.cpSync(path.join(replayRoot,'exports'),path.join(output,'published','exports'),{recursive:true});
 } finally {fs.rmSync(replayRoot,{recursive:true,force:true});}
 assert(['partial','completed'].includes(deliveryRecord.status),JSON.stringify(deliveryRecord));
