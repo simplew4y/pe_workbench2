@@ -67,11 +67,12 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     }
     if (!active.cancelled && active.pdfDisclosure) outcome = appendDisclosure(outcome, active.pdfDisclosure);
     if(!active.cancelled && ['completed','partial'].includes(outcome.status)) {
+      if(entry.publishReportDelivery)outcome=await entry.publishReportDelivery(outcome,text);
       const summary=artifactDeliverySummary(entry.artifactSnapshot?.() || []);
       // A requested strict length remains binding; the visible file cards
       // already carry saved artifacts when there is no room for this note.
       const max=requestedAnswerLength(text);
-      if(summary && (!max?.strict || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
+      if(summary && !outcome.deliveryBundle && (!max?.strict || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
     }
     try {
       const framework = outcome.status === 'completed' || outcome.status === 'partial'
@@ -84,7 +85,8 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           .some(item => item.path === framework.analysisStatePath),
       } : {};
       if (!framework && active.frameworkEdits?.size) presentation.analysisState = null;
-      const record = saveTurnDelivery(entry, { version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}), finishedAt: new Date().toISOString(), ...outcome, ...presentation });
+      const record = saveTurnDelivery(entry, { version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}), finishedAt: new Date().toISOString(), ...outcome, ...presentation,
+        ...(Object.hasOwn(outcome,'analysisState')?{analysisState:outcome.analysisState,analysisStatePath:outcome.analysisStatePath}:{} ) });
       try {
         broadcast({ type: 'turn.delivered', record });
         entry.onTurnDelivered?.(record);
@@ -201,6 +203,10 @@ async function generateAnswer(entry, promptText, options, active) {
   active.calculation = calculation;
   const priorAnswers = referencedJudgments(entry.session, text, turnId);
   active.priorAnswers = priorAnswers;
+  const deliveredHistory=turnTimeline(entry.session).filter(item=>item.kind==='delivery' && item.record.turnId!==turnId).map(item=>item.record.text).filter(Boolean);
+  // Legacy conversations may predate delivery markers. Missing markers in an
+  // existing conversation are unknown history, not proof nobody saw an answer.
+  const correctionHistory=deliveredHistory.length ? deliveredHistory : priorQuestions.length ? undefined : [];
   const argumentHint = argumentRequirements(text, priorAnswers);
   const priorAnswerHint = priorAnswers.length ? '指定轮次的正式答复，仅用来定位先前判断。text 为空代表没有可引用的正文，truncated 为真时可用 transcript_search 补查。\n' + JSON.stringify(priorAnswers) : '';
   const priorDialogue = recentTopicDialogue(entry.session.messages.slice(0, turnBoundary));
@@ -556,7 +562,8 @@ async function generateAnswer(entry, promptText, options, active) {
           reason: [...new Set([...blocking.map(f => f.message),qualified.reason,toolGap].filter(Boolean))].join('；') };
       }
       if (blocking.length || !answer || toolGap) {
-        safeText = researchTurn && !sourceQuestion ? researchPortion(answer, part => findingsFor(part, { ...lintContext, requiredSections: [] }), findings, available, {maxChars:reviewBudget}) : verifiedPortion(answer, blocks, locatorEvidence,
+        safeText = researchTurn && !sourceQuestion ? researchPortion(answer, part => findingsFor(part, { ...lintContext, requiredSections: [] }), findings, available,
+          {maxChars:reviewBudget,question:text,visibleHistory:correctionHistory}) : verifiedPortion(answer, blocks, locatorEvidence,
           part => findingsFor(part, { ...lintContext, requiredSections: [] }), coverage,
           part => hasOcrPageSource(part, calls, currentVersions));
         safeCitations = adoptedCitations(safeText, locatorEvidence(safeText).citations);

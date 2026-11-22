@@ -8,6 +8,7 @@ import {artifactDeliveryFindings,artifactDeliverySummary} from '../lib/artifact-
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {runWithPostAnswer} from '../server/agent/post-answer.mjs';
+import {publishFinalReport} from '../lib/report-publication.mjs';
 const args=process.argv.slice(2);
 const turnArg=args.find(arg=>arg.startsWith('--turn='));
 const [input,output,projectRoot]=args.filter(arg=>!arg.startsWith('--'));
@@ -20,16 +21,18 @@ const turnStarts=allRows.flatMap((row,index)=>row.customType==='pe_turn_started'
 const turn=turnArg?Number(turnArg.slice('--turn='.length)):null;
 if(turn!==null && !(Number.isInteger(turn) && turn>=1 && turn<=turnStarts.length))throw new Error(`--turn must be 1..${turnStarts.length}`);
 const rows=turn===null?allRows:allRows.slice(turnStarts[turn-1],turnStarts[turn] ?? allRows.length);
-const priorMessages=turn===null?[]:allRows.slice(0,turnStarts[turn-1]).filter(r=>r.message).map(r=>r.message);
+const priorRows=turn===null?[]:allRows.slice(0,turnStarts[turn-1]);
+const priorMessages=priorRows.filter(r=>r.message).map(r=>r.message);
+const visibleHistory=priorRows.filter(r=>r.customType==='pe_turn_delivery').map(r=>r.data?.text).filter(Boolean);
 const messages=rows.filter(r=>r.message).map(r=>r.message);
 const text=m=>typeof m?.content==='string'?m.content:(m?.content || []).filter(p=>p.type==='text').map(p=>p.text).join('\n');
 const question=text(messages.find(m=>m.role==='user'));
-const calls=[],pending=new Map(),files=new Map();
+const calls=[],pending=new Map(),files=new Map(),recordedReceipts=new Map();
 const hash=s=>createHash('sha256').update(s).digest('hex');
-const fileReceipts=()=>[...files].flatMap(([filename,content])=>{
+const fileReceipts=()=>[...new Map([...files].map(([filename,content])=>[filename,hash(content)]).concat([...recordedReceipts])).entries()].flatMap(([filename,digest])=>{
  if(!projectRoot)return [];
  const dest=path.resolve(projectRoot,filename),exportsRoot=path.resolve(projectRoot,'exports')+path.sep;
- return dest.startsWith(exportsRoot) && fs.existsSync(dest) && hash(fs.readFileSync(dest))===hash(content)?[{path:filename,saved:true,sha256:hash(content)}]:[];
+ return dest.startsWith(exportsRoot) && fs.existsSync(dest) && hash(fs.readFileSync(dest))===digest?[{path:filename,saved:true,sha256:digest}]:[];
 });
 fs.mkdirSync(output,{recursive:true});
 let draft='',draftMessage,index=0;const results=[],draftMessages=[],lintRecords=[];
@@ -39,6 +42,7 @@ for(const row of rows) {
  if(message?.role==='toolResult' && pending.has(message.toolCallId)) {
   const c=pending.get(message.toolCallId);
   calls.push({id:c.id,name:c.name,args:c.arguments,success:!message.isError,result:message,details:message.details});
+  if(!message.isError)for(const match of text(message).matchAll(/\[research_write_verified\]\s+([^\n]+?)\s+sha256=([a-f0-9]{64})/g))recordedReceipts.set(match[1],match[2]);
   if(!message.isError && typeof c.arguments?.path==='string') {
    if(c.name==='write' && typeof c.arguments.content==='string')files.set(c.arguments.path,c.arguments.content);
    if(c.name==='edit' && files.has(c.arguments.path)) {
@@ -60,7 +64,7 @@ for(const row of rows) {
  const receipts=new Map((row.data.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
  const artifacts=fileReceipts();
  const merged=[...findings.map(f=>({...f,...receipts.get(findingKey(f)),sourceText:f.sourceText})),...(row.data.findings || []).filter(f=>!['unsourced_number','evidence_identity_mismatch'].includes(f.rule)),...artifactDeliveryFindings(draft,artifacts)];
- let retained=researchPortion(draft,()=>{throw new Error('Isolated paragraph must not be revalidated');},merged,citations);
+ let retained=researchPortion(draft,()=>{throw new Error('Isolated paragraph must not be revalidated');},merged,citations,{visibleHistory,question});
  const normalize=s=>s.replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
  const leaked=merged.filter(f=>f.severity==='error' && (f.sourceText || f.excerpt) && normalize(retained).includes(normalize(f.sourceText || f.excerpt)));
  assert.equal(leaked.length,0,JSON.stringify(leaked.map(f=>({rule:f.rule,excerpt:f.excerpt})),null,2));
@@ -78,27 +82,45 @@ fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:
 // recorded drafts, tools are already-recorded results, and fetch is disabled.
 // This cannot predict how a live model will rewrite after a changed audit.
 const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
+const branch=structuredClone(priorRows);
+const appendMessage=message=>{sessionMessages.push(message);branch.push({type:'message',message});};
 const firstDraftAt=messages.indexOf(draftMessages[0]);
 const toolHistory=messages.slice(0,firstDraftAt).filter(m=>m.role==='toolResult' || m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'));
-const session={messages:sessionMessages,sessionManager:{appendCustomEntry(type,data){records.push({type,data});}},
+const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,appendCustomEntry(type,data){records.push({type,data});branch.push({type:'custom',customType:type,data});}},
  async prompt(){
   assert(generations<8,'Unexpected replay loop; do not call a paid provider');
-  if(!generations)sessionMessages.push(...toolHistory);
-  sessionMessages.push(structuredClone(draftMessages[Math.min(generations++,draftMessages.length-1)]));
+  if(!generations)for(const message of structuredClone(toolHistory))appendMessage(message);
+  appendMessage(structuredClone(draftMessages[Math.min(generations++,draftMessages.length-1)]));
  },
  async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
 };
 const replayRoot=fs.mkdtempSync(path.join(os.tmpdir(),'research-delivery-replay-'));
+const published=[];
+const finalReceipts=()=>[...new Map([...fileReceipts(),...published].map(r=>[r.path,r])).values()];
+for(const receipt of fileReceipts()) {
+ const destination=path.join(replayRoot,receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
+ fs.copyFileSync(path.join(projectRoot,receipt.path),destination);
+}
+const lastReport=calls.findLast(c=>c.name==='review_research' && c.args?.save && c.args.path?.endsWith('.md'));
+const reportDraft=lastReport ? {path:lastReport.args.path,content:lastReport.args.content,saveRequested:true,saved:false,baseline:
+ projectRoot && fs.existsSync(path.join(projectRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(projectRoot,lastReport.args.path))) : null,
+ issues:lastReport.success?[]:['录制的报告审校未通过']} : null;
 let deliveryRecord;
-try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artifactSnapshot:fileReceipts,
+try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artifactSnapshot:finalReceipts,
+ publishReportDelivery:(outcome,question)=>publishFinalReport({root:replayRoot,draft:reportDraft,outcome,question,receipts:finalReceipts(),record:receipt=>{
+  published.push(receipt);
+  const destination=path.join(output,'published',receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
+  fs.copyFileSync(path.join(replayRoot,receipt.path),destination);
+ }}),
  reconcileEvidence:async(answer,findings)=>{
   const recorded=lintRecords[draftMessages.findIndex(m=>text(m)===answer)];
   const accepted=new Map((recorded?.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
   return {findings:findings.map(f=>({...f,...accepted.get(findingKey(f)),sourceText:f.sourceText})),status:'recorded_replay'};
  }},question);
+ if(published.length)fs.cpSync(path.join(replayRoot,'exports'),path.join(output,'published','exports'),{recursive:true});
 } finally {fs.rmSync(replayRoot,{recursive:true,force:true});}
 assert(['partial','completed'].includes(deliveryRecord.status),JSON.stringify(deliveryRecord));
-assert.deepEqual(artifactDeliveryFindings(deliveryRecord.text,fileReceipts()),[],'Final persisted delivery must agree with file readback receipts');
+assert.deepEqual(artifactDeliveryFindings(deliveryRecord.text,finalReceipts()),[],'Final persisted delivery must agree with file readback receipts');
 fs.writeFileSync(path.join(output,'delivery.json'),JSON.stringify({network:false,generations,delivery:deliveryRecord,requests,records},null,2));
 fs.writeFileSync(path.join(output,'delivered.md'),deliveryRecord.text);
 console.log({actualPostprocessor:deliveryRecord.status,deliveredChars:deliveryRecord.text.length,generations,network:false});

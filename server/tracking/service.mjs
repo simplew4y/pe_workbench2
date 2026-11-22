@@ -9,6 +9,7 @@
 import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import {deliveryBundleIssue} from '../../lib/delivery-bundle.mjs';
 
 import {
   buildTrackingPrompt,
@@ -723,6 +724,11 @@ async function ingestUploadEvent(ctx, material, name) {
 }
 
 async function pollSourceBinding(ctx, binding) {
+  const currentTracking=ctx.store.getTracking(binding.trackingId);
+  if(currentTracking) {
+    const info=await readTrackingState(ctx,currentTracking);
+    if(info.deliveryBlocked)return {events:0,skipped:true,reason:info.error};
+  }
   if (binding.adapter === "westock") return pollWestockBinding(ctx, binding);
   if (binding.adapter !== "anysearch") return { events: 0, skipped: true };
   const tool = ctx.tools.find((item) => item.name === "anysearch_search");
@@ -794,11 +800,13 @@ async function readTrackingState(ctx, tracking) {
   const absolute = path.join(ctx.root, relPath);
   try {
     const raw = await fsp.readFile(absolute, "utf8");
-    return { relPath, state: JSON.parse(raw), error: null };
+    const state=JSON.parse(raw),error=deliveryBundleIssue(ctx.root,relPath,state);
+    return {relPath,state:error?null:state,error,deliveryBlocked:!!error};
   } catch (error) {
     return {
       relPath,
       state: null,
+      deliveryBlocked:!!deliveryBundleIssue(ctx.root,relPath,null),
       error: error.code === "ENOENT" ? `同目录没有 analysis-state.json（${relPath}）` : `无法读取状态文件：${error.message}`,
     };
   }
@@ -839,6 +847,7 @@ async function runTracking(ctx, trackingId, {
   if (!target) throw Object.assign(new Error("target file not found"), { status: 400 });
 
   const stateInfo = await readTrackingState(ctx, current);
+  if(stateInfo.deliveryBlocked)throw Object.assign(new Error(stateInfo.error),{status:409});
   const stateMaterial = stateInfo.relPath ? store.findMaterialByPath(stateInfo.relPath) : null;
   const stateBaseVersion = stateMaterial?.versions?.[0]?.v ?? null;
 

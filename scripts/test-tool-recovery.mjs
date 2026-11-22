@@ -71,9 +71,7 @@ const t02Issue = {
   excerpt: '储能发货 28GWh，折 0.891 元/Wh',
   reason: '249.59亿元÷28GWh换算：249.59亿元=2.496×10^11元，28GWh=2.8×10^10Wh，结果约8.91元/Wh，程序输出的0.891元/Wh疑似分母用了280亿Wh=280GWh而非28GWh，数值与“元/Wh”语义存在10倍级不一致风险。',
 };
-const proof = overruledArithmetic(t02Issue, []);
-assert.ok(proof, 'tenfold claim must be overruled');
-assert.match(proof.proof, /0\.891/);
+assert.equal(overruledArithmetic(t02Issue, []), null, 'reviewer arithmetic without a bound successful receipt cannot approve a claim');
 // The reviewer's false conversion is recorded, not trusted.
 assert.ok(falseConversions(t02Issue.reason).length >= 1);
 // A genuinely wrong stated value is NOT overruled.
@@ -91,7 +89,7 @@ const receipts = calcReceipts([
     { value: '0.856821895526', unit: '%', expression: '619.057/(778.57/1.0776)' },
   ] } },
 ]);
-assert.ok(overruledArithmetic(percentIssue, receipts), 'percent/decimal dispute must be overruled');
+assert.equal(overruledArithmetic(percentIssue, receipts), null, 'compound scope disputes and historically ambiguous % labels stay under review');
 // Scope objections are never overruled.
 assert.equal(overruledArithmetic({ check: 'coverage', excerpt: 'x', reason: '249.59亿元=2.496×10^11元' }, []), null);
 console.log('PASS calc failure supersession and arithmetic dispute adjudication');

@@ -1239,7 +1239,9 @@ console.log('target deviation post-answer correction passed');
     }
     const spaces = await runScript([{ text: 'The first ', stopReason: 'length' }, { text: 'half.' }]);
     assert.equal(spaces.record.text, 'The first half.');
-    const unclosedBold = '1. **估值折价足够深。具体失效门槛尚缺推导依据，暂不能确定。';
+    // Exercise formatting only; host crop markers now correctly block a
+    // completed answer and are covered by test-delivery-bundle.
+    const unclosedBold = '1. **估值取决于盈利兑现。失效门槛需要结合历史波动与业务约束推导。';
     const formattingOnly = await runScript([{ text: unclosedBold }]);
     assert.equal(formattingOnly.record.status, 'completed');
     assert.equal(formattingOnly.record.text, unclosedBold);

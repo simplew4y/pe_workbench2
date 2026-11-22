@@ -3,6 +3,8 @@ import { Lexer } from 'marked';
 import { adoptedCitations, citationLookup, currentCitation, toolEvidenceState } from '../../lib/citations.mjs';
 import { citationFilenames, citationIdentity, extractLocatorMatches, LOCATOR_SOURCE, locatorKey, maskCitationIds, resolveLocatorToken } from '../../lib/citation-locator.mjs';
 import { answerCharCount } from '../../lib/answer-length.mjs';
+import { answerDependencies } from '../../lib/answer-dependencies.mjs';
+import {closeResearchDocument} from '../../lib/research-document-closure.mjs';
 export { adoptedCitations };
 
 // A search hit vouches for what an earlier answer cited. It supplies a
@@ -762,23 +764,25 @@ export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage
 // Research delivery retains complete, independently supported paragraphs and
 // conditional reasoning. Historical-source queries still use verifiedPortion.
 // Never promote a dependent conclusion after removing its disputed premise.
-export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity}={}) {
+export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity,visibleHistory,question=''}={}) {
   // Findings are bound to the complete current draft. Re-linting isolated
   // paragraphs loses issuer, period, heading and reconciled source context.
   // A missing locator in a short paragraph is not new contradictory evidence.
   const kept=[],blocking=findings.filter(blockingFinding);
   const span=f=>f.sourceText || f.excerpt;
-  const plain=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
+  const plain=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim().replace(/^(?:[-+•]|\d+[.)])\s+/, '');
   const overlaps=(a,b)=>!!plain(a) && !!plain(b) && (plain(a).includes(plain(b)) || plain(b).includes(plain(a)));
-  // A rejected premise contaminates later explicit conclusions anywhere in the
-  // draft, not only inside the same section: headings must not silently reset
-  // the dependency check, and verdict sentences ("…被…推翻/证实", "判断：…")
-  // count as dependent even when they do not start with a connector.
-  const dependent=s=>/^(?:因此|所以|由此|据此|综上|总之|结论[：:]|判断[：:]|这个|这些|上述|这(?:说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(plain(s)) ||
-    /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定|推翻)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(plain(s));
-  // "更正：…并非…" paragraphs narrate an internal draft repair the user never
-  // saw; in degraded delivery they are process leakage, not research content.
-  const internalEdit=s=>/^(?:更正|订正|修正|勘误|更正说明)[：:：]/.test(plain(s));
+  // Identify conclusions, then resolve their scope against the full draft.
+  const dependent=s=>{
+    const value=plain(s).replace(/^(?:更正说明|更正|订正|修正|勘误)[：:]\s*/, '');
+    return /^(?:因此|所以|由此|据此|综上|总之|综合上述|总体(?:上|而言)|整体(?:上|而言)|结论[：:]|判断[：:]|这个|这些|上述|这(?:是|说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(value) ||
+      /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(value);
+  };
+  // A public correction is content. Only suppress an internal edit label when
+  // the host knows no prior answer was delivered and correction wasn't asked
+  // for. Even then keep its independently checked factual body.
+  const correctionText=s=>Array.isArray(visibleHistory) && !visibleHistory.length && !/更正|纠正|订正|修正|勘误|校对/.test(question)
+    ? s.replace(/^(\s*(?:\*\*)?)(?:更正说明|更正|订正|修正|勘误)(?:\*\*)?[：:]\s*(?:\*\*)?/, '') : s;
   const presentation=s=>((s.match(/\*\*/g) || []).length%2?s.replace(/\*\*/g,''):s).trim();
   const citationOnly=s=>{
     let value=s;
@@ -789,45 +793,42 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     for(const r of extractLocatorMatches(value).reverse())value=value.slice(0,r.index)+value.slice(r.index+r.raw.length);
     return !value.replace(/\[[^\]]+\]|[A-Z]{1,3}\d+|模型全模型重算|模型重算|全模型重算|[\s、，；;。.*`]/g,'');
   };
-  // This fallback only runs when blocking findings exist, so every explicit
-  // verdict sentence ("因此/综上/结论：…", "…被…推翻") is potentially dependent
-  // on removed or disputed premises — including verdicts that appear before the
-  // rejected span. Drop them everywhere; factual sentences stay.
-  const contaminated=blocking.length>0;
-  let sectionRejected=false,notice=false,contentCount=0;
-  const omit=()=>{sectionRejected=true;if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
-  const retain=raw=>{
+  const tokens=Lexer.lex(answer), rejectedDependency=answerDependencies(tokens,blocking,dependent);
+  let notice=false,contentCount=0;
+  const omit=()=>{if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
+  const retain=(raw,token)=>{
     if(!raw.trim())return;
     const issues=blocking.filter(f=>span(f) && overlaps(raw,span(f)));
+    const sentences=raw.match(/[^。！？\n]+[。！？]?/g) || [];
     // The host appends actual per-file receipts. A false save-status sentence
     // is not a missing financial premise for the rest of this section.
     if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
-    if(!issues.length) {
-      if(internalEdit(raw)){omit();return;}
-      if(contaminated && dependent(raw)){omit();return;}
+    // A verdict paragraph carries one argument across its sentences. Do not
+    // keep its unmarked continuation after removing only the opening verdict.
+    if(!issues.length && rejectedDependency(raw,token)){omit();return;}
+    if(!issues.length && !sentences.some(sentence=>rejectedDependency(sentence,token))) {
       if(citationOnly(raw))return;
-      kept.push(presentation(raw));contentCount++;return;
+      kept.push(presentation(correctionText(raw)));contentCount++;return;
     }
     // Preserve independent complete sentences. If an issue spans multiple
     // sentences, keep the whole span blocked; never guess its numeric target.
-    const sentences=raw.match(/[^。！？\n]+[。！？]?/g) || [];
     const multi=sentences.length>1 && issues.every(f=>sentences.some(s=>plain(s).includes(plain(span(f)))));
     if(!multi){omit();return;}
     for(const sentence of sentences) {
-      if(internalEdit(sentence) || issues.some(f=>overlaps(sentence,span(f))) || contaminated && dependent(sentence))omit();
-      else if(!citationOnly(sentence)){kept.push(presentation(sentence));contentCount++;}
+      if(issues.some(f=>overlaps(sentence,span(f))) || rejectedDependency(sentence,token))omit();
+      else if(!citationOnly(sentence)){kept.push(presentation(correctionText(sentence)));contentCount++;}
     }
   };
-  for(const token of Lexer.lex(answer)) {
+  for(const token of tokens) {
     if(token.type==='space')continue;
     if(token.type==='heading') {
       // Numeric assertions in headings need the same check as body claims.
       if(blocking.some(f=>span(f) && overlaps(token.raw,span(f)))){omit();continue;}
       // A verdict heading is itself dependent on possibly removed premises.
-      if(contaminated && dependent(token.raw)){omit();continue;}
+      if(rejectedDependency(token.raw,token)){omit();continue;}
       kept.push(token.raw.trim());notice=false;continue;
     }
-    if(token.type==='list')for(const item of token.items)retain(item.raw);
+    if(token.type==='list')for(const item of token.items)retain(item.raw,token);
     else if(token.type==='table') {
       const lines=token.raw.trimEnd().split(/\r?\n/),rows=lines.slice(2);
       const rejected=rows.map(row=>blocking.some(f=>span(f) && overlaps(row,span(f))));
@@ -836,17 +837,17 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
       if(keptRows.length!==rows.length)omit();
     }
     else if(token.type==='code' && blocking.some(f=>span(f) && overlaps(token.raw,span(f))))omit();
-    else retain(token.raw);
+    else retain(token.raw,token);
   }
   if(!contentCount)return '';
   if (!kept.length) return '';
   const labels={value:'数值',unit:'单位',currency:'币种',period:'期间',metric:'指标口径',basis_type:'实际与预测口径',dependency:'计算依据',source:'来源'};
   const gaps=[...new Set(findings.filter(blockingFinding).map(f=>
     f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
-    f.rule==='delivery_gap' ? f.message : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
+    f.rule==='delivery_gap' ? (f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
   ))].slice(0,6);
   const body='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。\n\n'+
-    kept.join('\n\n')+'\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
+    closeResearchDocument(answer,kept.join('\n\n')).text+'\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
   // Let the existing sentence-aware bounded fallback handle strict budgets.
   // Never truncate a number, source, table or JSON object by character slicing.
   return answerCharCount(body)<=maxChars ? body : '';

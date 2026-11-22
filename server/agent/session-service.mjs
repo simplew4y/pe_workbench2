@@ -278,6 +278,7 @@ export function createSessionService({
 
     entry = {
       artifactSnapshot:researchReview.artifactSnapshot,
+      publishReportDelivery:researchReview.publishDelivery,
       id: session.sessionId,
       sessionTools,
       automated: Boolean(automated || writeRoots),

@@ -244,13 +244,15 @@ assert.equal(value('(-8)^(-1/3)',{precision:12}),'-0.500000000000');
 assert.equal(value('8^(2/3)',{precision:12}),'4.000000000000');
 assert.throws(()=>value('2^0.123'),/分数幂的分母/);
 assert.throws(()=>value('(-1)^(1/2)'),/不能为负数/);
-// P2-04: a % label on an unscaled fraction is ambiguous, not a percentage point.
-const ambiguous = await tool.execute('ambiguous',{expression:'705.148/778.57',outputUnit:'%'});
-assert.equal(ambiguous.details.results[0].unit,null);
-assert.equal(ambiguous.details.results[0].requestedUnit,'%');
-assert.match(ambiguous.content[0].text,/应写作 0\.905696340727 decimal = 90\.5696340727%/);
-assert.equal(ambiguous.details.results[0].unitAmbiguity.length>0,true);
+// Declared fraction and percentage-point encodings must agree with the unit;
+// the numerical magnitude cannot distinguish a fraction from a small percent.
+const ambiguous = await tool.execute('ambiguous',{expression:'705.148/778.57',outputUnit:'%',ratioEncoding:'fraction'});
+assert.equal(ambiguous.isError,true);
+assert.match(ambiguous.details.error,/ratioEncoding/);
+const converted = await tool.execute('converted',{expression:'705.148/778.57',fromUnit:'decimal',toUnit:'%'});
+assert.equal(converted.details.results[0].unit,'%');
+assert.ok(Math.abs(Number(converted.details.results[0].value)-90.5696340727)<1e-8);
 const scaled = await tool.execute('scaled',{expression:'705.148/778.57*100',outputUnit:'%'});
 assert.equal(scaled.details.results[0].unit,'%');
 assert.equal(scaled.details.results[0].ratioEncoding,'percentage_points');
-console.log('PASS calc typesetting normalization, per-item batch isolation, rational exponents, percent label ambiguity');
+console.log('PASS calc typesetting normalization, per-item batch isolation, rational exponents, explicit ratio encoding');
