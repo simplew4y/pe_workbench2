@@ -252,7 +252,7 @@ assert.match(ambiguous.details.error,/ratioEncoding/);
 const converted = await tool.execute('converted',{expression:'705.148/778.57',fromUnit:'decimal',toUnit:'%'});
 assert.equal(converted.details.results[0].unit,'%');
 assert.ok(Math.abs(Number(converted.details.results[0].value)-90.5696340727)<1e-8);
-const scaled = await tool.execute('scaled',{expression:'705.148/778.57*100',outputUnit:'%'});
+const scaled = await tool.execute('scaled',{expression:'705.148/778.57*100',outputUnit:'%',ratioEncoding:'percentage_points'});
 assert.equal(scaled.details.results[0].unit,'%');
 assert.equal(scaled.details.results[0].ratioEncoding,'percentage_points');
 console.log('PASS calc typesetting normalization, per-item batch isolation, rational exponents, explicit ratio encoding');

@@ -116,7 +116,7 @@ test('failed calculations require observed source versions, not retry argument w
 test('small percentages retain their declared unit; contradictory ratio encoding fails explicitly',async()=>{
   const tool=createCalcTool();
   for(const expression of ['0.8-0.3','0.5','-0.5','1/200','100/200']) {
-    const result=await tool.execute('percent',{expression,outputUnit:'%'});
+    const result=await tool.execute('percent',{expression,outputUnit:'%',ratioEncoding:'percentage_points'});
     assert.ok(!result.isError);assert.equal(result.details.results[0].unit,'%');
     assert.equal(result.details.results[0].ratioEncoding,'percentage_points');
   }

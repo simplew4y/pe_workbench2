@@ -5,7 +5,7 @@
  */
 
 import path from "node:path";
-import {toolDisplayOutput} from "../../lib/tool-display-output.mjs";
+import {toolDisplayOutput,toolValidation} from "../../lib/tool-display-output.mjs";
 import {applyPatch} from "diff";
 import {turnTimeline} from "./turn-delivery.mjs";
 import {adoptedCitations, explicitTurns, joinContinuation} from "./answer-delivery.mjs";
@@ -421,7 +421,9 @@ export function snapshotMessages(session, ctx, entry = null) {
             payload: record.payload,
           }
         : null;
-      const presentationError = record?.corrupt
+      const legacyPlainRead = block.name === 'read' && result && !result.isError && !record?.corrupt &&
+        record?.schemaName === 'presentation.error' && record.payload?.error === 'tool result has no structured presentation';
+      const presentationError = legacyPlainRead ? '' : record?.corrupt
         ? "工具结果展示数据损坏"
         : record?.schemaName === "presentation.error"
           ? String(record.payload?.error || "工具结果展示数据不可用")
@@ -434,6 +436,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         detail: toolDetail(ctx, block.name, block.arguments || {}),
         status: result ? (result.isError ? "error" : "done") : !turn.start ? "done" : turn.delivery ? "error" : "running",
         output: result ? toolDisplayOutput(block.name, result, resultText(result)) : "",
+        ...(toolValidation(block.name,result)?{validation:toolValidation(block.name,result)}:{}),
         ...(citations.length ? { citations } : {}),
         ...(presentation ? { presentation } : {}),
         ...(presentationError ? { presentationError } : {}),

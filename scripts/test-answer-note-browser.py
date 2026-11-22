@@ -45,5 +45,17 @@ with sync_playwright() as pw:
     assert '尚未形成可交付答复' in body.inner_text()
     page.evaluate("window.renderFixture({status:'completed'})")
     assert page.locator('.answer-note').count()==0
+    page.evaluate("window.renderFixture({status:'completed',tools:[{id:'read',name:'read',status:'done',detail:'说明文档',output:'已读取'}]})")
+    assert page.locator('.tool-card-error').count()==0
+    page.locator('.tool-summary').click()
+    assert '无法展示这个工具结果' not in body.inner_text()
+    page.screenshot(path=str(OUT/'plain-read-mobile.png'),full_page=True)
+    page.evaluate("window.renderFixture({status:'completed',tools:[{id:'broken',name:'read',status:'done',presentationError:'invalid schema'}]})")
+    assert page.locator('.tool-card-error').count()==1
+    page.evaluate("window.renderFixture({status:'completed',tools:[{id:'state',name:'write',status:'done',validation:{passed:false}}]})")
+    page.locator('.tool-summary').click()
+    assert page.locator('.tool-status').inner_text()=='已保存 · 校验未通过'
+    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    page.screenshot(path=str(OUT/'state-validation-mobile.png'),full_page=True)
     browser.close()
 print('PASS offline partial answer: collapsed details, keyboard, mobile, escaping, empty and completed states')

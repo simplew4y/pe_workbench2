@@ -777,7 +777,7 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
   const dependent=s=>{
     const value=plain(s).replace(/^(?:更正说明|更正|订正|修正|勘误)[：:]\s*/, '');
     if(/^这是一(?:份|个|种|套|张)(?:[^。！？]{0,30})(?:模型|报告|年报|报表|工作簿|估值方法)/.test(value))return false;
-    return /^(?:因此|所以|由此|据此|综上|总之|综合上述|总体(?:上|而言)|整体(?:上|而言)|结论[：:]|判断[：:]|这个|这些|上述|这(?:是|说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(value) ||
+    return /^(?:因此|所以|由此|据此|综上|总之|综合上述|总体(?:上|而言)|整体(?:上|而言)|结论[：:]|判断[：:]|这个|这些|上述|它(?:来自|代表|意味着|取决于)|这(?:是|说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(value) ||
       /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(value);
   };
   // A public correction is content. Only suppress an internal edit label when

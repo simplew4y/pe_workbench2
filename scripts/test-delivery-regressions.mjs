@@ -34,7 +34,7 @@ const dependent='因此公司明显低估，当前价格有确定的上行空间
 const rejected=check(bad,[price]);
 const kept=researchPortion([bad,conditional,dependent].join('\n\n'),s=>check(s,[price]),rejected,[price]);
 assert.ok(kept.includes(conditional));assert.ok(!kept.includes('999'));assert.ok(!kept.includes('明显低估'));
-assert.ok(kept.includes('尚未完成全部核验'));
+assert.match(kept,/仍待核实[^\n]*数值/);
 console.log('PASS annual series, grouped sources, missing metadata, price units, real conflicts, markdown, shares/EPS and coherent partial delivery');
 
 const share={...base,id:'shares',locator:'SOTP!H135',value:9258,metric:'Total shares outstanding (mn)',currency:'',period:'',display_unit:'百万股',raw_unit:'百万股'};
@@ -77,7 +77,7 @@ console.log('PASS parallel annual amounts inherit the explicitly shared trailing
 const {createCalcTool}=await import('../lib/calc-tool.mjs');
 const nav={...price,id:'nav',locator:'SOTP!J134',value:752};
 const dom={...price,id:'dom',locator:'SOTP!J8',value:219.2,metric:'Domestic Games'};
-const bound=await createCalcTool().execute('dom-ratio',{name:'国内游戏占比',expression:'dom/nav*100',outputUnit:'%',bindings:{nav,dom},precision:1});
+const bound=await createCalcTool().execute('dom-ratio',{name:'国内游戏占比',expression:'dom/nav*100',outputUnit:'%',ratioEncoding:'percentage_points',bindings:{nav,dom},precision:1});
 assert.ok(!bound.isError);
 const ratioContext={citations:[nav,dom,...bound.details.citations],toolCalls:[{id:'dom-ratio',name:'calc',success:true,result:bound}]};
 assert.deepEqual(financialEvidenceFindings('国内游戏占比29.1%（SOTP!J8）。',ratioContext,[]),[]);
@@ -137,7 +137,7 @@ const toolHistory=[{role:'user',content:'旧问题'},{role:'assistant',content:[
  {role:'assistant',content:[{type:'toolCall',id:'market',name:'westock_query',arguments:{code:'hk09992'}},{type:'toolCall',id:'fetch',name:'web_fetch',arguments:{url:'https://example.com/report'}}]},
  {role:'toolResult',toolCallId:'market',content:'现价140.4，日期2026-11-20'}, {role:'toolResult',toolCallId:'fetch',isError:true,content:'读取失败'},
  {role:'user',content:'内部重试',peInternal:true}];
-const recoveredTools=researchRecoveryToolEvidence(toolHistory);
+const recoveredTools=researchRecoveryToolEvidence(toolHistory).filter(row=>!row.metadataOnly);
 assert.equal(recoveredTools.length,2);assert.ok(recoveredTools[0].text.includes('140.4'));assert.equal(recoveredTools[1].isError,true);
 assert.ok(!JSON.stringify(recoveredTools).includes('旧数据'));
 console.log('PASS recovery retains current-turn external evidence and failures, excluding unconfirmed old sources');

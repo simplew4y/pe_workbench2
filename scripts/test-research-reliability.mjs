@@ -77,7 +77,7 @@ await test("审校连续失败时有限重试，草稿不会发布或入历史",
  const result=await guardResearchDelivery(()=>{n++;return stream(bad);},{audit:async()=>({ok:false,issues:failed.issues})})(
  {},{messages:[{role:"user",content:"检查估值"}]},{});
  const events=[];for await(const e of result)events.push(e);
- assert.equal(n,3);assert.doesNotMatch(JSON.stringify(events),/62%/);
+ assert.equal(n,2);assert.doesNotMatch(JSON.stringify(events),/62%/);
  assert.match((await result.result()).content[0].text,/尚缺推导依据/);
 });
 await test("非研究聊天保留普通流式输出",async()=>{

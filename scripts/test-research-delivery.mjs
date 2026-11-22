@@ -29,7 +29,7 @@ async function run(messages, second, first = text) {
   return {requests,events,final:await result.result()};
 }
 const rejected = await run(pending);
-assert.equal(rejected.requests,3);
+assert.equal(rejected.requests,2,'unchanged issues/evidence stop after one ineffective repair');
 assert.doesNotMatch(JSON.stringify(rejected.events),/999%/);
 assert.match(rejected.final.content[0].text,/尚未保存/);
 const repair = await run(pending,[text,...call("review_research","retry").content]);
@@ -88,7 +88,7 @@ for(const messages of [pending,capped]) {
  assert.equal(result.message.researchUsage.totalTokens,7);
 }
 const unsafe=await answerCase(capped,{draft:'无依据的结论已经完全证实',bad:true});
-assert.equal(unsafe.requests,3);assert.doesNotMatch(JSON.stringify(unsafe.events),/无依据的结论已经完全证实/);
+assert.equal(unsafe.requests,2);assert.doesNotMatch(JSON.stringify(unsafe.events),/无依据的结论已经完全证实/);
 assert.match(unsafe.message.content[0].text,/证据不足/);
 const stillCalls=await answerCase(capped,{tool:true});
 assert.equal(stillCalls.requests,2);assert.equal(stillCalls.message.stopReason,'error','noncompliant provider cannot be marked complete');
@@ -157,7 +157,7 @@ assert.equal(handoff.calls, 2);
 assert.equal(handoff.result.content[0].text, valid);
 const badSentence='良率低于62%必然失效。';
 const scoped=await scenario([valid+'\n\n'+badSentence],[{ok:false,issues:[{check:'threshold_provenance',excerpt:badSentence,reason:'缺少阈值推导依据，具体失效门槛无法确定。'}]}]);
-assert.equal(scoped.calls,3);assert.match(scoped.result.content[0].text,/应观察成交价/);assert.doesNotMatch(scoped.result.content[0].text,/62%必然/);
+assert.equal(scoped.calls,2);assert.match(scoped.result.content[0].text,/应观察成交价/);assert.doesNotMatch(scoped.result.content[0].text,/62%必然/);
 const saved=await scenario(['报告已保存。\n\n'+valid],[outage]);
 assert.match(saved.result.content[0].text,/应观察成交价/);assert.doesNotMatch(saved.result.content[0].text,/报告已保存/);
 for(const sentence of ['报告没有成功保存。','我将把报告保存到文件。','不能声称报告已保存。','报告未保存，下面直接回答。']) assert.deepEqual(answerIssues(sentence,{written:false,previousPartial:new Map()}),[],sentence);
@@ -344,13 +344,13 @@ const retry = guardResearchDelivery(() => {
 const normalized = () => ({ messages: originalMessages.map(m =>
   m.role === 'custom' ? { role: 'user', content: m.content } : m) });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 3, 'initial and two targeted repair attempts');
+assert.equal(callsInTurn, 2, 'initial and one ineffective repair; identical issue does not retry');
 originalMessages.push({ role: 'custom', customType: 'pe_answer_correct', content: '内部修订' });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 4, 'internal correction does not replenish the two research repairs');
+assert.equal(callsInTurn, 3, 'internal correction does not replenish an unchanged repair');
 originalMessages.push({ role: 'user', content: '请重新解读估值模型。' });
 await (await retry({}, normalized(), {})).result();
-assert.equal(callsInTurn, 7, 'new actual user turn restores the two repairs');
+assert.equal(callsInTurn, 5, 'new actual user turn restores the opportunity to repair');
 assert.deepEqual([...new Set(auditedQuestions)], [user.content, '请重新解读估值模型。']);
 const failedThenCorrected = [...pending, { role: 'custom', customType: 'pe_answer_correct', content: '再次回答' }];
 const guardedReceipt = guardResearchDelivery(scriptedProvider([reply('stop', valid), reply('stop', valid)]), {

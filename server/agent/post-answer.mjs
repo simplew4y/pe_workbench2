@@ -3,7 +3,8 @@ import {artifactDeliveryFindings,artifactDeliverySummary} from '../../lib/artifa
 import {applyPassageVerification} from '../../lib/passage-verification.mjs';
 import { historicalSourceCalls } from '../../lib/research-evidence-scope.mjs';
 import { calcFailureRecovery, recoveredUnitConversions } from '../../lib/tool-failure-recovery.mjs';
-import { researchRecoverySources } from '../../lib/research-delivery.mjs';
+import { researchRecoverySources, reviewedReportForAnswer } from '../../lib/research-delivery.mjs';
+import {repairFingerprint} from '../../lib/research-repair-progress.mjs';
 import { findingKey } from '../../lib/evidence-reconciliation.mjs';
 import { isResearchQuestion, isScenarioOnlyQuestion, researchExecutionGaps } from '../../lib/research-task.mjs';
 import { asLegacyFact, lintFactIdentity } from '../../lib/fact-memory/context.mjs';
@@ -29,7 +30,7 @@ import { calculateUserScenario, scenarioInterpretationFindings } from '../../lib
 import { answerCharCount, answerLengthHint, missingCompactItems, questionWithoutAttachments, requestedAnswerLength, requestedCompactItems } from '../../lib/answer-length.mjs';
 import { readCitedPdfReports } from './pdf-period-evidence.mjs';
 import { appendDisclosure, prepareDisclosureAnswer, preparePdfDisclosure } from './pdf-disclosures.mjs';
-import { scenarioDirectionFindings } from '../../lib/financial-evidence.mjs';
+import { citedReportConflicts, scenarioDirectionFindings } from '../../lib/financial-evidence.mjs';
 import { composeResearchAnswer, distinctEditableText, requestsEvidenceLimits } from '../../lib/answer-composition.mjs';
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
@@ -388,6 +389,20 @@ async function generateAnswer(entry, promptText, options, active) {
       }
       const turnCitations = rehydrateCitations({register:refreshedLedger,answer,thisTurnCitations,currentVersions,toolCalls:calls});
       entry.citationIndex = turnCitations;
+      if (message.researchReportHash && entry.publishReportDelivery && !calculation && !pdfDisclosure && !length && !requiredSections?.length) {
+        const draft=reviewedReportForAnswer(text,entry.reportDraftSnapshot?.(),entry.artifactSnapshot?.() || [],messages);
+        if(draft && draft.reviewedHash===message.researchReportHash && joined===draft.content &&
+            !artifactDeliveryFindings(joined,entry.artifactSnapshot()).length &&
+            !missingSummaryItems(joined,requestedItems).length && !researchExecutionGaps(text,calls).length &&
+            thisTurnCitations.every(c=>currentCitation(c,currentVersions)) &&
+            !citedReportConflicts(joined,{question:text,citations:turnCitations,currentVersions,toolCalls:calls}).length &&
+            !lintFactIdentity(joined,entry.ctx?.factMemory,{question:text,citations:thisTurnCitations}).some(blockingFinding) &&
+            !accountingReasoningIssues(joined,{question:text,sourceQuestions:[...priorQuestions,text]}).length) {
+          const citations=adoptedCitations(joined,turnCitations);
+          recordLint({turnId,question:text,reportHash:draft.reviewedHash,verification:'reviewed_report',findings:[],citations});
+          return {status:'completed',text:joined,citations,reviewedReportHash:draft.reviewedHash};
+        }
+      }
       const pdfReports = await readCitedPdfReports(entry.ctx, active.attachments, calls, answer);
       const lintContext = { ...baseLintContext, question:text, scenarioOnly, citations: turnCitations, toolCalls: calls, sourceCalls: historicalSourceCalls(entry.session.messages.slice(0,turnBoundary),text), currentVersions, pdfReports, pdfDisclosure, calculation, ...(priorCitations.length ? { priorCitations } : {}) };
       const workbookReads = calls.filter(call => call.name === 'workbook_query' || call.name === 'workbook_trace');
@@ -711,8 +726,7 @@ async function generateAnswer(entry, promptText, options, active) {
         prompt = ['上一条回答在句中截断，请从断点继续补完，不要重复已写内容。补齐该判断的理由及余下问项。', lengthHint, calculationHint].filter(Boolean).join('\n');
       }
       if(customType==='pe_answer_correct' || customType==='pe_answer_recover') {
-        const fingerprint=JSON.stringify({answer,findings:blocking.map(f=>[f.rule,f.field,f.excerpt,f.expected]),
-          evidence:calls.map(c=>[c.id,c.success]),toolGap});
+        const fingerprint=repairFingerprint([...blocking,...(toolGap?[{rule:'tool_gap',reason:toolGap}]:[])],calls);
         if(attemptedRepairs.has(fingerprint))return interrupted('同一答稿与证据的核验问题未发生变化，保留可交付部分，停止重复改写。');
         attemptedRepairs.add(fingerprint);
       }

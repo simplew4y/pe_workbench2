@@ -510,11 +510,13 @@ function handleServerEvent(ev) {
         tool.detail = ev.detail || tool.detail;
         tool.output = ev.output || '';
         if (Array.isArray(ev.citations)) tool.citations = ev.citations;
+        if (ev.validation) tool.validation = ev.validation;
         if (ev.presentation) tool.presentation = ev.presentation;
         if (ev.presentationError) tool.presentationError = ev.presentationError;
       } else {
         state.live.tools.push({
           id: ev.id, name: ev.name, detail: ev.detail, status: ev.status, output: ev.output || '',
+          ...(ev.validation ? { validation:ev.validation } : {}),
           ...(Array.isArray(ev.citations) && ev.citations.length ? { citations: ev.citations } : {}),
           ...(ev.presentation ? { presentation: ev.presentation } : {}),
           ...(ev.presentationError ? { presentationError: ev.presentationError } : {}),

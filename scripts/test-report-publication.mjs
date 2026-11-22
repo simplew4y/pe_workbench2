@@ -19,7 +19,7 @@ try {
  const result=review.publishDelivery(outcome,'分析公司并保存报告到'+target);
  assert.equal(result.status,'partial');assert.equal(result.reportPublication.saved,true);
  const body=fs.readFileSync(path.join(root,target),'utf8');
- assert.match(body,/部分完成/);assert.match(body,/## 观察方法/);assert.doesNotMatch(body,/999|文件尚未保存/);
+ assert.doesNotMatch(body,/^> 部分完成/);assert.match(body,/## 观察方法/);assert.doesNotMatch(body,/999|文件尚未保存/);
  assert.equal(crypto.createHash('sha256').update(body).digest('hex'),result.reportPublication.sha256);
  assert.equal(review.artifactSnapshot()[0].saved,true);
  assert.equal(review.artifactSnapshot()[0].researchStatus,'partial');

@@ -162,7 +162,10 @@ description: 从既有估值模型或研究材料形成七节投资框架，并�
 
 ### 7. 组装、校验、交付
 
+交付入口：报告使用 `review_research(path, content, file, save=true)`，通过后自动保存，不再重复 write。普通 write 写报告也由宿主路由到同一审校入口，不表示绕过审校。状态 JSON 的 write 回执若已包含完整 `stateValidation`，按该回执修正；同一内容无需重复 validate_state。旧环境没有该回执时，再调用 validate_state。只有内容更新后才重新校验。
+
 1. 把状态映射成七节报告，正文引用 ID（`T1`、`S2`、`F3`），不复制整段 JSON。
+   首次创建状态前调用 `validate_state({action:"template"})` 获取宿主模板和枚举，填入内容，不凭记忆重造字段。已有状态保留原字段。阈值与来源缺失时明确待核，不自动发明值或升级 armed。
 2. 校验（优先专用工具，不要因为“没有 bash”跳过）：
    - **有 `validate_state` 工具时（必须调用）**：`validate_state({ "path": "<analysis-state.json 项目内相对路径>" })`，读取返回的 `errors` / `warnings`；它与本 skill 的 `scripts/validate_state.mjs` 共用同一套规则，不需要 bash 或 child_process。
    - 没有该工具、但会话有 bash 时：`node <本 skill 目录>/scripts/validate_state.mjs <analysis-state.json>`（技能加载时会给出目录）。

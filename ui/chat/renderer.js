@@ -160,10 +160,11 @@ function renderMarkdownHTML(text, relPath = '', highlightBudget = { remaining: 4
 }
 
 function toolRowHTML(tool) {
-  const status = tool.status === 'running' ? '运行中' : tool.status === 'error' ? '失败' : '完成';
-  const glyph = tool.status === 'running' ? 'refresh' : tool.status === 'error' ? 'x' : 'check';
+  const needsReview=tool.status==='done' && tool.validation?.passed===false;
+  const status = tool.status === 'running' ? '运行中' : tool.status === 'error' ? '失败' : needsReview ? (tool.name==='write'?'已保存 · 校验未通过':'校验未通过') : '完成';
+  const glyph = tool.status === 'running' ? 'refresh' : tool.status === 'error' || needsReview ? 'x' : 'check';
   const card = renderToolPresentation(tool);
-  return `<div class="tool-row ${tool.status || 'done'}">
+  return `<div class="tool-row ${tool.status || 'done'}${needsReview?' validation-pending':''}">
       ${icon(glyph, 12)}
       <span class="tool-name">${esc(toolLabel(tool.name))}</span>
       ${tool.detail ? `<span class="tool-detail">${esc(tool.detail)}</span>` : ''}
@@ -175,7 +176,7 @@ function toolGroupHTML(tools = [], { live = false, processText = '', highlightBu
   if (!tools.length && !processText) return '';
   const errors = tools.filter(tool => tool.status === 'error').length;
   const label = live ? liveStatusText() : (tools.length ? `过程 · ${tools.length} 个工具调用` : '过程');
-  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : settled ? '已结束' : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : '已完成'));
+  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : settled ? '已结束' : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : tools.some(t=>t.validation?.passed===false) ? '已结束' : '已完成'));
   const status = live ? ' id="liveStatus" aria-live="polite"' : '';
   return `<details class="tool-group"${open ? ' open' : ''}>
       <summary class="tool-summary">

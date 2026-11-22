@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {financialEvidenceFindings} from '../lib/financial-evidence.mjs';
+import {financialEvidenceFindings,citedReportConflicts} from '../lib/financial-evidence.mjs';
 import {collectCitationsFromToolCalls,derivedCitation} from '../lib/citations.mjs';
 import {enrichFinancialSources} from '../lib/financial-source-identity.mjs';
-import {guardResearchDelivery} from '../lib/research-delivery.mjs';
+import {createHash} from 'node:crypto';
+import {guardResearchDelivery,reviewedReportForAnswer} from '../lib/research-delivery.mjs';
 import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
 import {researchPortion} from '../server/agent/answer-delivery.mjs';
 import {runWithPostAnswer} from '../server/agent/post-answer.mjs';
@@ -17,6 +18,84 @@ function calc(name,value,unit,sources) {
   result.citations=derivedCitation(result,sources,{toolCallId:name,role:'derived_calc_0'});
   return {id:name,name:'calc',success:true,result:{details:{results:[result],citations:result.citations}}};
 }
+test('spot quotes survive handoff next to cited model prices and reject stale, peer, or wrong-currency prices',()=>{
+  const model=cell('Prices!B1',90,'元/股','目标价',{currency:'HKD'}),stale={...model,id:'old',locator:'Prices!B2',metric:'股价',value:63};
+  const quote=(id,name,ticker,value,date)=>({id,name:'westock_query',success:true,args:{args:['quote',ticker],expectedName:name},
+    result:{content:[{type:'text',text:[ '| code | name | price_currency | price | time |','| --- | --- | --- | --- | --- |',
+      `| ${ticker} | ${name} | HKD | ${value} | ${date} |`].join('\n')}]}});
+  const toolCalls=[quote('market','示例控股','hk01234',54,'2026-10-15'),quote('stale','示例控股','hk01234',63,'2026-10-14'),quote('peer','乙公司','hk05678',72,'2026-10-15')];
+  const bindings=[],ctx={citations:[model,stale],toolCalls,onVerifiedQuantity:b=>bindings.push(b)};
+  const report='# 示例控股 投资框架\n\n模型目标价90港元（[输入.xlsx]Prices!B1），现价54港元。';
+  assert.deepEqual(citedReportConflicts(report,ctx),[]);
+  assert.ok(bindings.some(b=>b.valueText==='54' && b.sourceIds.includes('tool:market:price')));
+  for(const price of ['63港元','72港元','54美元'])
+    assert.ok(financialEvidenceFindings(report.replace('54港元',price),ctx,[]).some(f=>f.claim?.value===price.slice(0,2) && f.severity==='error'));
+});
+
+test('a price transition binds both endpoints and the same row of joint assumptions',()=>{
+  const price=cell('Equity!C3',160,'港元/股','NAV',{currency:'HKD',sha256:'revision'});
+  const inputs=[cell('Equity!D1',9,'倍','生产'),cell('Equity!D2',10,'倍','服务'),cell('Equity!D3',-0.1,'decimal','控股折价')];
+  const scenario={name:'model_whatif',id:'uniform-trial',success:true,details:{path:'uploads/input.xlsx',sourceSha256:price.sha256,recalculated:true,
+    inputs:inputs.map((c,i)=>({cell:c.locator,value:[7,7,-0.2][i]})),results:[{cell:price.locator,before:160,after:112}]}};
+  const table='| 扰动 | 结果 | 对目标价 |\n|---|---|---|\n| 两项 7 倍 + 折价 20% | 160→112 | -30% |';
+  const verified=[],context={citations:[price,...inputs],toolCalls:[scenario],onVerifiedQuantity:b=>verified.push(b)};
+  assert.deepEqual(citedReportConflicts(table,context),[]);
+  assert.ok(verified.some(b=>b.valueText==='112' && b.sourceIds.includes(scenario.id)));
+  for(const [a,b] of [['160→','150→'],['→112','→48'],['7 倍','8 倍'],['20%','22%']])
+    assert.ok(citedReportConflicts(table.replace(a,b),context).length);
+  assert.ok(citedReportConflicts(table,{...context,toolCalls:[{...scenario,success:false}]}).length);
+});
+
+test('a cited revenue level supplies the numerator of its own annual growth',()=>{
+  const level=cell('Income!C8',125,'百万元','收入',{period:'2025E'}),prior={...level,id:'prev',locator:'Income!B8',value:100,period:'2024A'};
+  const unrelated={...prior,id:'other',locator:'Income!B7',metric:'成本',value:110};
+  const text='模型收入 125 原表缓存值 （[输入.xlsx]Income!C8） 百万元，同比 +25%。';
+  const bindings=[],context={citations:[level,prior,unrelated],onVerifiedQuantity:b=>bindings.push(b)};
+  assert.deepEqual(citedReportConflicts(text,context),[]);
+  assert.ok(bindings.some(b=>b.valueText==='+25' && b.sourceIds.includes(prior.id)));
+  assert.ok(citedReportConflicts(text.replace('+25','+20'),context).some(f=>f.expected==='25'));
+});
+
+test('joint recalculations require the matching inputs, currency, result, and workbook revision',()=>{
+  const price=cell('V!C3',160,'元/股','NAV',{currency:'HKD',sha256:'sample-revision'});
+  const inputs=[cell('V!A1',8,'倍','生产'),cell('V!A2',9,'倍','服务')];
+  const details={path:'uploads/input.xlsx',sourceSha256:price.sha256,recalculated:true,
+    inputs:inputs.map((c,i)=>({cell:c.locator,value:5+i})),results:[{cell:price.locator,before:160,after:121}]};
+  const call={name:'model_whatif',id:'trial',success:true,details};
+  const text='按5/6倍重算为121港元。两项同调的结果是121港元。';
+  const check=(body,executions=[call],sources=[price,...inputs])=>errors(body,sources,executions).filter(f=>f.claim?.value==='121');
+  assert.deepEqual(check(text),[]);assert.deepEqual(check(text,[call,{...call,id:'repeat'}]),[]);
+  for(const bad of [text.replace('5/6','6/5'),text.replaceAll('港元','美元'),'两项同调的结果是121港元。','原模型基准为121港元。'])assert.ok(check(bad).length,bad);
+  for(const altered of [{...call,success:false},{...call,details:{...details,sourceSha256:'other'}},
+    {...call,details:{...details,results:[{cell:price.locator,before:99,after:121}]}}])assert.ok(check(text,[altered]).length);
+  assert.ok(check(text,[call,{...call,id:'conflicting',details:{...details,results:[{cell:price.locator,before:160,after:110}]}}]).length);
+  assert.ok(citedReportConflicts('模型目标价999港元（[输入.xlsx]V!C3）。',{citations:[price],toolCalls:[call]}).length);
+  assert.deepEqual(citedReportConflicts('模型目标价160港元（[输入.xlsx]V!C3）。',{citations:[price],toolCalls:[call]}),[]);
+  const cash=cell('V!B1',500,'百万元','收入',{currency:'CNY',sha256:price.sha256});
+  const margins=['P!A1','P!A2'].map(ref=>cell(ref,0.12,'decimal','利润率'));
+  const result=financialEvidenceFindings('按5/6%重算为590百万元。',{citations:[cash,...margins],toolCalls:[{...call,details:{...details,
+    inputs:margins.map((m,i)=>({cell:m.locator,value:(5+i)/100})),results:[{cell:cash.locator,before:500,after:590}]}}]},[]);
+  assert.ok(!result.some(f=>f.claim?.value==='590' && f.severity==='error'));
+});
+
+test('the report handoff requires this turn and both current saved revisions',()=>{
+  const path='exports/demo/report.md',state='exports/demo/analysis-state.json',content='经过审校的研究报告。';
+  const hash=createHash('sha256').update(content).digest('hex'),question='保存报告到 '+path+'，将观点写入 '+state+'。';
+  const draft={path,content,saved:true,saveRequested:true,issues:[],reviewedHash:hash,stateBinding:{reportHash:hash,stateHash:'state'}};
+  const files=[{path,saved:true,sha256:hash},{path:state,saved:true,sha256:'state'}];
+  const history=[{role:'user',content:question},{role:'assistant',content:[{type:'toolCall',id:'save',name:'review_research',arguments:{path}}]},
+    {role:'toolResult',toolCallId:'save',isError:false,content:[{type:'text',text:'[research_write_verified] '+path+' sha256='+hash}]}];
+  const approved=(q=question,d=draft,f=files,m=history)=>reviewedReportForAnswer(q,d,f,m);
+  assert.equal(approved(),draft);
+  assert.equal(approved('保存研究报告，并生成状态文件。'),draft);
+  assert.equal(approved(question+'另写 exports/demo/other.md。'),null);
+  assert.equal(approved(question+'聊天仅给摘要。'),null);
+  for(const patch of [{content:content+'新增结论'},{saved:false},{issues:['未解决']},{reviewedHash:null}])assert.equal(approved(question,{...draft,...patch}),null);
+  assert.equal(approved(question,draft,[files[0],{...files[1],sha256:'changed'}]),null);
+  assert.equal(approved(question,draft,files,[...history,{role:'user',content:question}]),null);
+  assert.equal(approved(question,draft,files,[...history,{role:'toolResult',toolCallId:'new'}]),null);
+});
+
 test('NAV total and per-share values use units, and cannot replace one another',()=>{
   const total=cell('S!A1',1200,'百万元','NAV (pre holdco discount)',{currency:'CNY'});
   const price=cell('S!A2',30,'元/股','NAV',{currency:'HKD'});

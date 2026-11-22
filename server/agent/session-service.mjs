@@ -9,9 +9,11 @@ import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/to
  * handlers only parse HTTP input and call these methods.
  */
 
-import {auditResearch} from "../../lib/research-audit.mjs";
+import {createResearchAuditor} from "../../lib/research-audit.mjs";
 import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
+import {publishReportWithMaterials} from './report-materials.mjs';
 import {createResearchReview} from "../../lib/research-review.mjs";
+import {createResearchWriteTool} from '../../lib/research-write-tool.mjs';
 import fs from "node:fs";
 import {readLedger} from "../../lib/ledger.mjs";
 import {createLedgerTool} from "../../lib/ledger-tool.mjs";
@@ -20,6 +22,7 @@ import path from "node:path";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  createWriteToolDefinition,
   DefaultResourceLoader,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -183,7 +186,9 @@ export function createSessionService({
         tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
         customTools: ctx.tools
           .map(tool => withFactCapture(tool, ctx.factMemory, metadata))
-          .concat(researchReview.tool, sessionTools, createFrameworkEditTool(ctx.root, () => entry?.activeTurn)),
+          .concat(researchReview.tool, sessionTools, createFrameworkEditTool(ctx.root, () => entry?.activeTurn),
+            createResearchWriteTool({rawWrite:createWriteToolDefinition(ctx.root),review:researchReview,
+              authorizeWrite:args=>blockOutsideProject(ctx,'write',args) ?? blockOutsideWriteRoots(ctx,'write',args,writeRoots)})),
       });
       session = created.session;
       const stream = session.agent.streamFunction;
@@ -214,6 +219,7 @@ export function createSessionService({
       researchReview.restoreEvidence(session.messages);
       // Use the configured provider for review and repair requests as well as chat.
       const provider = guardToolProtocol(session.agent.streamFunction);
+      const auditResearch = createResearchAuditor();
       const recordAudit = record => {
         fs.appendFileSync(path.join(ctx.root, ".pi", "research-audit.jsonl"), JSON.stringify(record) + "\n");
       };
@@ -241,11 +247,12 @@ export function createSessionService({
           };
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
+              question:entry?.activeTurn?.question || '',
               ...extra, workbookEvidence: researchReview.evidenceSnapshot(),deliveredFiles:researchReview.artifactSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });
             return verdict;
-          });
+          },JSON.stringify([model.provider,model.id,options?.reasoning,options?.maxTokens]));
         },
       });
     }
@@ -253,7 +260,8 @@ export function createSessionService({
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
       if (outside) return outside;
-      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? researchReview.before(toolCall.name, args) ?? undefined;
+      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ??
+        (toolCall.name==='write' && !config.fakeAgent ? undefined : researchReview.before(toolCall.name, args)) ?? undefined;
     };
 
     const afterToolCall = session.agent.afterToolCall;
@@ -262,7 +270,7 @@ export function createSessionService({
       // do not establish project evidence or an editable file baseline.
       const externalRead = context.toolCall.name === "read" && typeof context.args?.path === "string"
         && !path.resolve(ctx.root, context.args.path).startsWith(path.resolve(ctx.root) + path.sep);
-      const review = externalRead ? undefined : researchReview.record(context);
+      const review = externalRead || context.result?.details?.researchWriteHandled ? undefined : researchReview.record(context);
       if (!review) return afterToolCall?.(context, signal);
       const result = { ...context.result, ...review };
       const normalized = await afterToolCall?.({ ...context, result, isError: review.isError ?? context.isError }, signal);
@@ -277,8 +285,9 @@ export function createSessionService({
     }
 
     entry = {
+      reportDraftSnapshot:researchReview.draftSnapshot,
       artifactSnapshot:researchReview.artifactSnapshot,
-      publishReportDelivery:researchReview.publishDelivery,
+      publishReportDelivery:(outcome,question)=>publishReportWithMaterials(researchReview.publishDelivery,onMaterialSaved,entry,outcome,question),
       id: session.sessionId,
       sessionTools,
       automated: Boolean(automated || writeRoots),

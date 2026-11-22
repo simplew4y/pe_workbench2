@@ -29,7 +29,9 @@ const timeline=[{role:'toolResult',toolCallId:'bad',isError:true,text:'fetch fai
  {role:'toolResult',toolCallId:'good',toolName:'web_fetch',isError:false,text:'Revenue 37 million'},
  {role:'toolResult',toolCallId:'large',isError:false,text:'前文'.repeat(90000)},
  {role:'user',text:'解释增长'}];
-const bounded=auditTimeline(timeline);assert(bounded.some(x=>x.toolCallId==='good'));assert(bounded.some(x=>x.toolCallId==='large' && x.truncated));
+const bounded=auditTimeline(timeline);assert(bounded.some(x=>x.toolCallId==='good'));
+// An oversized indivisible block is omitted, not clipped into a false source.
+assert(!bounded.some(x=>x.toolCallId==='large'));
 const items=[{id:'bad',disposition:'replaced',evidenceIds:['good'],reason:'same document'},
  {id:'bad',disposition:'replaced',evidenceIds:['invented'],reason:'fake'},
  {id:'invented',disposition:'outside_scope',reason:'fake'}];

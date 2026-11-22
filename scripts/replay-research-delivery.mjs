@@ -35,10 +35,16 @@ const researchTurn=isResearchQuestion(question,priorMessages.filter(m=>m.role===
 const attachments=startedTurn?.attachments || persistedQuestion.split('\n\n[已上传资料]\n')[1]?.split('\n').filter(s=>s.startsWith('- ')).map(s=>s.slice(2)) || [];
 const calls=[],pending=new Map(),files=new Map(),recordedReceipts=new Map();
 const hash=s=>createHash('sha256').update(s).digest('hex');
+const snapshotBodies=new Map();
 const fileReceipts=()=>[...new Map([...files].map(([filename,content])=>[filename,hash(content)]).concat([...recordedReceipts])).entries()].flatMap(([filename,digest])=>{
+ if(!filename.startsWith('exports/') || filename.split('/').includes('..'))return [];
+ // Replay successful writes as recorded, before the host's final publication
+ // replaced the active state. Current project files may be a later version.
+ if(files.has(filename) && hash(files.get(filename))===digest){snapshotBodies.set(filename,files.get(filename));return [{path:filename,saved:true,sha256:digest}];}
  if(!projectRoot)return [];
  const dest=path.resolve(projectRoot,filename),exportsRoot=path.resolve(projectRoot,'exports')+path.sep;
- return dest.startsWith(exportsRoot) && fs.existsSync(dest) && hash(fs.readFileSync(dest))===digest?[{path:filename,saved:true,sha256:digest}]:[];
+ if(dest.startsWith(exportsRoot) && fs.existsSync(dest) && hash(fs.readFileSync(dest))===digest){snapshotBodies.set(filename,fs.readFileSync(dest));return [{path:filename,saved:true,sha256:digest}];}
+ return [];
 });
 fs.mkdirSync(output,{recursive:true});
 let draft='',draftMessage,index=0;const results=[],draftMessages=[],lintRecords=[];
@@ -64,7 +70,10 @@ for(const row of rows) {
  if(row.message?.role==='assistant' && row.message.stopReason==='stop'){draft=text(row.message);draftMessage=row.message;}
  if(row.customType!=='pe_answer_lint')continue;
  draftMessages.push(draftMessage);lintRecords.push(row.data);
- const citations=row.data.citations || [],context={question,citations,toolCalls:calls};
+ const scenarioBindings=[];
+ const citations=row.data.citations || [],context={question,citations,toolCalls:calls,onVerifiedQuantity:binding=>{
+   if(binding.sourceIds?.some(id=>calls.some(c=>c.id===id && c.name==='model_whatif')))scenarioBindings.push(binding);
+ }};
  const started=performance.now();const findings=lintLedgerAnswer(draft,{facts:[]},{...context,locatorFindings:row.data.findings});
  const summary=Object.fromEntries([...new Set(findings.map(f=>f.evidenceStatus))].map(key=>[key,findings.filter(f=>f.evidenceStatus===key && f.severity==='error').length]));
  const receipts=new Map((row.data.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
@@ -78,7 +87,7 @@ for(const row of rows) {
  assert.equal(leaked.length,0,JSON.stringify(leaked.map(f=>({rule:f.rule,excerpt:f.excerpt})),null,2));
  const delivery=artifactDeliverySummary(artifacts);
  if(delivery)retained+='\n\n'+delivery;
- const result={index:++index,diagnosticRoute:researchTurn?'research':'skipped_lookup',draftChars:draft.length,retainedChars:retained.length,elapsedMs:performance.now()-started,toolCalls:calls.length,files:artifacts,blockedSpanLeaks:leaked.length,summary,findings:merged,recordedFindings:row.data.findings};
+ const result={index:++index,diagnosticRoute:researchTurn?'research':'skipped_lookup',draftChars:draft.length,retainedChars:retained.length,scenarioBindings,elapsedMs:performance.now()-started,toolCalls:calls.length,files:artifacts,blockedSpanLeaks:leaked.length,summary,findings:merged,recordedFindings:row.data.findings};
  fs.writeFileSync(path.join(output,`draft-${index}.md`),draft);
  fs.writeFileSync(path.join(output,`retained-${index}.md`),retained);
  fs.writeFileSync(path.join(output,`draft-${index}.json`),JSON.stringify(result,null,2));
@@ -112,11 +121,11 @@ const published=[];
 const finalReceipts=()=>[...new Map([...fileReceipts(),...published].map(r=>[r.path,r])).values()];
 for(const receipt of fileReceipts()) {
  const destination=path.join(replayRoot,receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
- fs.copyFileSync(path.join(projectRoot,receipt.path),destination);
+ fs.writeFileSync(destination,snapshotBodies.get(receipt.path));
 }
-const lastReport=calls.findLast(c=>c.name==='review_research' && c.args?.save && c.args.path?.endsWith('.md'));
+const lastReport=calls.findLast(c=>(c.name==='review_research' && c.args?.save || c.name==='write') && c.args?.path?.startsWith('exports/') && c.args.path.endsWith('.md'));
 const reportDraft=lastReport ? {path:lastReport.args.path,content:lastReport.args.content,saveRequested:true,saved:false,baseline:
- projectRoot && fs.existsSync(path.join(projectRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(projectRoot,lastReport.args.path))) : null,
+ fs.existsSync(path.join(replayRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(replayRoot,lastReport.args.path))) : null,
  issues:lastReport.success?[]:['录制的报告审校未通过']} : null;
 let deliveryRecord;
 try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artifactSnapshot:finalReceipts,
