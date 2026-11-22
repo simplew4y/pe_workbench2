@@ -193,6 +193,9 @@ export async function handleTracking({ req, res, url, app, ctx }) {
     if (action === "bindings" && req.method === "POST") {
       const body = await readJson(req);
       let selected;
+      if (Object.hasOwn(body, "actuals") && !body.disclosureFile) {
+        return json(res, 400, { error: "变更披露映射需要同时确认公告及其版本" });
+      }
       if (body.disclosureFile) {
         selected = await disclosureInventory(ctx, body.disclosureFile);
         if (!selected.facts.length || selected.issues.length || selected.sha256 !== body.disclosureSha256) {

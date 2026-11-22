@@ -30,6 +30,81 @@ LABELS = {
 }
 
 
+def unit_key(text):
+    value = re.sub(r"[\s(),’']", "", str(text).casefold())
+    aliases = {"rmbinmillions": "cny mn", "rmbmillion": "cny mn", "rmbmn": "cny mn",
+               "cnymn": "cny mn", "人民币百万元": "cny mn", "百万元人民币": "cny mn",
+               "rmb/share": "cny/share", "cny/share": "cny/share"}
+    return aliases.get(value, value)
+
+
+def exact_rows(book, inventory):
+    """Match one named row, its units and a period in the same header band."""
+    candidates = defaultdict(list)
+    by_label = defaultdict(list)
+    for fact in inventory:
+        by_label[fact["metric"].casefold()].append(fact)
+    for ws in book:
+        header = {}
+        header_units = []
+        for number, cells in enumerate(ws.iter_rows(), 1):
+            row = [c.value for c in cells]
+            band = period_band(number, row)
+            # A financial amount can equal a calendar year. Require a coherent
+            # axis, with no data values/formulas interleaved among its periods.
+            explicit = any(isinstance(row[c-1], str) and re.search(r"FY|Q|[AE]$", row[c-1], re.I)
+                           for c in band)
+            # Plain years are indistinguishable from amounts on a metric row.
+            # Only accept a bare-year axis under headings / unit labels.
+            heading_only = band and all(v is None or re.fullmatch(
+                r"metric|item|unit|year|年度|科目|单位|(?:RMB|CNY|USD|HKD)\s+(?:mn|bn|m|million|billion)",
+                str(v).strip(), re.I) for v in row[:min(band)-1])
+            if (band and (explicit or (len(band) > 1 and heading_only))
+                    and all(v is None or j in band for j, v in enumerate(row[min(band)-1:], min(band)))):
+                header = band
+                header_units = [v for v in row[:min(band)-1] if isinstance(v, str)]
+                continue
+            for label in row_text_labels(row[:min(header)-1] if header else ()):
+                for fact in by_label.get(label.casefold(), []):
+                    for col, (head, token, _) in header.items():
+                        period = token.upper().rstrip("AE").removeprefix("FY")
+                        if period != fact["period"].removeprefix("FY"):
+                            continue
+                        prefix = [v for v in row[:min(header)-1] if isinstance(v, str) and v != label]
+                        units = prefix or header_units
+                        if unit_key(fact["unit"]) not in {unit_key(v) for v in units}:
+                            continue
+                        siblings = [c for c, (_, name, _) in header.items()
+                                    if ("Q" in token.upper()) == ("Q" in name.upper())]
+                        if all(row[c-1] is None for c in siblings):
+                            continue
+                        format_codes = re.sub(r'"[^"]*"|\\.|_.|\*.', "", cells[col-1].number_format)
+                        sections = format_codes.split(";")[:3]
+                        scales = {"%" in section for section in sections if section}
+                        if len(scales) > 1 or any(section.count("%") > 1 for section in sections):
+                            continue
+                        percent = scales == {True}
+                        if percent and fact["unit"] not in ("%", "％"):
+                            continue
+                        scale = 0.01 if percent else 1
+                        letter = get_column_letter(col)
+                        candidates[(fact["metric"], fact["period"])].append(dict(
+                            sheet=ws.title, cell=letter+str(number), header=letter+str(head),
+                            metric=fact["metric"], period=fact["period"], unit=fact["unit"],
+                            expected=fact["expected"] * scale, decimals=fact["decimals"] + (2 if percent else 0),
+                            **({"storageScale": scale} if percent else {}),
+                            source=fact["source"]+"#page="+str(fact["page"]),
+                            mode="check" if str(row[col-1]).startswith("=") else "actual"))
+    mapped, gaps = [], []
+    for fact in inventory:
+        items = candidates[(fact["metric"], fact["period"])]
+        if len(items) == 1:
+            mapped.append(items[0])
+        else:
+            gaps.append(dict(fact, reason="科目、期间与目标单位缺少唯一匹配"))
+    return mapped, gaps, []
+
+
 def mapped_inventory(book, inventory):
     # Look for the consolidated statement and a coherent set of RMB EPS labels.
     sheets = []
@@ -40,7 +115,7 @@ def mapped_inventory(book, inventory):
                 break
     mapped, gaps = [], []
     if len(sheets) != 1:
-        return [], [dict(f, reason="Income statement missing or ambiguous") for f in inventory], []
+        return exact_rows(book, inventory)
     ws, header = sheets[0]
     rows = list(ws.iter_rows(max_row=min(ws.max_row, 500), max_col=min(ws.max_column, MAX_COLS), values_only=True))
     columns = defaultdict(list)
@@ -62,7 +137,7 @@ def mapped_inventory(book, inventory):
     for fact in inventory:
         p, key = fact["period"], fact["metric"]
         cols = columns[p.removeprefix("FY")]
-        matches = labels[LABELS.get(key)]
+        matches = labels[LABELS.get(key, key)]
         # A section title may repeat the total's text. A title with an entirely
         # empty period axis cannot be the reported numeric line.
         if key.startswith("Operating adjustment / "):
@@ -74,10 +149,24 @@ def mapped_inventory(book, inventory):
             continue
         col, row = cols[0], matches[0]
         letter = get_column_letter(col)
+        row_label = LABELS.get(key, key)
+        unit = unit_key(fact["unit"])
+        if unit == "cny/share":
+            unit_ok = "eps" in row_label.lower() and "(rmb)" in row_label.lower()
+        elif unit == unit_key("mn shares"):
+            unit_ok = "shares" in row_label.lower() and "(mn)" in row_label.lower()
+        else:
+            units = [s for line in rows[:header] for s in row_text_labels(line[:8])]
+            scope = [s for s in units if re.search(r"RMB|CNY|USD|HKD|EUR|million|billion|百万元|十亿", s, re.I)]
+            unit_ok = bool(scope) and all(unit_key(s) == unit for s in scope)
+        if not unit_ok:
+            gaps.append(dict(fact, reason="目标科目的币种或数量级无法确认"))
+            continue
         actual = dict(sheet=ws.title, cell=letter+str(row), header=letter+str(header),
                       metric=key, period=p, unit=fact["unit"], expected=fact["expected"],
                       decimals=fact["decimals"], source=fact["source"]+"#page="+str(fact["page"]),
-                      mode="check" if key in ("Operating profit", "Non-IFRS operating profit") else "actual")
+                      mode="check" if str(rows[row-1][col-1]).startswith("=") or key in
+                      ("Operating profit", "Non-IFRS operating profit") else "actual")
         mapped.append(actual)
     conversions = []
     required = ("Diluted EPS, GAAP (HK$)", "Rmb/US$, average",

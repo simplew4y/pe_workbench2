@@ -304,6 +304,7 @@ async function runPlan(ctx, planId) {
   let defaultStore = null;
   await (async () => {
     const manager = createProjectManager({
+      updateModel: (ctx, args, threadId) => tracking.updateModel(ctx, args, threadId),
       config,
       bus,
       broadcastMaterial,

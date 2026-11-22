@@ -38,6 +38,7 @@
     "test:evidence-retention": "node scripts/test-research-evidence-retention.mjs && node scripts/test-financial-claim-matching.mjs && node scripts/test-task-delivery-consistency.mjs",
     "test:report-publication": "node scripts/test-report-publication.mjs",
     "test:delivery-bundle": "node scripts/test-delivery-bundle.mjs",
+    "test:model-update": "node scripts/test-model-update.mjs",
     "test:model": "node scripts/test-model-writer.mjs",
     "test:tracking-tool": "node scripts/test-tracking-tool.mjs",
     "test:context-budget": "node scripts/test-context-budget.mjs && node scripts/test-transcript-search.mjs",

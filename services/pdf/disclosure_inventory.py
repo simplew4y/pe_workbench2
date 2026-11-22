@@ -2,7 +2,7 @@
 import re
 import subprocess
 from datetime import datetime
-from parse_pdf import open_pypdf
+from parse_pdf import open_pypdf, extract_tables
 
 
 NUMBER = r"(?:\(\d[\d,]*(?:\.\d+)?\)|-?\d[\d,]*(?:\.\d+)?|[–—])"
@@ -47,12 +47,21 @@ def parse_disclosure(text):
                 p = period(end, "months" in head[1].lower())
                 header = group[:row.start()]
                 nums = row[1].split()
-                fields = ["reported", "Share-based compensation", "Investee companies",
-                          "Amortisation of intangible assets", "Impairment provisions", "SSV & CPP"]
+                # Anchor each concept to its visual column. Tokens may span
+                # several header lines, so ordering by text reading order is unsafe.
+                anchors = {"Share-based": "Share-based compensation", "Investee": "Investee companies",
+                           "Amortisation": "Amortisation of intangible assets", "Impairment": "Impairment provisions",
+                           "SSV": "SSV & CPP", "Income tax": "Income tax effects"}
                 if re.search(r"\bOthers\b", header):
-                    fields.append("Others")
-                fields.extend(["Income tax effects", "non-IFRS"])
-                if (not all(word in header for word in ("Share-based", "Amortisation", "Impairment", "SSV", "CPP", "effects"))
+                    anchors["Others"] = "Others"
+                positions = []
+                for token, field in anchors.items():
+                    positions_for_field = [m.start() for line in header.splitlines()
+                                           for m in re.finditer(re.escape(token), line, re.I)]
+                    if len(positions_for_field) == 1:
+                        positions.append((positions_for_field[0], field))
+                fields = ["reported", *(field for _, field in sorted(positions)), "non-IFRS"]
+                if (len(positions) != len(anchors) or len({pos for pos, _ in positions}) != len(anchors)
                         or len(nums) != len(fields) or not all(re.fullmatch(NUMBER, n) for n in nums)):
                     issues.append(f"Unrecognized operating profit reconciliation: {p}, page {page}")
                     continue
@@ -146,6 +155,34 @@ def parse_disclosure(text):
     return list(facts.values()), list(dict.fromkeys(issues)), gaps
 
 
+def explicit_period_tables(path):
+    """Read explicitly labelled period and unit columns in ruled disclosures."""
+    facts, gaps = {}, []
+    for table in extract_tables(path, None, complete=True):
+        header, *rows = table["data"]
+        units = [i for i, label in enumerate(header) if label.casefold() in ("unit", "单位")]
+        if len(units) != 1 or header[0].casefold() not in ("metric", "item", "科目", "项目", "指标"):
+            continue
+        periods = [(i, label.upper()) for i, label in enumerate(header)
+                   if re.fullmatch(r"FY20\d{2}|[1-4]Q\d{2}", label, re.I)]
+        for col, period_name in periods:
+            for row in rows:
+                label = row[0] if row else ""
+                raw = row[col] if len(row) > col else ""
+                unit = row[units[0]] if len(row) > units[0] else ""
+                if not label or not unit or not re.fullmatch(NUMBER, raw) or raw in ("–", "—"):
+                    gaps.append(dict(period=period_name, metric=label or "未命名行", reason="缺少单位或数值"))
+                    continue
+                key = period_name, label
+                value = float(raw.replace(",", "").replace("(", "-").replace(")", ""))
+                fact = dict(period=period_name, metric=label, expected=value, unit=unit,
+                            decimals=len(raw.rstrip(")").partition(".")[2]), page=table["page"])
+                if key in facts and (facts[key]["expected"], facts[key]["unit"]) != (value, unit):
+                    return [], ["Conflicting disclosure rows: " + label], gaps
+                facts.setdefault(key, fact)
+    return list(facts.values()), [], gaps
+
+
 def read_disclosure(path):
     try:
         reader = open_pypdf(path)
@@ -154,6 +191,10 @@ def read_disclosure(path):
         # Older pypdf releases and some PDFs require the original layout reader.
         text = ""
     facts, issues, gaps = parse_disclosure(text)
+    if not facts:
+        structured = explicit_period_tables(path)
+        if structured[0] or structured[1]:
+            return structured
     if facts and (issues or not gaps):
         return facts, issues, gaps
     try:

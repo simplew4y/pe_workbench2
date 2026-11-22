@@ -6,6 +6,7 @@
  * runTracking/tick; tests can call them directly.
  */
 
+import { visibleMaterial } from "../../store.mjs";
 import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -21,7 +22,9 @@ import { computeNextCheck, decideAction } from "../../lib/monitoring.mjs";
 import { notifyDesktop } from "../../lib/desktop-notify.mjs";
 import { lastAssistantText } from "../agent/snapshot.mjs";
 import { TRACKING_RESULT } from "../../lib/contracts/tracking-result.mjs";
-import { disclosureInventory, mapDisclosure, auditDisclosure, disclosureVersionIssue, disclosureProposalIssues } from "../../lib/model-disclosure.mjs";
+import { disclosureInventory, mapDisclosure, auditDisclosure, disclosureVersionIssue, disclosureProposalIssues, sha256File } from "../../lib/model-disclosure.mjs";
+import { prepareWorkingModel } from "../../lib/model-writer.mjs";
+import { readCells } from "../../lib/calc-engine.mjs";
 import { normalizeActuals } from "../../lib/model-actuals.mjs";
 
 export function createTrackingService({
@@ -95,6 +98,7 @@ async function settleTrackingRun({
   stateMaterialId = null,
   stateBaseVersion = null,
   disclosure = null,
+  threadId = entry?.id || "",
 }) {
   const store = ctx.store;
   let pendingApproval = null;
@@ -235,6 +239,9 @@ async function settleTrackingRun({
       if (result.modelChanges.length && inventory.facts.length) {
         audit.issues.push(...disclosureProposalIssues(result.modelChanges, mapping.actuals));
       }
+      if (!result.modelChanges.length) {
+        result.deltas = Object.entries(audit.outputValues).map(([label, value]) => ({ label, from: String(value), to: String(value), note: "重算后读数", tone: "flat" }));
+      }
       blockDisclosureProposal = Boolean((inventory.source || inventory.candidates?.length || state?.model?.disclosure_file) &&
         (audit.issues.length || !mapping.actuals.length));
       const complete = audit.complete && !audit.issues.length;
@@ -309,7 +316,7 @@ async function settleTrackingRun({
           ctx,
           tracking,
           trackingRunId: runId,
-          threadId: entry?.id || "",
+          threadId,
           result,
           state,
           stateRel,
@@ -383,7 +390,7 @@ async function settleTrackingRun({
       confidence: result.decision?.confidence || null,
     });
     broadcastTracking(dto, ctx.id);
-    if (target) broadcastMaterial(target, ctx.id);
+    if (visibleMaterial(target)) broadcastMaterial(target, ctx.id);
 
     try {
       if (versionIncreased) {
@@ -870,6 +877,98 @@ async function writeTrackingState(ctx, relPath, state, { note = "模型绑定", 
   });
 }
 
+// A one-off update uses the same settlement, approval and file-version records
+// as a scheduled run. Preview is read-only; approval is always a separate UI action.
+const preparingUpdates = new Set();
+async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, outputs = [], tolerances }, threadId = "") {
+  const source = ctx.store.findMaterialByPath(modelPath);
+  if (source?.kind !== "input" || !/\.xlsx$/i.test(source.relPath)) throw new Error("请选择项目输入中的 xlsx 模型");
+  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2})$/.test(period)) throw new Error("请选择公告和具体披露期间，例如 3Q26");
+  const folder = path.posix.join("exports/model-updates", source.id);
+  const workingFile = path.posix.join(folder, "model/工作模型.xlsx");
+  const stateRel = path.posix.join(folder, "model/analysis-state.json");
+  const lock = ctx.id + "/" + source.id;
+  if (preparingUpdates.has(lock)) throw new Error("该工作模型正在准备提案");
+  preparingUpdates.add(lock);
+  try {
+    const working = ctx.store.findMaterialByPath(workingFile);
+    const book = working ? workingFile : source.relPath;
+    const state = working ? JSON.parse(await fsp.readFile(path.join(ctx.root, stateRel), "utf8"))
+      : { subject: { model_file: source.relPath }, model: {} };
+    const sourceSha = await sha256File(path.join(ctx.root, source.relPath));
+    if (state.model?.source_sha256 && state.model.source_sha256 !== sourceSha) throw new Error("原始模型版本已改变，请重新绑定工作副本");
+    if (state.subject?.model_file !== source.relPath) throw new Error("工作模型绑定的输入已变化");
+    tolerances ??= state.model?.check_tolerances || {};
+    const absolute = path.join(ctx.root, book);
+    const baseline = await sha256File(absolute);
+    const inventory = await disclosureInventory(ctx, disclosureFile);
+    inventory.facts = inventory.facts.filter(row => row.period === period);
+    inventory.sourceGaps = (inventory.sourceGaps || []).filter(row => row.period === period);
+    const mapping = await mapDisclosure(ctx, inventory, book);
+    const previousFormulas = await readCells(absolute, mapping.actuals.map(row => row.sheet + "!" + row.cell), { formulas: true });
+    mapping.outputs = outputs;
+    mapping.tolerances = tolerances;
+    const audit = await auditDisclosure(ctx, inventory, mapping, book, true);
+    const issues = [...inventory.issues];
+    if (baseline !== await sha256File(absolute)) throw new Error("预览期间模型版本已变化");
+    const id = crypto.createHash("sha256").update(JSON.stringify([ctx.id, source.id, sourceSha, baseline, inventory.sha256,
+      period, mapping.actuals, mapping.gaps, outputs, tolerances])).digest("hex");
+    const preview = { previewId: id, source: inventory.source, period, modelPath: book, rows: audit.rows.map(row => ({ ...row,
+        disclosedValue: row.expected / (row.storageScale || 1) })),
+      outputs: audit.outputValues, gaps: [...inventory.sourceGaps, ...mapping.gaps], issues: audit.issues, checks: audit.modelChecks };
+    if (!previewId) return preview;
+    if (previewId !== id) throw new Error("模型、公告或输出设置已变化，请重新预览");
+    if (issues.length || !audit.rows.length || audit.rows.length !== mapping.actuals.length) {
+      throw new Error(audit.issues.join("；") || "没有可核验的公告映射");
+    }
+    for (const [ref, tolerance] of Object.entries(tolerances)) {
+      if (!audit.modelChecks.some(check => check.ref === ref) || !Number.isFinite(tolerance) || tolerance < 0) {
+        throw new Error("无效的勾稽容差：" + ref);
+      }
+    }
+    const previous = working && ctx.store.findTrackingByTarget(working.id);
+    if (previous && (ctx.store.getTracking(previous.id).running ||
+        ctx.store.listApprovalRequests({ trackingId: previous.id }).some(a => ["applying","pending_approval","approved"].includes(a.status)))) {
+      throw new Error("已有运行或提案待处理，请先查看该模型的审批");
+    }
+    const actuals = mapping.actuals;
+    state.model = { ...state.model, working_file: workingFile, source_sha256: sourceSha, write_enabled: true,
+      disclosure_file: inventory.source, disclosure_sha256: inventory.sha256,
+      actuals, outputs, check_tolerances: tolerances,
+      bindings: actuals.filter(item => item.mode !== "check").map(({ metric, sheet, cell }) => ({ metric, sheet, cell, verified: true })) };
+    let material = working;
+    if (!material) {
+      await fsp.mkdir(path.dirname(path.join(ctx.root, stateRel)), { recursive: true });
+      const prepared = await prepareWorkingModel({ ctx, state, stateRel, privateBaseline: true, targetPath: path.posix.join(folder, "model.xlsx") });
+      material = prepared.material;
+    } else await writeTrackingState(ctx, stateRel, state);
+    if (await sha256File(path.join(ctx.root, workingFile)) !== baseline) throw new Error("工作模型基线不符，请重新预览");
+    const tracking = previous || ctx.store.createTracking({ targetId: material.id, templateId: "model", freq: "weekly", enabled: false });
+    const baseVersion = material.versions[0].v;
+    const run = ctx.store.startTrackingRun(tracking.id, { trigger: "manual", baseVersion });
+    const folderAbs = path.join(ctx.root, ".tracking", tracking.id, run.id);
+    const resultAbs = path.join(folderAbs, "result.json");
+    const inventoryPath = path.relative(ctx.root, path.join(folderAbs, "disclosure-inventory.json"));
+    try {
+      await fsp.mkdir(folderAbs, { recursive: true });
+      await fsp.writeFile(path.join(ctx.root, inventoryPath), JSON.stringify(inventory));
+      const modelChanges = audit.rows.filter(row => row.mode !== "check" && (!row.matched ||
+        (row.mode === "actual" && String(previousFormulas[row.ref]).startsWith("="))))
+        .map(row => ({ sheet: row.sheet, cell: row.cell, metric: row.metric, value: row.formula ?? row.expected, note: row.source }));
+      await fsp.writeFile(resultAbs, JSON.stringify({ status: modelChanges.length ? "needs_review" : "no_change",
+        modelChanges, modelOutputs: outputs, sources: [{ label: inventory.source }] }));
+      await settleTrackingRun({ ctx, trackingId: tracking.id, runId: run.id, run, targetId: material.id,
+        baseVersion, resultAbs, stateRel, threadId, disclosure: { book: workingFile, inventoryPath, inventory, mapping } });
+    } catch (error) {
+      ctx.store.finishTrackingRun(tracking.id, run.id, { status: "failed", message: error.message });
+      throw error;
+    }
+    const settled = ctx.store.getTrackingRun(run.id);
+    if (settled.status === "failed") throw new Error(settled.message);
+    return { trackingId: tracking.id, runId: run.id, result: JSON.parse(settled.result_json) };
+  } finally { preparingUpdates.delete(lock); }
+}
+
 async function runTracking(ctx, trackingId, {
   trigger = "manual",
   scheduledFor = null,
@@ -1080,6 +1179,7 @@ async function runTracking(ctx, trackingId, {
     runTracking,
     settleTrackingRun,
     readTrackingState,
+    updateModel,
     writeTrackingState,
     syncSourceBindings,
     pollSourceBinding,

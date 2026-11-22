@@ -956,6 +956,19 @@
           </div>
         </details>`
       : '';
+    const model = wb?.model;
+    const analysis = model?.analysis;
+    const number = value => value == null ? '缺少基准' : String(value);
+    const comparison = analysis?.comparisons.map(row => {
+      const kind = {actual: '本期原值与实际', forecast: '后续预测修订', output: '估值 / 指定输出'}[row.kind];
+      const trend = row.sameDirection == null ? '' : row.sameDirection ? '，趋势一致' : '，趋势不同';
+      const change = row.relative == null ? '' : `（${(row.relative * 100).toFixed(1)}%）`;
+      return `<li>${esc(kind)} · ${esc(row.metric)} ${esc(row.period || '')}（${esc(row.ref)}）：${esc(number(row.before))} → ${esc(number(row.after))} ${esc(row.unit || '')} ${esc(change + trend)}</li>`;
+    }).join('');
+    const checkRows = analysis?.checks.map(row =>
+      `<li>${esc(row.ref)}：${esc(number(row.before))} → ${esc(number(row.after))}（容差 ${esc(row.tolerance)}，${row.status === 'pass' ? '通过' : '原有问题'}）</li>`).join('');
+    const fileUrl = model?.materialId && model.version
+      ? `/api/materials/${encodeURIComponent(model.materialId)}/versions/${model.version}/file?download=1&project=${encodeURIComponent(t.projectId)}` : '';
     const writeback = wb
       ? `<section class="track-sec">
           <div class="track-sec-head"><h4>写回了什么</h4><span>${esc(wb.stats)}</span></div>
@@ -965,6 +978,9 @@
               <strong>${esc(wb.mode)}</strong>
             </div>
             <p>${esc(wb.note)}</p>
+            ${fileUrl ? `<a href="${esc(fileUrl)}">下载工作模型 v${esc(model.version)}</a>` : ''}
+            ${comparison ? `<h4>本次财报对模型的影响</h4><ul>${comparison}</ul>` : ''}
+            ${analysis ? `<details><summary>模型勾稽（${analysis.checks.length}）</summary>${checkRows ? `<ul>${checkRows}</ul>` : '未识别原生 Check 行'}</details>` : ''}
             ${wbChanges}
           </div>
         </section>`

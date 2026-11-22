@@ -1003,6 +1003,7 @@ function excelShell(manifest, f, v) {
         <button type="button" class="pv-btn pv-icon" data-xlsx-zoom="in" title="放大">${icon('zoom-in', 14)}</button>
         <span class="pv-spacer"></span>
         <span class="pv-stat">${formatInt(sheetCount)} 个工作表 · ${formatInt(stats.cellCount)} 个单元格</span>
+        ${f.kind === 'input' && /\.xlsx$/i.test(f.relPath) && v.v === latest(f)?.v ? `<button class="pv-btn" data-update-model="${esc(f.id)}">更新估值模型</button>` : ''}
         <a class="pv-btn pv-icon" href="${esc(versionFileUrl(f, v, true))}" title="下载原文件">${icon('download', 14)}</a>
         <button type="button" class="pv-btn pv-icon" data-preview-expand title="放大预览">${icon('maximize', 14)}</button>
       </div>
@@ -1702,6 +1703,15 @@ function togglePreviewExpanded(button) {
 function onPreviewClick(event) {
   const target = event.target;
 
+  const update = target.closest('[data-update-model]');
+  if (update) {
+    const model = fileById(update.dataset.updateModel);
+    if (model) {
+      closeFile(false);
+      window.NextActions?.updateModel(model);
+    }
+    return;
+  }
   const asrStart = target.closest('[data-asr-start]');
   if (asrStart) {
     void startAudioAsr(asrStart.dataset.asrStart === 'force');

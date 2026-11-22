@@ -341,7 +341,7 @@ def parse_with_pypdf(path):
     return pages, headings, scanned, "pypdf"
 
 
-def extract_tables(path, page_numbers):
+def extract_tables(path, page_numbers, complete=False):
     pdf = open_pdfplumber(path)
     tables = []
     try:
@@ -353,11 +353,13 @@ def extract_tables(path, page_numbers):
             try:
                 found = pdf.pages[number - 1].extract_tables() or []
             except Exception:
+                if complete:
+                    raise
                 found = []
             for table_index, rows in enumerate(found, start=1):
                 cleaned = []
-                for row in rows[:MAX_TABLE_ROWS]:
-                    cleaned.append([norm_text(cell).strip() if cell is not None else "" for cell in row[:MAX_TABLE_COLS]])
+                for row in (rows if complete else rows[:MAX_TABLE_ROWS]):
+                    cleaned.append([norm_text(cell).strip() if cell is not None else "" for cell in (row if complete else row[:MAX_TABLE_COLS])])
                 if not any(any(cell for cell in row) for row in cleaned):
                     continue
                 tables.append(
@@ -369,7 +371,7 @@ def extract_tables(path, page_numbers):
                         "data": cleaned,
                     }
                 )
-            if len(tables) >= 40:
+            if not complete and len(tables) >= 40:
                 break
     finally:
         try:

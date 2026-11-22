@@ -30,7 +30,7 @@ export function approvalsShelfHTML() {
   // Recently rejected/conflicted rows stay visible after a refresh so the
   // outcome is auditable. Applied rows are intentionally dropped.
   const decided = (state.approvals || [])
-    .filter((item) => ["rejected", "conflict", "failed"].includes(item.status))
+    .filter((item) => (["rejected", "conflict", "failed"].includes(item.status) || (item.status === "applied" && item.decision?.analysis)))
     .slice(0, 5);
   const items = [...pending, ...decided];
   if (!items.length) return "";

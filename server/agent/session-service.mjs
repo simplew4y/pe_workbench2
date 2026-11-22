@@ -1,5 +1,6 @@
 import { guardToolProtocol } from '../../lib/tool-call-protocol.mjs';
 import { reconcileEvidence, reviewEvidenceBindings } from '../../lib/evidence-reconciliation.mjs';
+import { createUpdateModelTool } from "../../lib/tracking-tool.mjs";
 import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/tools.mjs';
 /**
  * Session lifecycle and persistence.
@@ -160,6 +161,7 @@ export function createSessionService({
     const metadata=()=>({session_id:session?.sessionId || id || '',run_id:entry?.localRunId || '',turn:session?.messages?.filter(m=>m.role==='user'&&!m.peInternal&&!m.customType).length || 0,actor:automated||writeRoots?'automation':'agent'});
     const memoryTools=ctx.factMemory ? createFactMemoryTools({memory:ctx.factMemory,getMetadata:metadata}) : [];
     const sessionTools = automated || writeRoots ? memoryTools.filter(t=>t.name==='fact_query') : [
+      ...(ctx.updateModel ? [createUpdateModelTool(args => ctx.updateModel(args, metadata().session_id))] : []),
       ...memoryTools,
       createLedgerTool({ctx, getSessionId: () => session.sessionId,
         getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
