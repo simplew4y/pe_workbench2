@@ -10,6 +10,7 @@ from parse_workbook import MAX_COLS, period_band, row_text_labels
 
 # Keys are disclosure concepts. Aliases are model labels, never coordinates or values.
 LABELS = {
+    "Revenues": "Total revenues",
     "Gross profit": "Gross profit",
     "Operating profit": "Operating profit, GAAP, new def",
     "Non-IFRS operating profit": "Operating profit, non-GAAP, new def",
@@ -105,7 +106,7 @@ def exact_rows(book, inventory):
     return mapped, gaps, []
 
 
-def mapped_inventory(book, inventory):
+def mapped_inventory(book, inventory, edits=None, outputs=None):
     # Look for the consolidated statement and a coherent set of RMB EPS labels.
     sheets = []
     for ws in book.worksheets:
@@ -117,6 +118,14 @@ def mapped_inventory(book, inventory):
     if len(sheets) != 1:
         return exact_rows(book, inventory)
     ws, header = sheets[0]
+    tencent_source = bool(inventory) and all(f.get("issuer", {}).get("code") == "700" for f in inventory)
+    tencent_model = str(ws["B1"].value).strip().casefold() == "tencent"
+    if tencent_source != tencent_model:
+        return [], [dict(f, reason="腾讯模型与公告发行人未能核对") for f in inventory], []
+    tencent = tencent_source and tencent_model
+    if tencent and edits is not None and outputs is not None:
+        from tencent_mapping import map_tencent_statement
+        return map_tencent_statement(book, ws, header, inventory, edits, outputs)
     rows = list(ws.iter_rows(max_row=min(ws.max_row, 500), max_col=min(ws.max_column, MAX_COLS), values_only=True))
     columns = defaultdict(list)
     for col, (_, token, raw) in period_band(header, rows[header - 1]).items():
@@ -156,8 +165,9 @@ def mapped_inventory(book, inventory):
         elif unit == unit_key("mn shares"):
             unit_ok = "shares" in row_label.lower() and "(mn)" in row_label.lower()
         else:
-            units = [s for line in rows[:header] for s in row_text_labels(line[:8])]
-            scope = [s for s in units if re.search(r"RMB|CNY|USD|HKD|EUR|million|billion|百万元|十亿", s, re.I)]
+            units = [s for line in rows[:header+2] for s in row_text_labels(line[:8])]
+            scope = [re.sub(r"^Year to [^,]+,\s*", "", s, flags=re.I) for s in units
+                     if re.search(r"RMB|CNY|USD|HKD|EUR|million|billion|百万元|十亿", s, re.I)]
             unit_ok = bool(scope) and all(unit_key(s) == unit for s in scope)
         if not unit_ok:
             gaps.append(dict(fact, reason="目标科目的币种或数量级无法确认"))
@@ -227,7 +237,7 @@ if __name__ == "__main__":
                 values.close()
                 model.close()
         else:
-            mapped, gaps, conversions = mapped_inventory(workbook, inventory)
+            mapped, gaps, conversions = mapped_inventory(workbook, inventory, edits, outputs)
         print(json.dumps(dict(actuals=mapped, gaps=gaps, conversions=conversions, edits=edits, outputs=outputs)))
     finally:
         workbook.close()

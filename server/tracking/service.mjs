@@ -1,3 +1,4 @@
+import { modelUpdateState, trackingStatePath } from "../../lib/model-location.mjs";
 /**
  * Tracking / monitoring / source-polling domain service.
  *
@@ -192,6 +193,15 @@ async function settleTrackingRun({
     result.status = status;
     result.target.result_version = versionIncreased ? latestVersion : null;
     result.writeback.version = versionIncreased ? `v${latestVersion}` : "未产生新版本";
+    if (template.id === "model") {
+      result.writeback.plan_files = [];
+      for (const name of ["update-plan.json", "change-log.md"]) {
+        const relative = `.tracking/${trackingId}/${runId}/${name}`;
+        if ((await fsp.stat(path.join(ctx.root, relative)).catch(() => null))?.isFile()) {
+          result.writeback.plan_files.push(relative);
+        }
+      }
+    }
     if (backupRel) {
       result.writeback.backup = backupRel;
       const note = String(result.writeback.note || "");
@@ -845,8 +855,7 @@ function trackingWorkspaceFiles(ctx, target) {  const targetPath = target?.relPa
 async function readTrackingState(ctx, tracking) {
   const targetPath = tracking?.relPath || tracking?.targetPath || "";
   if (!targetPath) return { relPath: "", state: null, error: "目标文件路径为空" };
-  const dir = path.posix.dirname(targetPath);
-  const relPath = path.posix.join(dir, "analysis-state.json");
+  const relPath = trackingStatePath(ctx.root, tracking);
   const absolute = path.join(ctx.root, relPath);
   try {
     const raw = await fsp.readFile(absolute, "utf8");
@@ -856,6 +865,7 @@ async function readTrackingState(ctx, tracking) {
     return {
       relPath,
       state: null,
+      missing: error.code === "ENOENT",
       deliveryBlocked:!!deliveryBundleIssue(ctx.root,relPath,null),
       error: error.code === "ENOENT" ? `同目录没有 analysis-state.json（${relPath}）` : `无法读取状态文件：${error.message}`,
     };
@@ -886,7 +896,7 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
   if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})$/.test(period)) throw new Error("请选择公告和具体披露期间，例如 3Q26");
   const folder = path.posix.join("exports/model-updates", source.id);
   const workingFile = path.posix.join(folder, "model/工作模型.xlsx");
-  const stateRel = path.posix.join(folder, "model/analysis-state.json");
+  const stateRel = modelUpdateState(source.id);
   const lock = ctx.id + "/" + source.id;
   if (preparingUpdates.has(lock)) throw new Error("该工作模型正在准备提案");
   preparingUpdates.add(lock);
@@ -928,7 +938,12 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
         throw new Error("无效的勾稽容差：" + ref);
       }
     }
-    const previous = working && ctx.store.findTrackingByTarget(working.id);
+    const changesRequired = edits.length || audit.rows.some(row => row.mode !== "check" && (!row.matched ||
+      (row.mode === "actual" && String(previousFormulas[row.ref]).startsWith("="))));
+    if (changesRequired && audit.issues.some(issue => issue.includes("是静态值") || issue.includes("估值输出缺失"))) {
+      throw new Error(audit.issues.join("；"));
+    }
+    const previous = (working && ctx.store.findTrackingByTarget(working.id)) || ctx.store.findTrackingByTarget(source.id);
     if (previous && (ctx.store.getTracking(previous.id).running ||
         ctx.store.listApprovalRequests({ trackingId: previous.id }).some(a => ["applying","pending_approval","approved"].includes(a.status)))) {
       throw new Error("已有运行或提案待处理，请先查看该模型的审批");

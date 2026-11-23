@@ -10,7 +10,7 @@ from openpyxl_safe import load_workbook_resilient
 # on the right. A minus somewhere inside an arbitrary function is insufficient.
 CELL = r"(?:(?:'[^']+'|[A-Z_][A-Z_0-9.]*)!)?(?:\$?[A-Z]{1,3}\$?[1-9][0-9]*|#REF!)"
 TERM = rf"(?:{CELL}|SUM\({CELL}:{CELL}\)|[0-9]+(?:\.[0-9]+)?)"
-DIFFERENCE = re.compile(rf"=\+?{CELL}-(?:{TERM}|\({TERM}(?:[+-]{TERM})+\))", re.I)
+DIFFERENCE = re.compile(rf"=\+?{CELL}(?:[+-](?:{TERM}|\({TERM}(?:[+-]{TERM})+\)))+", re.I)
 
 
 def period_index(value):
@@ -72,6 +72,9 @@ def layout(book, actuals):
                                 tolerances[ref] = tolerance
         for item in items:
             r, col = coordinate_to_tuple(item["cell"])
+            if r not in rows:
+                # A proposed disclosure-only row does not yet exist in the baseline.
+                continue
             header, _ = coordinate_to_tuple(item["header"])
             periods = {}
             for j, value in enumerate(rows.get(header, ()), 1):

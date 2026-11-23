@@ -1,9 +1,11 @@
+import { uploadedWorkbook } from "../../lib/model-location.mjs";
 import fs from "node:fs";
 import { disclosureInventory, mapDisclosure } from "../../lib/model-disclosure.mjs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { normalizeActuals } from "../../lib/model-actuals.mjs";
+import { readCells } from "../../lib/calc-engine.mjs";
 
 export async function handleTracking({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
@@ -164,21 +166,29 @@ export async function handleTracking({ req, res, url, app, ctx }) {
     const tracking = ctx.store.getTracking(trackingId);
     if (!tracking) return json(res, 404, { error: "tracking not found" });
     const action = modelMatch[2];
-    const { relPath, state, error } = await readTrackingState(ctx, tracking);
-    if (!state) return json(res, 409, { error, statePath: relPath });
+    const { relPath, state, error, missing, deliveryBlocked } = await readTrackingState(ctx, tracking);
+    const source = uploadedWorkbook(tracking);
+    if (!state && !(missing && !deliveryBlocked && source && (!action || action === "prepare"))) {
+      return json(res, 409, { error, statePath: relPath });
+    }
 
     if (!action && req.method === "GET") {
       return json(res, 200, {
         trackingId,
         statePath: relPath,
-        model: state.model || {},
-        available: Boolean(state.model?.working_file),
+        model: state?.model || {},
+        available: Boolean(state?.model?.working_file),
       });
     }
 
     if (action === "prepare" && req.method === "POST") {
       try {
-        const prepared = await prepareWorkingModel({ ctx, tracking, state, stateRel: relPath });
+        const baseline = state || { subject: { model_file: source }, model: {} };
+        const targetPath = source && relPath.startsWith("exports/model-updates/")
+          ? path.posix.join(path.posix.dirname(path.posix.dirname(relPath)), "model.xlsx")
+          : tracking.relPath;
+        await fsp.mkdir(path.join(ctx.root, path.posix.dirname(relPath)), { recursive: true });
+        const prepared = await prepareWorkingModel({ ctx, tracking, state: baseline, stateRel: relPath, targetPath });
         app.broadcastMaterial(prepared.material, ctx.id);
         return json(res, 200, {
           trackingId,
@@ -224,6 +234,31 @@ export async function handleTracking({ req, res, url, app, ctx }) {
           sheet: String(output.sheet).trim(),
           cell: String(output.cell).trim().toUpperCase(),
         }));
+      if (!body.disclosureFile && uploadedWorkbook(tracking)) {
+        const checked = normalizedBindings.filter(binding => binding.verified);
+        if (!state.model?.working_file) return json(res, 409, { error: "请先准备工作模型" });
+        if (body.writeEnabled === true && (!checked.length || !normalizedOutputs.length)) {
+          return json(res, 400, { error: "启用写回前至少确认一个输入和一个校验输出" });
+        }
+        const refs = [...checked, ...normalizedOutputs].map(({ sheet, cell }) => sheet + "!" + cell);
+        if (refs.some(ref => !/^.+![A-Z]{1,3}[1-9][0-9]{0,6}$/.test(ref))) {
+          return json(res, 400, { error: "请输入工作表与有效的 A1 单元格地址" });
+        }
+        const working = path.resolve(ctx.root, state.model.working_file);
+        if (!working.startsWith(path.resolve(ctx.root) + path.sep)) {
+          return json(res, 409, { error: "工作模型路径不在项目内" });
+        }
+        try {
+          const contents = await readCells(working, refs, { formulas: true });
+          const formula = checked.map(item => item.sheet + "!" + item.cell)
+            .find(ref => String(contents[ref] ?? "").startsWith("="));
+          if (formula) return json(res, 400, { error: formula + " 是公式。历史实绩切换请通过财报预览确认。" });
+          const missing = normalizedOutputs.map(item => item.sheet + "!" + item.cell).find(ref => contents[ref] == null);
+          if (missing) return json(res, 400, { error: missing + " 未找到校验输出" });
+        } catch (error) {
+          return json(res, 400, { error: "无法校验工作簿单元格：" + error.message });
+        }
+      }
       state.model = state.model && typeof state.model === "object" ? state.model : {};
       if (Object.hasOwn(body, "actuals")) {
         try {

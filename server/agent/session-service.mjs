@@ -109,7 +109,9 @@ export function createSessionService({
       // backup, recalculation and human review.
       if (
         ["write", "edit"].includes(toolName)
-        && /(?:^|\/)model\/[^/]+\.(?:xlsx|xlsm)$/i.test(rel)
+        && (/(?:^|\/)model\/[^/]+\.(?:xlsx|xlsm)$/i.test(rel)
+          || /^(?:uploads|inputs)\/.+\.(?:xlsx|xlsm)$/i.test(rel)
+          || /^exports\/model-updates\/[^/]+\/model\/analysis-state\.json$/.test(rel))
       ) {
         return { block: true, reason: "工作模型只能通过人工审批写入" };
       }

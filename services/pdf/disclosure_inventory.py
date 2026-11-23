@@ -18,16 +18,18 @@ def period(date, quarterly):
 def parse_disclosure(text):
     facts, issues, seen, gaps = {}, [], set(), []
     annual = re.search(r"FOR THE YEAR ENDED\s+" + DATE, text[:5000], re.I)
-    interim = re.search(r"(?:THREE MONTHS|QUARTER) ENDED\s+" + DATE, text[:5000], re.I)
+    interim = re.search(r"(?:THREE(?: AND NINE)? MONTHS|QUARTER) ENDED\s+" + DATE, text[:5000], re.I)
     if not annual and not interim:
         return [], ["Unsupported announcement period or layout"], []
     end = (annual or interim)[1].title()
+    tencent = bool(re.search(r"Stock\s+Codes?:\s*0*700\s*\(HKD counter\)\s+and\s+80700\b", text[:3500], re.I))
     fy, quarter = period(end, False), period(end, True)
 
     def add(key, raw, page, unit="RMB mn", label=None):
         value = float(raw.replace(",", "").replace("(", "-").replace(")", "").replace("–", "0").replace("—", "0"))
         row = dict(period=key[0], metric=key[1], label=label or key[1], expected=value,
-                   unit=unit, decimals=len(raw.rstrip(")").partition(".")[2]), page=page)
+                   unit=unit, decimals=len(raw.rstrip(")").partition(".")[2]), page=page,
+                   **({"issuer": {"code": "700", "market": "HK", "name": "Tencent"}} if tencent else {}))
         if key in facts and facts[key]["expected"] != value:
             issues.append(f"Conflicting published values: {key[0]} {key[1]} (page {page})")
         else:
@@ -107,7 +109,7 @@ def parse_disclosure(text):
         # Only process current columns in the highlights and comparative income statement.
         if not re.search(r"^Revenues\s{2,}" + NUMBER, body, re.M):
             continue
-        before = body[:body.index("\nRevenues")]
+        before = body[:re.search(r"^Revenues\s{2,}", body, re.M).start()]
         table = re.search(r"^\s*(Three months ended|Year ended)\b([^\n]*(?:\n[^\n]*){0,8})", before, re.M | re.I)
         if not table:
             continue
@@ -124,7 +126,7 @@ def parse_disclosure(text):
             continue
         seen.add((p, "income"))
         prev, eps = "", ""
-        for line in body[body.index("\nRevenues"):].splitlines():
+        for line in body[re.search(r"^Revenues\s{2,}", body, re.M).start():].splitlines():
             label = line.strip()
             if "EPS (RMB per share)" in label:
                 eps = "Non-IFRS EPS" if "Non-IFRS" in label else "EPS"
@@ -184,6 +186,110 @@ def explicit_period_tables(path):
     return list(facts.values()), [], gaps
 
 
+def read_tencent_chinese(path):
+    """Read Tencent's Traditional Chinese HKEX highlights, bridges and EPS notes."""
+    from parse_pdf import open_pdfplumber
+
+    with open_pdfplumber(path) as pdf:
+        pages = [page.extract_text(layout=True) or "" for page in pdf.pages]
+    cover = "".join(pages[0].split())
+    if not re.search(r"股份代號[：:]0*700[（(]港幣櫃台", cover):
+        return None
+    annual = re.search(r"截至([二零〇一三四五六七八九]{4})年十二月三十一日止年度", cover)
+    if not annual:
+        return None
+    digits = str.maketrans("零〇一二三四五六七八九", "00123456789")
+    year = annual[1].translate(digits)
+    fy, quarter = "FY" + year, "4Q" + year[-2:]
+    facts, issues = {}, []
+
+    def add(period, metric, raw, page, unit="RMB mn"):
+        value = float(raw.replace(",", "").replace("(", "-").replace(")", "").replace("–", "0").replace("—", "0"))
+        item = dict(period=period, metric=metric, label=metric, expected=value, unit=unit,
+                    decimals=len(raw.rstrip(")").partition(".")[2]), page=page,
+                    issuer={"code": "700", "market": "HK", "name": "Tencent"})
+        previous = facts.setdefault((period, metric), item)
+        if previous["expected"] != value:
+            issues.append(f"{period} {metric} 的披露值不一致（第 {page} 页）")
+
+    labels = {
+        "收入": "Revenues", "毛利": "Gross profit", "經營盈利": "Operating profit",
+        "本公司權益持有人應佔盈利": "Profit attributable to equity holders of the Company",
+        "非國際財務報告準則經營盈利": "Non-IFRS operating profit",
+        "非國際財務報告準則本公司權益持有人應佔盈利": "Non-IFRS profit attributable to equity holders of the Company",
+    }
+    for i, body in enumerate(pages[:2], 1):
+        if "人民幣百萬元" not in body:
+            continue
+        period = quarter if i == 1 else fy
+        eps, pending = "EPS", ""
+        for line in body.splitlines():
+            parts = line.strip().split()
+            values = [part for part in parts if re.fullmatch(NUMBER, part)]
+            label = "".join(parts[:parts.index(values[0])]) if values else "".join(parts)
+            if "每股盈利" in label:
+                eps = "Non-IFRS EPS" if label.startswith("非國際") else "EPS"
+            if label == "非國際財務報告準則本公司":
+                pending = label
+            if values and label:
+                label, pending = pending + label, ""
+                if label in labels:
+                    add(period, labels[label], values[0], i)
+                elif label in ("－基本", "－攤薄"):
+                    add(period, eps + (" basic" if label.endswith("基本") else " diluted"), values[0], i, "RMB/share")
+
+    year_zh = annual[1]
+    bridge_columns = ("Share-based compensation", "Investee companies", "Amortisation of intangible assets",
+                      "Impairment provisions", "SSV & CPP", "Others", "Income tax effects")
+    for page, body in enumerate(pages, 1):
+        compact = "".join(body.split())
+        if "人民幣百萬元" not in compact:
+            continue
+        # Figures are read only from the current year's first bridge and its known column order.
+        bridge = re.search(r"^\s*經營盈利\s+(.+)$", body, re.M)
+        head = "".join(body[:bridge.start()].split()) if bridge else ""
+        _, found, columns_text = head.rpartition(year_zh + "年十二月三十一日止")
+        if (bridge and found and
+                all(label in columns_text for label in ("已報告", "股份酬金", "攤銷", "SSV", "所得稅"))):
+            period = quarter if columns_text.startswith("三個月") else fy
+            numbers = bridge[1].split()
+            columns = bridge_columns if "其他" in columns_text else tuple(name for name in bridge_columns if name != "Others")
+            if len(numbers) == len(columns) + 2 and all(re.fullmatch(NUMBER, n) for n in numbers):
+                add(period, "Operating profit", numbers[0], page)
+                add(period, "Non-IFRS operating profit", numbers[-1], page)
+                for label, value in zip(columns, numbers[1:-1]):
+                    add(period, "Operating adjustment / " + label, value, page)
+                bridge_total = sum(facts[(period, metric)]["expected"] for metric in
+                                   ("Operating profit", *("Operating adjustment / " + label for label in columns)))
+                if abs(bridge_total - facts[(period, "Non-IFRS operating profit")]["expected"]) > 1:
+                    issues.append(f"{period} 非 IFRS 经营盈利加回对账失败（第 {page} 页）")
+        if year_zh not in compact or not re.search(r"\([ab]\)\s*(?:基本|攤薄)", body):
+            continue
+        pending = ""
+        for line in body.splitlines():
+            tokens = line.strip().split()
+            if not tokens:
+                continue
+            if len(tokens) >= 2 and all(re.fullmatch(NUMBER, n) for n in tokens[-2:]):
+                label = pending + "".join(tokens[:-2])
+                pending = ""
+                if "為計算每股攤薄盈利的普通股的加權平均數" in label:
+                    add(fy, "Diluted weighted average shares", tokens[-2], page, "mn shares")
+                elif "為計算每股攤薄盈利的本公司" in label:
+                    add(fy, "Diluted earnings numerator", tokens[-2], page)
+                elif "獎勵產生的攤薄影響" in label:
+                    add(fy, "Dilution effect on earnings", tokens[-2], page)
+                elif "加權平均數（百萬股計）" in label and "普通股" in label:
+                    add(fy, "Basic weighted average shares", tokens[-2], page, "mn shares")
+            else:
+                pending += "".join(tokens)
+                pending = pending[-140:]
+    required = [(fy, name) for name in ("Basic weighted average shares", "Diluted weighted average shares",
+                                        "Diluted earnings numerator", "Operating adjustment / SSV & CPP")]
+    gaps = [dict(period=p, metric=m, reason="未从公告确认该项目") for p, m in required if (p, m) not in facts]
+    return list(facts.values()), list(dict.fromkeys(issues)), gaps
+
+
 def read_disclosure(path):
     try:
         reader = open_pypdf(path)
@@ -202,6 +308,12 @@ def read_disclosure(path):
             return chinese
     facts, issues, gaps = parse_disclosure(text)
     if not facts:
+        try:
+            translated = read_tencent_chinese(path)
+        except (ImportError, RuntimeError):
+            translated = None
+        if translated and translated[0]:
+            return translated
         structured = explicit_period_tables(path)
         if structured[0] or structured[1]:
             return structured

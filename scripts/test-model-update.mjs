@@ -7,9 +7,10 @@ import { execFileSync } from "node:child_process";
 import { openStore } from "../store.mjs";
 import { createTrackingService } from "../server/tracking/service.mjs";
 import { createApprovalService } from "../lib/approvals/service.mjs";
-import { applyModelChanges } from "../lib/model-writer.mjs";
+import { applyModelChanges, prepareWorkingModel } from "../lib/model-writer.mjs";
 import { sha256File } from "../lib/model-disclosure.mjs";
 import { createUpdateModelTool } from "../lib/tracking-tool.mjs";
+import { handleTracking } from "../server/routes/tracking.mjs";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "pe-update-e2e-"));
 const workspace = path.join(root, "project");
@@ -31,6 +32,30 @@ try {
   const tool = createUpdateModelTool(args => service.updateModel(ctx,args));
   const args = {modelPath:"uploads/model.xlsx", disclosureFile:"uploads/results.pdf", period:"2Q26",
     outputs:[{label:"Target",sheet:"Model",cell:"E3"}], tolerances:{"Model!D4":0.005}};
+  await fs.copyFile(source, path.join(workspace, "uploads/legacy.xlsx"));
+  const legacy = store.indexFile("uploads/legacy.xlsx", { kind: "input" });
+  const legacyTracking = store.createTracking({ targetId: legacy.id, templateId: "model", freq: "weekly", time: "09:00" });
+  async function modelRequest(suffix, body) {
+    return handleTracking({
+      req: { method: body ? "POST" : "GET" },
+      res: {},
+      url: new URL(`http://localhost/api/trackings/${legacyTracking.id}/model${suffix}`),
+      ctx,
+      app: {
+        ...service, prepareWorkingModel, broadcastMaterial() {},
+        http: { json: (_, status, data) => ({ status, ...data }), readJson: async () => body },
+      },
+    });
+  }
+  assert.equal((await modelRequest("")).available, false);
+  const legacySetup = await modelRequest("/prepare", {});
+  assert.equal(legacySetup.status, 200, legacySetup.error);
+  assert.equal(legacySetup.model.working_from, legacy.relPath);
+  assert.equal(await sha256File(path.join(workspace, legacySetup.model.working_file)), original);
+  const bindings = { outputs: args.outputs, writeEnabled: true };
+  const bind = cell => modelRequest("/bindings", { ...bindings, bindings: [{ sheet: "Model", cell, verified: true }] });
+  assert.equal((await bind("E2")).status, 400);
+  assert.equal((await bind("D2")).status, 200);
   const preview = (await tool.execute("preview",args)).details;
   assert.equal(preview.rows[0]?.expected,104,JSON.stringify(preview));
   assert.equal(preview.checks[0].status,"pass");
@@ -38,6 +63,10 @@ try {
   assert.equal(preview.rows[1].disclosedValue,21);
   assert.equal(preview.rows[1].expected,0.21);
   assert.equal(preview.rows[2].expected,22);
+  const frozen = { ...args, outputs: [{ sheet: "Model", cell: "D2", label: "Static target" }] };
+  const frozenPreview = (await tool.execute("preview", frozen)).details;
+  assert.ok(frozenPreview.issues.some(issue => issue.includes("Model!D2 是静态值")));
+  await assert.rejects(tool.execute("submit", { ...frozen, previewId: frozenPreview.previewId }), /静态值/);
   store.indexFile("uploads/annual.pdf",{kind:"input"});
   const annual = (await tool.execute("annual",{...args,period:"FY2026",disclosureFile:"uploads/annual.pdf"})).details;
   assert.equal(annual.rows[0].ref,"Annual!D3");
@@ -46,7 +75,8 @@ try {
   assert.equal(codes.checks[0].status,"unverified");
   const submitted = (await tool.execute("propose",{...args,previewId:preview.previewId})).details;
   assert.equal(store.getTracking(submitted.trackingId).enabled,false);
-  assert.ok(!store.listMaterials().some(m => m.relPath.endsWith("工作模型.xlsx")));
+  assert.ok(!store.listMaterials().some(m => m.relPath.endsWith("工作模型.xlsx") &&
+    m.relPath !== legacySetup.model.working_file));
   assert.ok(!broadcasts.some(m => m.relPath.endsWith("工作模型.xlsx")));
   const approved = await ctx.approvals.approve({ctx,id:submitted.result.writeback.approval.id});
   assert.equal(approved.ok,true,approved.error);
