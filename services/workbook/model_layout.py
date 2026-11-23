@@ -18,19 +18,41 @@ def period_index(value):
     annual = re.fullmatch(r"(?:FY)?(20\d\d)[AE]?", label)
     if annual:
         return "year", int(annual[1])
+    half = re.fullmatch(r"([12])H(\d{2}|20\d{2})[AE]?", label)
+    if half:
+        return "half", (2000 + int(half[2][-2:])) * 2 + int(half[1])
     quarterly = re.fullmatch(r"([1-4])Q(\d{2}|20\d{2})[AE]?", label)
     if quarterly:
         return "quarter", (2000 + int(quarterly[2][-2:])) * 4 + int(quarterly[1])
     return None
 
 
+def check_tolerance(number_format):
+    # Use the strictest displayed precision across numeric sections. Even a
+    # whole-number display cannot excuse more than half a hundredth.
+    tolerances = []
+    for section in number_format.split(";")[:3]:
+        fmt = re.sub(r'"[^"]*"|\\.|\[[^]]*\]|_.|\*.', "", section)
+        if not fmt or fmt in ("-", "@"):
+            continue
+        if re.search(r"[A-Za-z/]|0,+(?![0#])", fmt):
+            return None
+        match = re.search(r"[0#][0#,]*(?:\.(0+))?", fmt)
+        if not match:
+            return None
+        decimals = max(2, len(match[1] or ""))
+        tolerances.append(0.5 * 10 ** -decimals / (100 if "%" in fmt else 1))
+    return min(tolerances, default=None)
+
+
 def layout(book, actuals):
-    checks, comparisons, rules = [], [], {}
-    for sheet in book:
+    checks, comparisons, rules, tolerances = [], [], {}, {}
+    for sheet in book.worksheets:
         items = [item for item in actuals if item["sheet"] == sheet.title]
         needed = {coordinate_to_tuple(i[k])[0] for i in items for k in ("header", "cell")}
         rows = {}
-        for number, row in enumerate(sheet.values, 1):
+        for number, cells in enumerate(sheet.iter_rows(), 1):
+            row = tuple(cell.value for cell in cells)
             if number in needed:
                 rows[number] = row
             if any(isinstance(v, str) and v.strip().casefold() in
@@ -42,8 +64,12 @@ def layout(book, actuals):
                         # Numeric status codes (e.g. IF(condition,1,0)) need a
                         # declared meaning. Never infer a zero target for them.
                         expression = value.replace(" ", "")
-                        if DIFFERENCE.fullmatch(expression) or re.fullmatch(r"=[+-]?0\.\d+", expression):
+                        if (re.fullmatch(rf"={CELL}(?:[+]{CELL})+", expression, re.I) or
+                                DIFFERENCE.fullmatch(expression)) or re.fullmatch(r"=[+-]?0\.\d+", expression):
                             rules[ref] = "difference"
+                            tolerance = check_tolerance(cells[col - 1].number_format or "General")
+                            if tolerance is not None:
+                                tolerances[ref] = tolerance
         for item in items:
             r, col = coordinate_to_tuple(item["cell"])
             header, _ = coordinate_to_tuple(item["header"])
@@ -72,7 +98,7 @@ def layout(book, actuals):
                     comparisons.append(dict(ref=f"{sheet.title}!{get_column_letter(j)}{r}", metric=item["metric"],
                                             unit=item["unit"], storageScale=item.get("storageScale", 1),
                                             period=str(rows[header][j-1]), kind="forecast"))
-    return dict(checks=checks, comparisons=comparisons, rules=rules)
+    return dict(checks=checks, comparisons=comparisons, rules=rules, formatTolerances=tolerances)
 
 
 if __name__ == "__main__":

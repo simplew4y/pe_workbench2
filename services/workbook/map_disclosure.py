@@ -44,7 +44,7 @@ def exact_rows(book, inventory):
     by_label = defaultdict(list)
     for fact in inventory:
         by_label[fact["metric"].casefold()].append(fact)
-    for ws in book:
+    for ws in book.worksheets:
         header = {}
         header_units = []
         for number, cells in enumerate(ws.iter_rows(), 1):
@@ -108,7 +108,7 @@ def exact_rows(book, inventory):
 def mapped_inventory(book, inventory):
     # Look for the consolidated statement and a coherent set of RMB EPS labels.
     sheets = []
-    for ws in book:
+    for ws in book.worksheets:
         for number, hdr in enumerate(ws.iter_rows(max_row=10, max_col=8, values_only=True), 1):
             if any(label.upper() == "CONSOLIDATED INCOME STATEMENT" for label in row_text_labels(hdr)):
                 sheets.append((ws, number))
@@ -194,7 +194,40 @@ def mapped_inventory(book, inventory):
 if __name__ == "__main__":
     workbook, _ = load_workbook_resilient(sys.argv[1], data_only=False, read_only=True)
     try:
-        mapped, gaps, conversions = mapped_inventory(workbook, json.load(sys.stdin))
-        print(json.dumps(dict(actuals=mapped, gaps=gaps, conversions=conversions)))
+        inventory = json.load(sys.stdin)
+        edits = []
+        outputs = []
+        if isinstance(inventory, dict):
+            request = inventory
+            inventory = request["facts"]
+            from statement_mapping import map_statements
+            values, _ = load_workbook_resilient(request.get("calculatedPath", sys.argv[1]), read_only=False, data_only=True)
+            # Random coordinate access on a streaming worksheet reparses the entire XML.
+            model, _ = load_workbook_resilient(sys.argv[1], read_only=False, data_only=False)
+            try:
+                mapped, gaps, edits = map_statements(model, values, inventory, request.get("originalName",""), request.get("reported",{}))
+                conversions = []
+                for sheet in model.worksheets:
+                    for row in sheet.iter_rows():
+                        for i, cell in enumerate(row):
+                            label = str(cell.value or "")
+                            if not re.search(r"(?:value per share|target price|\bTP)\s*[（(](?:RMB|CNY|HKD|HK\$|USD)[)）]", label, re.I):
+                                continue
+                            formulas = []
+                            for candidate in row[i+1:]:
+                                if candidate.data_type == "f":
+                                    if isinstance(values[sheet.title][candidate.coordinate].value, (int,float)):
+                                        formulas.append(candidate)
+                                elif isinstance(candidate.value,str):
+                                    break
+                            if len(formulas)==1:
+                                outputs.append(dict(sheet=sheet.title,cell=formulas[0].coordinate,label=label))
+
+            finally:
+                values.close()
+                model.close()
+        else:
+            mapped, gaps, conversions = mapped_inventory(workbook, inventory)
+        print(json.dumps(dict(actuals=mapped, gaps=gaps, conversions=conversions, edits=edits, outputs=outputs)))
     finally:
         workbook.close()

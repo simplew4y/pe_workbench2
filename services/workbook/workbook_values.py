@@ -79,21 +79,26 @@ def read_cells(
 
 
 def write_cells(
-    file: str, out: str, assignments: list[str]
+    file: str, out: str, assignments: list[str], cache: str | None = None, baseline: str | None = None
 ) -> tuple[str, list[str]]:
-    workbook, load_warnings = load_workbook_resilient(file, data_only=False)
+    from zipfile import ZipFile
+    from xlsx_package import rewrite
+    edits = []
     for assignment in assignments:
         if "=" not in assignment:
             raise ValueError(f"assignment must be Sheet!A1=value: {assignment}")
         ref, raw = assignment.split("=", 1)
         sheet, cell = split_ref(ref)
-        if sheet not in workbook.sheetnames:
-            raise ValueError(f"sheet not found: {sheet}")
-        workbook[sheet][cell] = parse_value(raw)
+        edits.append((sheet, cell, parse_value(raw)))
     target = Path(out)
     target.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(target)
-    return str(target), load_warnings
+    if cache:
+        with ZipFile(cache) as calculated, ZipFile(baseline) as before:
+            rewrite(file, target, edits, calculated, before)
+    else:
+        rewrite(file, target, edits)
+    return str(target), []
+
 
 
 def main() -> int:
@@ -106,9 +111,11 @@ def main() -> int:
     read.add_argument("--formulas", action="store_true")
 
     write = sub.add_parser("write")
+    write.add_argument("--cache")
+    write.add_argument("--baseline")
     write.add_argument("file")
     write.add_argument("out")
-    write.add_argument("assignments", nargs="+")
+    write.add_argument("assignments", nargs="*")
 
     args = parser.parse_args()
     try:
@@ -121,7 +128,7 @@ def main() -> int:
                 payload["warnings"] = load_warnings
             print(json.dumps(payload))
         else:
-            path, load_warnings = write_cells(args.file, args.out, args.assignments)
+            path, load_warnings = write_cells(args.file, args.out, args.assignments, args.cache, args.baseline)
             payload = {"ok": True, "path": path}
             if load_warnings:
                 payload["warnings"] = load_warnings

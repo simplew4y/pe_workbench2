@@ -237,7 +237,7 @@ async function settleTrackingRun({
         audit.issues.push("公告及其映射尚未确认，无法核验提案");
       }
       if (result.modelChanges.length && inventory.facts.length) {
-        audit.issues.push(...disclosureProposalIssues(result.modelChanges, mapping.actuals));
+        audit.issues.push(...disclosureProposalIssues(result.modelChanges, mapping.actuals, mapping.edits));
       }
       if (!result.modelChanges.length) {
         result.deltas = Object.entries(audit.outputValues).map(([label, value]) => ({ label, from: String(value), to: String(value), note: "重算后读数", tone: "flat" }));
@@ -883,7 +883,7 @@ const preparingUpdates = new Set();
 async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, outputs = [], tolerances }, threadId = "") {
   const source = ctx.store.findMaterialByPath(modelPath);
   if (source?.kind !== "input" || !/\.xlsx$/i.test(source.relPath)) throw new Error("请选择项目输入中的 xlsx 模型");
-  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2})$/.test(period)) throw new Error("请选择公告和具体披露期间，例如 3Q26");
+  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})$/.test(period)) throw new Error("请选择公告和具体披露期间，例如 3Q26");
   const folder = path.posix.join("exports/model-updates", source.id);
   const workingFile = path.posix.join(folder, "model/工作模型.xlsx");
   const stateRel = path.posix.join(folder, "model/analysis-state.json");
@@ -903,18 +903,20 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
     const baseline = await sha256File(absolute);
     const inventory = await disclosureInventory(ctx, disclosureFile);
     inventory.facts = inventory.facts.filter(row => row.period === period);
-    inventory.sourceGaps = (inventory.sourceGaps || []).filter(row => row.period === period);
-    const mapping = await mapDisclosure(ctx, inventory, book);
+    inventory.sourceGaps = (inventory.sourceGaps || []).filter(row => row.period === period || inventory.issues.length);
+    const mapping = await mapDisclosure(ctx, inventory, book, [], source.relPath, state.model?.reported_cells);
+    const edits = mapping.edits || [];
     const previousFormulas = await readCells(absolute, mapping.actuals.map(row => row.sheet + "!" + row.cell), { formulas: true });
+    if (!outputs.length) outputs = mapping.outputs || [];
     mapping.outputs = outputs;
     mapping.tolerances = tolerances;
     const audit = await auditDisclosure(ctx, inventory, mapping, book, true);
     const issues = [...inventory.issues];
     if (baseline !== await sha256File(absolute)) throw new Error("预览期间模型版本已变化");
     const id = crypto.createHash("sha256").update(JSON.stringify([ctx.id, source.id, sourceSha, baseline, inventory.sha256,
-      period, mapping.actuals, mapping.gaps, outputs, tolerances])).digest("hex");
-    const preview = { previewId: id, source: inventory.source, period, modelPath: book, rows: audit.rows.map(row => ({ ...row,
-        disclosedValue: row.expected / (row.storageScale || 1) })),
+      period, mapping.actuals, edits, mapping.gaps, outputs, tolerances])).digest("hex");
+    const preview = { issuer:inventory.facts[0]?.issuer, audit:inventory.facts[0]?.audit, previewId: id, source: inventory.source, period, modelPath: book, edits, rows: audit.rows.map(row => ({ ...row,
+        disclosedValue: row.disclosed ?? row.expected / (row.storageScale || 1) })),
       outputs: audit.outputValues, gaps: [...inventory.sourceGaps, ...mapping.gaps], issues: audit.issues, checks: audit.modelChecks };
     if (!previewId) return preview;
     if (previewId !== id) throw new Error("模型、公告或输出设置已变化，请重新预览");
@@ -934,8 +936,8 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
     const actuals = mapping.actuals;
     state.model = { ...state.model, working_file: workingFile, source_sha256: sourceSha, write_enabled: true,
       disclosure_file: inventory.source, disclosure_sha256: inventory.sha256,
-      actuals, outputs, check_tolerances: tolerances,
-      bindings: actuals.filter(item => item.mode !== "check").map(({ metric, sheet, cell }) => ({ metric, sheet, cell, verified: true })) };
+      actuals, edits, outputs, period, check_tolerances: tolerances,
+      bindings: [...actuals.filter(item => item.mode !== "check"), ...edits].map(({ metric, sheet, cell }) => ({ metric, sheet, cell, verified: true })) };
     let material = working;
     if (!material) {
       await fsp.mkdir(path.dirname(path.join(ctx.root, stateRel)), { recursive: true });
@@ -955,6 +957,7 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
       const modelChanges = audit.rows.filter(row => row.mode !== "check" && (!row.matched ||
         (row.mode === "actual" && String(previousFormulas[row.ref]).startsWith("="))))
         .map(row => ({ sheet: row.sheet, cell: row.cell, metric: row.metric, value: row.formula ?? row.expected, note: row.source }));
+      modelChanges.push(...edits.map(e => ({...e, metric:e.note})));
       await fsp.writeFile(resultAbs, JSON.stringify({ status: modelChanges.length ? "needs_review" : "no_change",
         modelChanges, modelOutputs: outputs, sources: [{ label: inventory.source }] }));
       await settleTrackingRun({ ctx, trackingId: tracking.id, runId: run.id, run, targetId: material.id,
@@ -1032,13 +1035,17 @@ async function runTracking(ctx, trackingId, {
     }
     if (template.id === "model" && !monitorMode) {
       const inventory = await disclosureInventory(ctx, stateInfo.state?.model?.disclosure_file);
+      if (stateInfo.state?.model?.period) {
+        inventory.facts = inventory.facts.filter(f => f.period === stateInfo.state.model.period);
+        inventory.sourceGaps = (inventory.sourceGaps || []).filter(f => f.period === stateInfo.state.model.period);
+      }
       const folder = path.posix.join(".tracking", trackingId, run.id);
       const inventoryPath = path.posix.join(folder, "disclosure-inventory.json");
       await fsp.mkdir(path.join(ctx.root, folder), { recursive: true });
       await fsp.writeFile(path.join(ctx.root, inventoryPath), JSON.stringify(inventory, null, 2));
       const book = stateInfo.state?.model?.working_file || stateInfo.state?.subject?.model_file || target.relPath;
       const confirmed = stateInfo.state?.model?.disclosure_sha256 === inventory.sha256 ? stateInfo.state.model.actuals : [];
-      const mapping = await mapDisclosure(ctx, inventory, book, confirmed);
+      const mapping = await mapDisclosure(ctx, inventory, book, confirmed, stateInfo.state?.subject?.model_file || book, stateInfo.state?.model?.reported_cells);
       const baseline = await auditDisclosure(ctx, inventory, mapping, book, false);
       const mappingPath = path.posix.join(folder, "disclosure-mapping.json");
       const proposedInputs = baseline.rows.filter(row => row.mode !== "check" && (!row.matched || row.mode === "formula"))
@@ -1146,7 +1153,7 @@ async function runTracking(ctx, trackingId, {
       if (!repaired && disclosure?.mapping.actuals.length && stateInfo.state?.model?.disclosure_sha256) {
         const candidate = await readTrackingResult(resultAbs);
         const issues = Array.isArray(candidate?.modelChanges)
-          ? disclosureProposalIssues(candidate.modelChanges, disclosure.mapping.actuals) : [];
+          ? disclosureProposalIssues(candidate.modelChanges, disclosure.mapping.actuals, disclosure.mapping.edits) : [];
         if (issues.length && !settled) {
           repaired = true;
           inspectingResult = false;

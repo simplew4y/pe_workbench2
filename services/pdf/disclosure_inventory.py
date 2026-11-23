@@ -2,6 +2,7 @@
 import re
 import subprocess
 from datetime import datetime
+from financial_statements import read_chinese_tables
 from parse_pdf import open_pypdf, extract_tables
 
 
@@ -190,6 +191,15 @@ def read_disclosure(path):
     except Exception:
         # Older pypdf releases and some PDFs require the original layout reader.
         text = ""
+    if re.search(r"公司|集團|集团", text[:2500]) or not text:
+        try:
+            layout = subprocess.run(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"],
+                                    capture_output=True, check=True, timeout=60).stdout.decode("utf-8")
+        except (OSError, subprocess.SubprocessError):
+            layout = text
+        chinese = read_chinese_tables(layout)
+        if chinese is not None:
+            return chinese
     facts, issues, gaps = parse_disclosure(text)
     if not facts:
         structured = explicit_period_tables(path)
@@ -204,7 +214,8 @@ def read_disclosure(path):
         if not text:
             raise
         return facts, issues, gaps
-    fallback = parse_disclosure(layout.stdout.decode("utf-8"))
+    laid_out = layout.stdout.decode("utf-8")
+    fallback = read_chinese_tables(laid_out) or parse_disclosure(laid_out)
     if any(fact not in fallback[0] for fact in facts):
         return facts, ["Layout readers disagree on the disclosed facts"], gaps
     return fallback
