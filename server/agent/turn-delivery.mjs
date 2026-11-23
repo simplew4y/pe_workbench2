@@ -108,6 +108,9 @@ export function recoverInterruptedTurns(entry) {
 }
 
 export async function cancelActiveTurn(entry) {
-  if (entry.activeTurn) entry.activeTurn.cancelled = true;
+  if (entry.activeTurn) {
+    entry.activeTurn.cancelled = true;
+    entry.activeTurn.projectMemoryLookup?.abort();
+  }
   await entry.session.abort();
 }

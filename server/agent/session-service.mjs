@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import { recoverInterruptedTurns, cancelActiveTurn, turnTimeline } from "./turn-delivery.mjs";
+import { withProjectMemory } from "./project-memory.mjs";
 import { runWithPostAnswer } from "./post-answer.mjs";
 import { createFrameworkEditTool } from "./framework-edit.mjs";
 import { PiAgUiAdapter } from "../../lib/agent-protocol/pi-ag-ui-adapter.mjs";
@@ -184,6 +185,11 @@ export function createSessionService({
           .concat(researchReview.tool, sessionTools, createFrameworkEditTool(ctx.root, () => entry?.activeTurn)),
       });
       session = created.session;
+      if (ctx.projectMemory) {
+        const transform = session.agent.transformContext;
+        session.agent.transformContext = async (messages, signal) =>
+          withProjectMemory(await transform(messages, signal), entry?.activeTurn?.projectMemory);
+      }
       const stream = session.agent.streamFunction;
       session.agent.streamFunction = (model, context, options) => {
         const transcript = normalizeContext(context);
@@ -209,13 +215,15 @@ export function createSessionService({
         recordAudit,
         getSessionMessages: () => session.messages,
         getContinuation: () => entry?.activeTurn?.continueResearchAnswer,
-        audit: (source, model, context, options, draft) =>
-          auditResearch(source, model, context, options, draft, { workbookEvidence: researchReview.evidenceSnapshot() }),
+        getProjectMemory: () => entry?.activeTurn?.projectMemory,
+        audit: (source, model, context, options, draft, extra) =>
+          auditResearch(source, model, context, options, draft, { ...extra, workbookEvidence: researchReview.evidenceSnapshot() }),
         onContext: (model, context, options) => {
           researchReview.restoreEvidence(context.messages);
           researchReview.setAuditor(async (content, extra) => {
+            const projectMemory = entry?.activeTurn?.projectMemory;
             const verdict = await auditResearch(provider, model, context, options, content, {
-              ...extra, workbookEvidence: researchReview.evidenceSnapshot(),
+              ...extra, ...(projectMemory ? { projectMemory } : {}), workbookEvidence: researchReview.evidenceSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });
             return verdict;
