@@ -211,7 +211,7 @@ export async function handleTracking({ req, res, url, app, ctx }) {
         if (!selected.facts.length || selected.issues.length || selected.sha256 !== body.disclosureSha256) {
           return json(res, 409, { error: "公告无法确认或已变化，请重新查看映射", issues: selected.issues });
         }
-        const mapping = await mapDisclosure(ctx, selected, state.model?.working_file, body.actuals);
+        const mapping = await mapDisclosure(ctx, selected, state.model?.working_file, body.actuals, state.subject?.model_file, state.model?.reported_cells);
         if (!mapping.actuals.length) return json(res, 409, { error: "没有可确认的映射" });
         body.actuals = mapping.actuals;
       }

@@ -203,7 +203,7 @@
 
     switch (kind) {
       case 'update-model':
-        return `请使用 investment-model-updater，根据最新披露更新模型 \`${model.relPath}\`，比较原预测和实际值、后续预测及估值，并提交审批。`;
+        return `请使用 investment-model-updater，根据最新披露更新模型 \`${model.relPath}\`，缺少财报时请检索正式公告原文。比较原预测和实际值、后续预测及估值，并提交审批。`;
       case 'analyze-model':
         return `请解读估值模型 \`${model.relPath}\`，复现目标价和关键预测；把核心假设拆到公式和业务条件（如分地区增长、量价/产能、行情周期），做公式级敏感性，并结合行业、同行和截至今天的最新行情形成七节投资框架。同时把结论落成可跟踪的状态文件 \`${targetFolder}/analysis-state.json\`：观点 T1–Tn、假设 A、敏感性 S、失效条件 F 一一关联，每个观点至少一条可观测的失效条件。报告写到 \`${targetFolder}/投资框架报告.md\`，先给结论，再给观点台账、敏感性、失效条件与监控。`;
       case 'build-framework':

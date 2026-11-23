@@ -10,7 +10,7 @@ from openpyxl import Workbook
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "services" / name) for name in ("pdf", "workbook")]
 from financial_statements import read_chinese_tables
-from statement_mapping import map_statements
+from statement_mapping import issuer_matches, map_statements
 from model_layout import check_tolerance
 from xlsx_package import NS, edit_sheet
 
@@ -32,6 +32,16 @@ def model():
 
 
 class StatementTests(unittest.TestCase):
+    def test_issuer_must_match_a_company_identifier_not_a_substring(self):
+        issuer = dict(code="700", market="HK", name="Tencent")
+        workbook = model()
+        self.assertFalse(issuer_matches(workbook, issuer, "Tencent Music.xlsx"))
+        self.assertTrue(issuer_matches(workbook, issuer, "research_0700.HK.xlsx"))
+        workbook.active["A1"] = "Consolidated Income Statement"
+        workbook.active["B1"] = "Tencent"
+        self.assertTrue(issuer_matches(workbook, issuer, "model.xlsx"))
+        self.assertFalse(issuer_matches(workbook, issuer, "model_9660.HK.xlsx"))
+
     def test_tolerance_uses_check_precision_and_units(self):
         self.assertAlmostEqual(check_tolerance("#,##0.00"), 0.005)
         self.assertAlmostEqual(check_tolerance("0.0000"), 0.00005)

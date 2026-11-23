@@ -207,7 +207,18 @@ if __name__ == "__main__":
         inventory = json.load(sys.stdin)
         edits = []
         outputs = []
-        if isinstance(inventory, dict):
+        issuer_mismatch = False
+        if isinstance(inventory, dict) and inventory.get("exchangeSource"):
+            from statement_mapping import issuer_matches
+            original_name = inventory["originalName"]
+            inventory = inventory["facts"]
+            issuer = inventory[0].get("issuer", {})
+            issuer_mismatch = (not issuer or any(f.get("issuer") != issuer for f in inventory)
+                               or not issuer_matches(workbook, issuer, original_name))
+        if issuer_mismatch:
+            mapped, conversions = [], []
+            gaps = [dict(f, reason="无法核实检索公告与原模型的发行人") for f in inventory]
+        elif isinstance(inventory, dict):
             request = inventory
             inventory = request["facts"]
             from statement_mapping import map_statements
@@ -238,6 +249,6 @@ if __name__ == "__main__":
                 model.close()
         else:
             mapped, gaps, conversions = mapped_inventory(workbook, inventory, edits, outputs)
-        print(json.dumps(dict(actuals=mapped, gaps=gaps, conversions=conversions, edits=edits, outputs=outputs)))
+        print(json.dumps(dict(actuals=mapped, gaps=gaps, conversions=conversions, edits=edits, outputs=outputs, issuerMismatch=issuer_mismatch)))
     finally:
         workbook.close()

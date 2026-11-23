@@ -26,19 +26,28 @@ STATEMENT = re.compile(r"^(?:P\s*&\s*L|income statement|profit and loss|合并�
 MILLIONS = re.compile(r"(?:RMB|CNY)\s*(?:mn|million)s?\b|人民币百万元", re.I)
 
 
-def map_statements(book, cached, facts, filename="", reported=None):
-    reported = reported or {}
-    issuer = facts[0].get("issuer",{})
-    identity = [filename]
+def issuer_matches(book, issuer, filename):
+    identity = [re.sub(r"\.xlsx$", "", filename, flags=re.I)]
     for sheet in book.worksheets:
         if re.search("cover|封面",sheet.title,re.I):
             identity.extend(str(v) for row in sheet.iter_rows(max_row=15,max_col=8,values_only=True) for v in row if isinstance(v,str))
+        else:
+            header = list(sheet.iter_rows(max_row=8, max_col=3, values_only=True))
+            if any(str(v).strip().casefold() == "consolidated income statement" for row in header for v in row):
+                identity.append(str(header[0][1] or ""))
     titles = " ".join(identity).replace("+"," ").replace("_"," ")
     tickers = {(str(int(n)), "HK" if market.upper()=="HK" else "CN") for n,market in
-               re.findall(r"(?<!\d)(\d{4,6})\.(HK|SS|SH|SZ)\b",titles,re.I)}
+               re.findall(r"(?<!\d)(\d{3,6})\.(HK|SS|SH|SZ)\b",titles,re.I)}
     code = str(int(issuer["code"])) if issuer.get("code") else ""
-    name_ok = bool(issuer.get("name")) and issuer["name"].casefold() in titles.casefold()
-    if (tickers and tickers!={(code,issuer.get("market"))}) or (not tickers and not name_ok):
+    name = issuer.get("name", "").strip().casefold()
+    name_ok = bool(name) and any(name == value.strip().casefold() for value in identity)
+    return tickers == {(code, issuer.get("market"))} if tickers else name_ok
+
+
+def map_statements(book, cached, facts, filename="", reported=None):
+    reported = reported or {}
+    issuer = facts[0].get("issuer", {})
+    if not issuer_matches(book, issuer, filename) or any(f.get("issuer", {}) != issuer for f in facts):
         return [], [dict(f,reason="公告发行人与原模型名称或封面证券代码未能核对") for f in facts], []
 
     candidates = []

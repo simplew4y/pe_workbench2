@@ -23,7 +23,8 @@ import { computeNextCheck, decideAction } from "../../lib/monitoring.mjs";
 import { notifyDesktop } from "../../lib/desktop-notify.mjs";
 import { lastAssistantText } from "../agent/snapshot.mjs";
 import { TRACKING_RESULT } from "../../lib/contracts/tracking-result.mjs";
-import { disclosureInventory, mapDisclosure, auditDisclosure, disclosureVersionIssue, disclosureProposalIssues, sha256File } from "../../lib/model-disclosure.mjs";
+import { fetchDisclosurePdf } from "../../lib/web-fetch-tool.mjs";
+import { archivedDisclosurePath, importDisclosure, disclosureInventory, mapDisclosure, auditDisclosure, disclosureVersionIssue, disclosureProposalIssues, sha256File } from "../../lib/model-disclosure.mjs";
 import { prepareWorkingModel } from "../../lib/model-writer.mjs";
 import { readCells } from "../../lib/calc-engine.mjs";
 import { normalizeActuals } from "../../lib/model-actuals.mjs";
@@ -256,7 +257,7 @@ async function settleTrackingRun({
         (audit.issues.length || !mapping.actuals.length));
       const complete = audit.complete && !audit.issues.length;
       const gaps = audit.gaps.map(({ period, metric, page, reason }) => ({ period, metric, page, reason }));
-      result.writeback.coverage = { source: inventory.source, sha256: inventory.sha256,
+      result.writeback.coverage = { source: inventory.source, sourceUrl: inventory.sourceUrl, sha256: inventory.sha256,
         inventoryPath: disclosure?.inventoryPath || "", total: audit.total, mapped: audit.mapped,
         matched: audit.matched, derivedRefs: audit.derivedRefs, derivedMatched: audit.derivedMatched, complete,
         gaps, sourceGaps: inventory.sourceGaps || [], issues: audit.issues };
@@ -893,7 +894,7 @@ const preparingUpdates = new Set();
 async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, outputs = [], tolerances }, threadId = "") {
   const source = ctx.store.findMaterialByPath(modelPath);
   if (source?.kind !== "input" || !/\.xlsx$/i.test(source.relPath)) throw new Error("请选择项目输入中的 xlsx 模型");
-  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})$/.test(period)) throw new Error("请选择公告和具体披露期间，例如 3Q26");
+  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})$/.test(period)) throw new Error("请提供项目公告或检索所得的正式公告 PDF 链接及披露期间，例如 3Q26");
   const folder = path.posix.join("exports/model-updates", source.id);
   const workingFile = path.posix.join(folder, "model/工作模型.xlsx");
   const stateRel = modelUpdateState(source.id);
@@ -911,6 +912,18 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
     tolerances ??= state.model?.check_tolerances || {};
     const absolute = path.join(ctx.root, book);
     const baseline = await sha256File(absolute);
+    const remoteUrl = /^https?:\/\//i.test(disclosureFile) ? new URL(disclosureFile).href : "";
+    const requestHash = remoteUrl ? crypto.createHash("sha256").update(remoteUrl).digest("hex") : "";
+    if (remoteUrl && previewId) {
+      const [sha, urlHash] = previewId.split(".");
+      if (urlHash !== requestHash) throw new Error("公告链接已变化，请重新预览");
+      disclosureFile = archivedDisclosurePath(sha);
+    } else if (remoteUrl) {
+      if (!config.webFetch) throw new Error("当前工作台未启用联网读取公告");
+      const material = await importDisclosure(ctx, await fetchDisclosurePdf(disclosureFile));
+      broadcastMaterial(material, ctx.id);
+      disclosureFile = material.relPath;
+    }
     const inventory = await disclosureInventory(ctx, disclosureFile);
     inventory.facts = inventory.facts.filter(row => row.period === period);
     inventory.sourceGaps = (inventory.sourceGaps || []).filter(row => row.period === period || inventory.issues.length);
@@ -923,9 +936,11 @@ async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, 
     const audit = await auditDisclosure(ctx, inventory, mapping, book, true);
     const issues = [...inventory.issues];
     if (baseline !== await sha256File(absolute)) throw new Error("预览期间模型版本已变化");
-    const id = crypto.createHash("sha256").update(JSON.stringify([ctx.id, source.id, sourceSha, baseline, inventory.sha256,
-      period, mapping.actuals, edits, mapping.gaps, outputs, tolerances])).digest("hex");
-    const preview = { issuer:inventory.facts[0]?.issuer, audit:inventory.facts[0]?.audit, previewId: id, source: inventory.source, period, modelPath: book, edits, rows: audit.rows.map(row => ({ ...row,
+    const urlHash = requestHash || previewId?.split(".")[1] || "";
+    const prefix = inventory.sourceUrl ? [inventory.sha256, urlHash, ""].join(".") : "";
+    const id = prefix + crypto.createHash("sha256").update(JSON.stringify([ctx.id, source.id, sourceSha, baseline,
+      inventory.sha256, period, mapping.actuals, edits, mapping.gaps, outputs, tolerances, prefix, inventory.sourceUrl])).digest("hex");
+    const preview = { issuer:inventory.facts[0]?.issuer, audit:inventory.facts[0]?.audit, previewId: id, source: inventory.source, sourceUrl: inventory.sourceUrl, sha256: inventory.sha256, period, modelPath: book, edits, rows: audit.rows.map(row => ({ ...row,
         disclosedValue: row.disclosed ?? row.expected / (row.storageScale || 1) })),
       outputs: audit.outputValues, gaps: [...inventory.sourceGaps, ...mapping.gaps], issues: audit.issues, checks: audit.modelChecks };
     if (!previewId) return preview;

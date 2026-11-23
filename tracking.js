@@ -1032,7 +1032,7 @@
       ? `<section class="track-sec">
           <div class="track-sec-head"><h4>数据与来源</h4><span>截止 ${esc((result.asOf || '').slice(0, 10))}</span></div>
           <div class="sources-row">
-            ${result.sources.map(s => `<span class="source-chip">${ic('database', 12)}<span>${esc(s.label)}</span><em>${esc(s.date)}</em></span>`).join('')}
+            ${result.sources.map(s => `<span class="source-chip">${ic('database', 12)}<span>${s.label === result.writeback?.coverage?.source && /^https:\/\//i.test(result.writeback.coverage.sourceUrl || "") ? `<a href="${esc(result.writeback.coverage.sourceUrl)}" target="_blank" rel="noopener noreferrer">公告原文</a>` : esc(s.label)}</span><em>${esc(s.date)}</em></span>`).join('')}
           </div>
           ${result.notUsed && result.notUsed.length ? `<p class="not-used">未使用：${result.notUsed.map(esc).join('、')}</p>` : ''}
         </section>`

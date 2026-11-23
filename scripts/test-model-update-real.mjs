@@ -19,7 +19,7 @@ const workspace = path.join(root, "project");
 await fs.mkdir(path.join(workspace, "uploads"), { recursive: true });
 const store = await openStore({ root, workspace, projectId: "test", seed: false });
 const ctx = { id: "test", root: workspace, store };
-const tracking = createTrackingService({ config: {}, bus: { broadcastGlobal() {} },
+const tracking = createTrackingService({ config: { webFetch: true }, bus: { broadcastGlobal() {} },
   projectManager: {}, sessions: {}, broadcastMaterial() {}, broadcastTracking() {} });
 ctx.approvals = createApprovalService({ store, applyModelChanges, libreOfficeAvailable: true, broadcast() {} });
 const tool = createUpdateModelTool(args => tracking.updateModel(ctx, args));
@@ -38,9 +38,15 @@ try {
     const match = /^(\??)(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})=(.+)$/.exec(spec);
     assert.ok(match, "Invalid period or filing path");
     const [, gapOnly, period, pdf] = match;
-    const disclosureFile = await upload(pdf);
+    const remote = /^https?:\/\//i.test(pdf);
+    const disclosureFile = remote ? pdf : await upload(pdf);
     const args = { modelPath, disclosureFile, period };
     const preview = (await tool.execute("preview", args)).details;
+    if (remote) {
+      assert.ok(preview.sourceUrl && preview.sha256);
+      assert.equal(await sha256File(path.join(workspace, preview.source)), preview.sha256);
+      args.disclosureFile = preview.source;
+    }
     if (gapOnly) {
       assert.equal(preview.rows.length, 0);
       assert.ok(preview.gaps.length);
@@ -48,11 +54,19 @@ try {
       continue;
     }
     assert.ok(preview.rows.length, JSON.stringify(preview.issues));
-    const proposal = (await tool.execute("submit", { ...args, previewId: preview.previewId })).details;
+    const network = globalThis.fetch;
+    let proposal;
+    try {
+      if (remote) globalThis.fetch = () => { throw new Error("Approval must use the archived PDF"); };
+      proposal = (await tool.execute("submit", { ...args, disclosureFile, previewId: preview.previewId })).details;
+    } finally {
+      globalThis.fetch = network;
+    }
     assert.ok(proposal.result.writeback.approval, proposal.result.summary);
     const approved = await ctx.approvals.approve({ ctx, id: proposal.result.writeback.approval.id });
     assert.equal(approved.ok, true, approved.error);
     const result = JSON.parse(store.getTrackingRun(proposal.runId).result_json);
+    if (remote) assert.equal(result.writeback.coverage.sourceUrl, preview.sourceUrl);
     const model = result.writeback.model;
     assert.ok(model.analysis.checks.length && model.analysis.checks.every(c => ["pass","existing"].includes(c.status)));
     assert.equal(result.writeback.coverage.matched, preview.rows.length);
