@@ -1,3 +1,5 @@
+import {pdfSearchKey} from '../../lib/remote-pdf.mjs';
+import {mentionedPdfCalculations,deliverPdfCalculationLinks} from '../../ui/chat/pdf-calculation-links.js';
 import {canonicalWorkbookRefs} from '../../lib/workbook-source-names.mjs';
 import {partialScenarioObservations} from '../../lib/partial-scenario-observations.mjs';
 import {asksModelOverview,valuationFormulaDelivery} from '../../lib/valuation-formula-delivery.mjs';
@@ -116,7 +118,16 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         const compact=compactResearchBrief(outcome.text,text,budget.chars);
         if(compact!==outcome.text)outcome={...outcome,text:compact};
       }
+      const pdfMatches = mentionedPdfCalculations(outcome.text, active.pdfCalculationEvidence || []);
+      if (pdfMatches.length && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
+        outcome = {...outcome,text:deliverPdfCalculationLinks(outcome.text,pdfMatches,entry.ctx?.id,pdfSearchKey)};
+      }
       if(entry.publishReportDelivery)outcome=await entry.publishReportDelivery(outcome,text);
+      const deliveredPdf = mentionedPdfCalculations(outcome.text, active.pdfCalculationEvidence || []);
+      if (deliveredPdf.length) {
+        const evidence = deliveredPdf.flatMap(({result,parents})=>[result,...parents]);
+        outcome = {...outcome,citations:[...new Map([...(outcome.citations || []),...evidence].map(c=>[c.id,c])).values()]};
+      }
       const summary=artifactDeliverySummary(entry.artifactSnapshot?.() || []);
       // A requested strict length remains binding; the visible file cards
       // already carry saved artifacts when there is no room for this note.
@@ -467,6 +478,7 @@ async function generateAnswer(entry, promptText, options, active) {
           .catch(error => console.warn('[chat] Could not update session topics:', error.message));
       }
       const turnCitations = rehydrateCitations({register:refreshedLedger,answer,thisTurnCitations,currentVersions,toolCalls:calls});
+      active.pdfCalculationEvidence = turnCitations;
       entry.citationIndex = turnCitations;
       if (message.researchReportHash && entry.publishReportDelivery && !calculation && !pdfDisclosure && !length && !requiredSections?.length) {
         const draft=reviewedReportForAnswer(text,entry.reportDraftSnapshot?.(),entry.artifactSnapshot?.() || [],messages);

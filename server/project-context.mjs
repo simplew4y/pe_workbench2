@@ -14,7 +14,7 @@ import { openStore } from "../store.mjs";
 import { WorkbookStore } from "../lib/workbook-store.mjs";
 import { ExcelPreviewStore } from "../lib/excel-preview.mjs";
 import { createModelWhatifTool } from "../lib/model-whatif-tool.mjs";
-import { createWorkbookBindingResolver } from '../lib/calc-source.mjs';
+import { createWorkbookBindingResolver, createPdfBindingResolver } from '../lib/calc-source.mjs';
 import { createCalcTool, createRatioTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
 import { createWorkbookTraceTool } from "../lib/workbook-trace-tool.mjs";
@@ -180,6 +180,8 @@ export function createProjectManager({
           onMaterial: (material) => broadcastMaterial(material, row.id),
         })
       : null;
+    const resolvePdfBinding = config.pdfRead ? createPdfBindingResolver(pdfs) : undefined;
+    const resolveBinding = config.workbookQuery ? createWorkbookBindingResolver({store,workbooks}) : undefined;
     const ctx = {
       id: row.id,
       name: row.name,
@@ -195,7 +197,7 @@ export function createProjectManager({
       previews,
       pdfs,
       asr,
-      tools: [createCalcTool({resolveBinding:config.workbookQuery ? createWorkbookBindingResolver({store,workbooks}) : undefined}), createRatioTool(), createUnitConvertTool(), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
+      tools: [createCalcTool({resolveBinding,resolvePdfBinding,projectId:row.id}), createRatioTool(), createUnitConvertTool({resolveBinding:resolvePdfBinding,projectId:row.id}), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
     };
     if (config.workbookQuery && config.pdfRead && updateModel) ctx.updateModel = (args, threadId) => updateModel(ctx, args, threadId);
     ctx.trace = createTraceService({

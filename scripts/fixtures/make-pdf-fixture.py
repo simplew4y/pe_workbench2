@@ -81,6 +81,16 @@ def main(target):
     pdf.showPage()
 
     draw_paragraphs(pdf, PAGE_2, height - 30 * mm)
+    pdf.setFont(FONT, 11)
+    for y, label, values in [
+        (135, "年度", ("2023", "2024")),
+        (126, "单位：人民币百万元", ()),
+        (117, "设备支出", ("1,750", "2,500")),
+        (108, "运营成本", ("900", "900")),
+    ]:
+        pdf.drawString(22*mm, y*mm, label)
+        for x, value in zip((100, 140), values):
+            pdf.drawRightString(x*mm, y*mm, value)
     pdf.showPage()
 
     draw_paragraphs(pdf, PAGE_3, height - 30 * mm)

@@ -1,3 +1,4 @@
+import {mentionedPdfCalculations,deliverPdfCalculationLinks} from './pdf-calculation-links.js';
 /** Chat transcript, live run, composer and attachments/upload. */
 
 import {
@@ -38,7 +39,7 @@ function mdInline(text) {
   return text
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/materials\/)[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
 function mdToHtml(md = '') {
@@ -275,7 +276,10 @@ function messageHTML(m, { openGroups } = {}) {
   const isUser = m.role === 'user';
   const delivered = !isUser && Boolean(m.turnId);
   const cancelled = !isUser && m.status === 'cancelled';
-  const answerText = visibleAnswerText(m);
+  let answerText = visibleAnswerText(m);
+  if (delivered && m.citations?.some(c=>c.role==='pdf_number')) {
+    answerText = deliverPdfCalculationLinks(answerText,mentionedPdfCalculations(answerText,m.citations),state.project?.id);
+  }
   let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
     : renderMarkdownHTML(answerText, '', highlightBudget);

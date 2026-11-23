@@ -427,9 +427,14 @@ def main(argv):
     parser.add_argument("path")
     parser.add_argument("--tables", action="store_true", help="also extract tables (slower)")
     parser.add_argument("--pages", default="", help="only these pages for --tables, e.g. 2-4")
+    parser.add_argument("--calculation-page", type=int, help="extract addressable numeric observations on one page")
     args = parser.parse_args(argv)
     try:
-        document = parse(args.path, tables=args.tables, page_spec=args.pages)
+        if args.calculation_page is not None:
+            from calculation_sources import calculation_sources
+            document = {"facts": calculation_sources(args.path, args.calculation_page)}
+        else:
+            document = parse(args.path, tables=args.tables, page_spec=args.pages)
         json.dump(document, sys.stdout, ensure_ascii=False, separators=(",", ":"))
         sys.stdout.write("\n")
         return 0
