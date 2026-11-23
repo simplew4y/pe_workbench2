@@ -47,6 +47,7 @@ if(['all','correction'].includes(mode)){
  try{
  const guard=createResearchReview({ctx:{root,store,workbooks}});
  guard.before('workbook_query',{});
+ assert.equal(guard.before('write',{path:'drafts/model/report.md',content:'{{fact:/value}}'}),undefined);
  assert.equal(guard.before('write',{path:'exports/report.md',content:'结论50%'}).block,true);
  assert.equal(guard.before('edit',{path:'exports/report.md',oldText:'a',newText:'b'}).block,true);
  const inline={path:'exports/inline.md',file:'uploads/model.xlsx',content:'模型售价 {{Assumption!AH122}}',save:true};

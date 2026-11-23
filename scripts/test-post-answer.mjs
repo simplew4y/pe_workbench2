@@ -1562,3 +1562,26 @@ assert.equal((await runWithPostAnswer(choiceEntry, 'B')).status,'completed');
 assert.equal(choicePrompts[1], '解释模型目标价的公式。');
 assert.match(choiceContext.at(-1), /workbook_trace/);
 assert.doesNotMatch(choiceContext.at(-1), /westock_query/);
+
+const initialPrompts = [];
+const workbookSession = { messages: [],
+  async prompt(text) {
+    initialPrompts.push(text);
+    this.messages.push({role:'assistant',stopReason:'stop',content:'模型使用预测盈利、目标倍数和折现率。'});
+  },
+};
+const workbookEntry = {session:workbookSession};
+const optionsTurn = await runWithPostAnswer(workbookEntry, '这个模型怎么看？', {attachments:['uploads/model.xlsx']});
+assert.equal(initialPrompts.length, 0);
+assert.equal(optionsTurn.status, 'completed');
+assert.match(optionsTurn.text, /^你想先弄清哪件事？/);
+assert.equal((await runWithPostAnswer(workbookEntry, 'A')).status, 'completed');
+assert.match(initialPrompts[0], /^复现原表估值/);
+assert.match(initialPrompts[0], /uploads\/model\.xlsx/);
+const scopePromises = [];
+const clearSession = {messages:[], async prompt(text) {
+  scopePromises.push(text);
+  this.messages.push({role:'assistant',stopReason:'stop',content:'先沿收入、利润、现金流和估值四条路径解释原模型。'});
+}};
+await runWithPostAnswer({session:clearSession}, '完整解释这个模型', {attachments:['uploads/model.xlsx']});
+assert.equal(scopePromises.length, 1);

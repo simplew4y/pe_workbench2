@@ -97,6 +97,8 @@ await run("systemHint scopes the investment first-screen contract", () => {
   assert.match(clarify, /可执行问题/);
   assert.match(clarify, /只回答选定方向/);
   assert.match(hint, /investment-framework/);
+  assert.match(hint, /drafts\//);
+  assert.match(hint, /普通研究报告按 review_research 保存/);
   assert.doesNotMatch(hint, /结论 → 需人工复核/);
   assert.doesNotMatch(hint, /报告链接/);
   assert.doesNotMatch(hint, /进入跟踪的失效条件/);

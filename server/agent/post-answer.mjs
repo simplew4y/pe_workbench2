@@ -28,7 +28,7 @@ import { frameworkForTurn, referencedJudgments, textOfContent } from './snapshot
 import { locateChatTopics, recentTopicDialogue } from './topic-locator.mjs';
 import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 
-import { resolveResearchChoice } from '../../lib/research-clarification.mjs';
+import { initialWorkbookClarification, researchChoices, resolveResearchChoice } from '../../lib/research-clarification.mjs';
 import { activateQueuedTurn, startTurn, saveTurnDelivery, turnTimeline } from './turn-delivery.mjs';
 import { sourceSearchGap } from './transcript-search-recovery.mjs';
 import { adoptedCitations, asksHistoricalSource, answerBlocks, answerGaps, blockingFinding, hasOcrPageSource, reportedLocatorEvidence, joinContinuation, missingSummaryItems, requestedSummaryItems, reviewBodyWithinBudget, verifiedPortion, researchPortion, workbookItemCoverage } from './answer-delivery.mjs';
@@ -40,11 +40,15 @@ import { appendDisclosure, prepareDisclosureAnswer, preparePdfDisclosure } from 
 import { citedReportConflicts, scenarioDirectionFindings } from '../../lib/financial-evidence.mjs';
 import { composeResearchAnswer, distinctEditableText, requestsEvidenceLimits } from '../../lib/answer-composition.mjs';
 
-export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
-  const { runId, attachments, ...promptOptions } = options;
-  const prompt = attachments?.length
+function promptWithAttachments(text, attachments) {
+  return attachments?.length
     ? `${text}\n\n[已上传资料]\n${attachments.map(path => `- ${path}`).join('\n')}`
     : text;
+}
+
+export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
+  const { runId, attachments, ...promptOptions } = options;
+  const prompt = promptWithAttachments(text, attachments);
   if (entry.automated) return entry.session.prompt(prompt, promptOptions);
   const previous = entry.postAnswerRun;
   const turn = { turnId: randomUUID(), question: text, startedAt: new Date().toISOString() };
@@ -136,8 +140,15 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           .some(item => item.path === framework.analysisStatePath),
       } : {};
       if (!framework && active.frameworkEdits?.size) presentation.analysisState = null;
-      const record = saveTurnDelivery(entry, { version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}), finishedAt: new Date().toISOString(), ...outcome, ...presentation,
-        ...(Object.hasOwn(outcome,'analysisState')?{analysisState:outcome.analysisState,analysisStatePath:outcome.analysisStatePath}:{} ) });
+      const clarificationAttachments = outcome.status === 'completed' && attachments?.length && researchChoices(outcome.text) ? attachments : null;
+      const record = saveTurnDelivery(entry, {
+        version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}),
+        finishedAt: new Date().toISOString(), ...outcome, ...presentation,
+        ...(clarificationAttachments ? { clarificationAttachments } : {}),
+        ...(Object.hasOwn(outcome, 'analysisState') ? {
+          analysisState: outcome.analysisState, analysisStatePath: outcome.analysisStatePath,
+        } : {}),
+      });
       try {
         broadcast({ type: 'turn.delivered', record });
         entry.onTurnDelivered?.(record);
@@ -193,7 +204,14 @@ async function generateAnswer(entry, promptText, options, active) {
   const previous = turnTimeline(entry.session).findLast(item => item.kind === 'delivery')?.record;
   const selected = previous?.status === 'completed' ? resolveResearchChoice(question, previous.text) : null;
   const text = selected ?? question;
-  if (selected) promptText = selected + promptText.slice(question.length);
+  if (selected) {
+    if (!active.attachments?.length) active.attachments = previous.clarificationAttachments;
+    promptText = promptWithAttachments(selected, active.attachments);
+  }
+  if (!previous && !entry.session.messages.some(message => message.role === 'user')) {
+    const clarification = initialWorkbookClarification(question, active.attachments);
+    if (clarification) return { status: 'completed', text: clarification, citations: [] };
+  }
   entry.ctx?.factMemory?.recover();
   let correctionCount = 0;
   let recoveryCount = 0;
