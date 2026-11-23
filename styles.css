@@ -912,6 +912,10 @@ body.is-col-resizing{cursor:col-resize;user-select:none}
 .ap-model { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #5c564a; margin-bottom: 8px; }
 .ap-changes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .ap-changes li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; background: #fff; border: 1px solid #eee5d2; border-radius: 7px; }
+.ap-changes .ap-change { display: grid; gap: 4px; padding: 10px 12px; overflow-wrap: anywhere; }
+.ap-change b { font-weight: 600; }
+.ap-change small, .ap-change details { font-size: 11px; color: #625d52; }
+.ap-change summary { cursor: pointer; }
 .ap-metric { font-weight: 600; }
 .ap-ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #4b5b6b; }
 .ap-from { color: #8c352b; }

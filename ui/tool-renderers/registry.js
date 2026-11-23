@@ -7,6 +7,7 @@
  * throwing into the message renderer.
  */
 
+import { modelChangesHTML } from "../approvals/model-change.js";
 import { citationButton } from "../chat/cell-citations.js";
 import { normalizeLocator } from "../chat/citation-locator.js";
 import { esc, safeText } from "../shared/escape.js";
@@ -204,16 +205,7 @@ export function approvalCardHTML(payload, { approval = null } = {}) {
   const workingModel = payload.workingModel;
   const status = approval?.status || payload.status || "pending_approval";
   const pending = status === "pending_approval";
-  const allChanges = Array.isArray(payload.changes) ? payload.changes : [];
-  const changes = allChanges.map((change) => `<li>
-    <span class="ap-metric">${esc(change.metric || change.ref)}</span>
-    <span class="ap-ref">${esc(change.ref)} · ${esc(change.source || "")}</span>
-    <span class="ap-from">${esc(change.from ?? "—")}</span>
-    <span class="ap-arrow">→</span>
-    <span class="ap-to">${esc(change.to ?? "—")}</span>
-    <span class="ap-badge ${change.bindingVerified ? "ok" : "warn"}">${change.bindingVerified ? "映射已验证" : "映射未验证"}</span>
-    ${change.formulaCell ? '<span class="ap-badge warn">公式单元格</span>' : ""}
-  </li>`).join("");
+  const changes = modelChangesHTML(payload, approval);
   const allOutputs = Array.isArray(payload.outputsToVerify) ? payload.outputsToVerify : [];
   const outputs = allOutputs.slice(0, 8).map((output) =>
     `<span class="ap-output">${esc(output.label || output.ref)} · ${esc(output.ref)}</span>`).join("");

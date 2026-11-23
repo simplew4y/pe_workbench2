@@ -8,6 +8,8 @@ import { openStore } from "../store.mjs";
 import { applyModelChanges } from "../lib/model-writer.mjs";
 import { createApprovalService } from "../lib/approvals/service.mjs";
 import { sha256File } from "../lib/model-disclosure.mjs";
+import { PdfStore } from "../lib/pdf-store.mjs";
+import { createPdfTool } from "../lib/pdf-tool.mjs";
 import { createUpdateModelTool } from "../lib/tracking-tool.mjs";
 import { createTrackingService } from "../server/tracking/service.mjs";
 
@@ -22,7 +24,27 @@ const ctx = { id: "test", root: workspace, store };
 const tracking = createTrackingService({ config: { webFetch: true }, bus: { broadcastGlobal() {} },
   projectManager: {}, sessions: {}, broadcastMaterial() {}, broadcastTracking() {} });
 ctx.approvals = createApprovalService({ store, applyModelChanges, libreOfficeAvailable: true, broadcast() {} });
-const tool = createUpdateModelTool(args => tracking.updateModel(ctx, args));
+const pdfs = new PdfStore({store});
+const messages = [];
+const updater = createUpdateModelTool(args => tracking.updateModel(ctx, args), {store, pdfs, messages: () => messages});
+const reader = createPdfTool({store, pdfs, workspace});
+async function execute(tool, id, args) {
+  const result = await tool.execute(id, args);
+  assert.ok(!result.isError, result.content[0].text);
+  messages.push({role:"toolResult", toolName:tool.name, ...result});
+  return result.details;
+}
+async function previewAndRead(args) {
+  const preview = await execute(updater, "preview", args);
+  let next = preview.disclosureReview.nextRead;
+  while (next) {
+    const read = await execute(reader, "pages", next);
+    const last = read.pages.at(-1);
+    assert.ok(last >= Number(next.page.split("-")[0]), "PDF read made no progress");
+    next = last < preview.pageCount ? {...next, page:(last+1) + "-" + Math.min(last+40,preview.pageCount)} : null;
+  }
+  return preview;
+}
 async function upload(file) {
   const rel = path.posix.join("uploads", path.basename(file));
   await fs.copyFile(file, path.join(workspace, rel), fs.constants.COPYFILE_EXCL);
@@ -41,7 +63,7 @@ try {
     const remote = /^https?:\/\//i.test(pdf);
     const disclosureFile = remote ? pdf : await upload(pdf);
     const args = { modelPath, disclosureFile, period };
-    const preview = (await tool.execute("preview", args)).details;
+    const preview = await previewAndRead(args);
     if (remote) {
       assert.ok(preview.sourceUrl && preview.sha256);
       assert.equal(await sha256File(path.join(workspace, preview.source)), preview.sha256);
@@ -58,10 +80,14 @@ try {
     let proposal;
     try {
       if (remote) globalThis.fetch = () => { throw new Error("Approval must use the archived PDF"); };
-      proposal = (await tool.execute("submit", { ...args, disclosureFile, previewId: preview.previewId })).details;
+      proposal = await execute(updater, "submit", { ...args, disclosureFile, previewId: preview.previewId });
     } finally {
       globalThis.fetch = network;
     }
+    const review = proposal.disclosureReview;
+    assert.ok(!review.nextRead);
+    assert.equal(review.pagesRead + new Set(review.unreadablePages).size, preview.pageCount);
+    console.log(period + " read " + review.pagesRead + "/" + preview.pageCount + " pages, " + preview.rows.length + " mapped metrics");
     assert.ok(proposal.result.writeback.approval, proposal.result.summary);
     const approved = await ctx.approvals.approve({ ctx, id: proposal.result.writeback.approval.id });
     assert.equal(approved.ok, true, approved.error);
@@ -72,13 +98,13 @@ try {
     assert.equal(result.writeback.coverage.matched, preview.rows.length);
     latest = path.join(workspace, model.file);
     const sha = await sha256File(latest);
-    const repeated = (await tool.execute("preview", args)).details;
-    const settled = (await tool.execute("submit", { ...args, previewId: repeated.previewId })).details;
+    const repeated = await previewAndRead(args);
+    const settled = await execute(updater, "submit", { ...args, previewId: repeated.previewId });
     assert.equal(settled.result.modelChanges.length, 0, "The same filing produced additional changes");
     assert.ok(!settled.result.writeback.approval);
     assert.equal(store.findMaterialByPath(model.file).versions[0].v, model.version);
     assert.equal(await sha256File(latest), sha);
-    runs.push({ period, disclosureFile, preview, result, repeatedStatus: settled.result.status,
+    runs.push({ period, disclosureFile, preview, disclosureReview:review, result, repeatedStatus: settled.result.status,
       repeatedCoverage: settled.result.writeback.coverage.complete, sha256: sha });
     console.log(period, preview.rows.length, "rows verified, repeat produced zero changes");
   }

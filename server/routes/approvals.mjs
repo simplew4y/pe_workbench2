@@ -1,18 +1,16 @@
-import fs from "node:fs";
-import fsp from "node:fs/promises";
-import path from "node:path";
-import crypto from "node:crypto";
+import { withApprovalRowLabels } from "../../lib/approvals/service.mjs";
 
 export async function handleApprovals({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
   const pathname = url.pathname;
   if (pathname === "/api/approvals" && req.method === "GET") {
-    return json(res, 200, ctx.approvals.list({
+    const items = ctx.approvals.list({
       threadId: url.searchParams.get("threadId") || null,
       trackingId: url.searchParams.get("trackingId") || null,
       status: url.searchParams.get("status") || null,
       limit: Number(url.searchParams.get("limit") || 100),
-    }));
+    });
+    return json(res, 200, await Promise.all(items.map(item => withApprovalRowLabels(ctx.workbooks, item))));
   }
 
   const approvalMatch = pathname.match(/^\/api\/approvals\/([^/]+)(?:\/(approve|reject))?$/);
@@ -26,7 +24,7 @@ export async function handleApprovals({ req, res, url, app, ctx }) {
     const action = approvalMatch[2];
     if (!action && req.method === "GET") {
       const approval = ctx.approvals.get(approvalId);
-      return approval ? json(res, 200, approval) : json(res, 404, { error: "approval not found" });
+      return approval ? json(res, 200, await withApprovalRowLabels(ctx.workbooks, approval)) : json(res, 404, { error: "approval not found" });
     }
     if (action === "approve" && req.method === "POST") {
       const result = await ctx.approvals.approve({ ctx, id: approvalId });

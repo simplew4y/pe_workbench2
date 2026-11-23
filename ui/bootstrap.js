@@ -581,8 +581,7 @@ async function refreshSnapshot({
     if (!applyTurnSnapshot(state, snap, { forceStopped, preserveLive })) return null;
     state.pendingMerges = snap.pendingMerges || [];
     if (Array.isArray(snap.approvals)) {
-      const ids = new Set(snap.approvals.map((item) => item.id));
-      state.approvals = [...snap.approvals, ...state.approvals.filter((item) => !ids.has(item.id))];
+      for (const item of [...snap.approvals].reverse()) upsertApproval(item);
     }
     if (state.streaming && (watch || snap.activeTurnId)) scheduleSnapshotPoll(700);
     else {

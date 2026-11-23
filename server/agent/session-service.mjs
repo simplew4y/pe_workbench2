@@ -162,8 +162,13 @@ export function createSessionService({
     let entry;
     const metadata=()=>({session_id:session?.sessionId || id || '',run_id:entry?.localRunId || '',turn:session?.messages?.filter(m=>m.role==='user'&&!m.peInternal&&!m.customType).length || 0,actor:automated||writeRoots?'automation':'agent'});
     const memoryTools=ctx.factMemory ? createFactMemoryTools({memory:ctx.factMemory,getMetadata:metadata}) : [];
+    const deliveredPdfReads = new Set((restoredManager?.getBranch() || [])
+      .filter(e => e.type === "custom" && e.customType === "pe_disclosure_read").flatMap(e => e.data.ids));
     const sessionTools = automated || writeRoots ? memoryTools.filter(t=>t.name==='fact_query') : [
-      ...(ctx.updateModel ? [createUpdateModelTool(args => ctx.updateModel(args, metadata().session_id))] : []),
+      ...(ctx.updateModel ? [createUpdateModelTool(args => ctx.updateModel(args, metadata().session_id),
+        { store: ctx.store, pdfs: ctx.pdfs, workbooks:ctx.workbooks, messages: () => session.sessionManager?.getBranch?.()
+          .filter(e => e.type === "message" && (e.message.toolName !== "pdf_read" || deliveredPdfReads.has(e.message.toolCallId)))
+          .map(e => e.message) ?? session.messages })] : []),
       ...memoryTools,
       createLedgerTool({ctx, getSessionId: () => session.sessionId,
         getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
@@ -196,16 +201,25 @@ export function createSessionService({
       });
       session = created.session;
       const stream = session.agent.streamFunction;
-      session.agent.streamFunction = (model, context, options) => {
+      session.agent.streamFunction = async (model, context, options) => {
         const transcript = normalizeContext(context);
         const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens);
         if (!assessContextBudget(messages, model, options?.maxTokens).ok) return contextBudgetFailureStream(model);
         const request = { messages };
-        return stream(model, request, {
+        let sentIds = [];
+        const response = await stream(model, request, {
           ...options,
           onPayload: async (payload, requestModel) => {
             const transformed = await options?.onPayload?.(payload, requestModel);
             const outgoing = config.modelPayload ? await config.modelPayload(transformed ?? payload, requestModel) : transformed ?? payload;
+            // Only count a page batch when the provider request actually includes its full text.
+            // Persist call IDs on this branch so compaction does not force a second reading.
+            const pdfReads = transcript.messages.filter(m => m.role === "toolResult" && m.toolName === "pdf_read" &&
+              m.details?.fullPageBatch && !deliveredPdfReads.has(m.toolCallId));
+            sentIds = pdfReads.filter(m => outgoing?.messages?.some(w => w.role === "tool" &&
+              w.tool_call_id === m.toolCallId && m.content.filter(b => b.type === "text").every(b =>
+                typeof w.content === "string" ? w.content.includes(b.text) : w.content?.some(c => c.text?.includes(b.text)))))
+              .map(m => m.toolCallId);
             // Record only non-secret execution settings, never request content or keys.
             if (entry?.activeTurn && !entry.activeTurn.modelRequestRecorded) {
               entry.activeTurn.modelRequestRecorded = true;
@@ -219,6 +233,13 @@ export function createSessionService({
             return outgoing;
           },
         });
+        void response.result().then(answer => {
+          const confirmed = sentIds.filter(id => !deliveredPdfReads.has(id));
+          if (!confirmed.length || !["stop","length","toolUse"].includes(answer.stopReason)) return;
+          session.sessionManager.appendCustomEntry("pe_disclosure_read", {ids:confirmed});
+          for (const id of confirmed) deliveredPdfReads.add(id);
+        }).catch(() => { /* A failed request or persistence error leaves the batch pending. */ });
+        return response;
       };
       researchReview.restoreEvidence(session.messages);
       // Use the configured provider for review and repair requests as well as chat.
