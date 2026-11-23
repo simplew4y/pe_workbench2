@@ -1,4 +1,5 @@
 /** Offline, immutable-source replay of recorded report submissions. No provider. */
+import {recordedFactContext} from './recorded-fact-context.mjs';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -84,12 +85,19 @@ try {
 
     if(!audit)return {ok:false,status:'unavailable',issues:[{check:'audit',reason:'该提交没有对应已录制审校回执，离线回放不能生成新裁决'}]};
     if(args['review-loop']==='true'){
+     const exactBody=createHash('sha256').update(content).digest('hex')===audit.draftHash;
+     const oldSemanticPass=exactBody && audit.status==='reviewed' && audit.checks &&
+       Object.values(audit.checks).every(check=>check==='pass'||check==='not_applicable');
+     // Older records combined local and semantic findings. When every recorded
+     // semantic check passed, re-run the local checks on the identical report.
+     const issues=exactBody && Array.isArray(audit.reviewIssues)?audit.reviewIssues:
+       oldSemanticPass?[]:(audit.issues || []).filter(i=>i.check!=='audit');
      const provider=async(_model,context,options)=>{
       const stopReason=options.reasoning==='low' && audit.auditAttempts?.[0]?.stopReason==='length'?'length':'stop';
       const payload=JSON.parse(context.messages[0].content[0].text);
       providerAttempts.push({reasoning:options.reasoning,stopReason,inputChars:context.messages[0].content[0].text.length,
        includedCalculationIds:payload.timeline.filter(r=>r.role==='toolResult' && !r.isError && ['model_whatif','calc','ratio','unit_convert'].includes(r.toolName)).map(r=>r.toolCallId)});
-      const message={stopReason,content:[{type:'text',text:JSON.stringify({checks:audit.checks,issues:(audit.issues || []).filter(i=>i.check!=='audit'),inputCoverageGaps:audit.inputCoverageGaps || []})}]};
+      const message={stopReason,content:[{type:'text',text:JSON.stringify({checks:audit.checks,issues,inputCoverageGaps:audit.inputCoverageGaps || []})}]};
       return {async *[Symbol.asyncIterator](){yield {type:'done'};},result:async()=>message};
      };
      const question=messages.slice(0,index).filter(m=>m.role==='user').at(-1)?.content;
@@ -111,12 +119,15 @@ try {
    const result=await execute();
    const savedBeforeHandoff=review.draftSnapshot()?.saved;
    let handoff;
-   if(args.handoff==='true' && !result.isError && audit?.ok && original && !original.isError) {
+   const recoveredSave=args.handoff==='replayed' && original?.isError && replayedVerdict?.ok &&
+     audit?.status==='reviewed' && audit.draftHash===review.draftSnapshot()?.reviewedHash;
+   if(!result.isError && ((args.handoff==='true' && audit?.ok && original && !original.isError) || recoveredSave)) {
      const report=review.draftSnapshot();
      assert.equal(report.reviewedHash,audit.draftHash,'report must match the recorded approval');
      assert.equal(report.reviewedHash,createHash('sha256').update(report.content).digest('hex'));
      const until=messages.indexOf(original),start=messages.slice(0,index).findLastIndex(m=>m.role==='user');
      const history=messages.slice(start,until+1);
+     if(recoveredSave)history[history.length-1]={...original,...result,isError:false};
      const terminal=messages[until+1];
      const signoff=terminal?.researchReportHash===audit.draftHash?terminal.content:
        [{type:'text',text:read(args.audit).find(a=>a.kind==='answer' && Date.parse(a.at)>=Number(original.timestamp))?.draft}];
@@ -134,10 +145,12 @@ try {
        async sendCustomMessage(_message,options){assert.ok(!options.triggerTurn,'unexpected second answer generation');}};
      const facts=args.facts?JSON.parse(fs.readFileSync(args.facts,'utf8')):[];
      assert.ok(facts.every(f=>Date.parse(f.created_at)<=original.timestamp),'fact snapshot must predate the answer');
-     const factMemory=args.facts?{recover(){},query:()=>({status:'found',facts,total:facts.length})}:undefined;
+     const reconstructed=args['recorded-facts']==='true'?recordedFactContext(root,rows.find(r=>r.type==='session')?.id):null;
+     if(reconstructed)messages.slice(0,until+1).forEach(reconstructed.observe);
+     const factMemory=reconstructed || (args.facts?{recover(){},query:()=>({status:'found',facts,total:facts.length})}:undefined);
      const delivery=await runWithPostAnswer({session,ctx:{root,factMemory},reconcileEvidence:async()=>{bindingReviews++;throw Error('unexpected answer binding review');},reportDraftSnapshot:review.draftSnapshot,
        artifactSnapshot:review.artifactSnapshot,publishReportDelivery:review.publishDelivery},question);
-     assert.equal(delivery.reviewedReportHash,audit.draftHash,JSON.stringify({status:delivery.status,reason:delivery.reason,records:records.map(r=>r.type)}));
+     assert.equal(delivery.reviewedReportHash,audit.draftHash,JSON.stringify({status:delivery.status,reason:delivery.reason,answerAudits,bindingReviews,signoffs,reportMarker:sessionMessages.at(-1)?.researchReportHash,priorReason:delivery.publicationReview?.priorReason,findings:records.findLast(r=>r.type==='pe_answer_lint')?.data?.findings?.filter(f=>f.severity==='error').slice(0,2).map(f=>[f.rule,f.message,f.excerpt?.slice(0,100)])}));
      assert.equal(answerAudits,0);assert.equal(bindingReviews,0);assert.equal(signoffs,1);
      assert.equal(fs.readFileSync(path.join(root,report.path),'utf8'),delivery.text);
      assert.ok(delivery.text.startsWith(report.content),'all reviewed text must survive publication');
@@ -157,8 +170,9 @@ try {
        fs.mkdirSync(path.dirname(target),{recursive:true});
        fs.copyFileSync(path.join(root,relative),target);
      }
-     handoff={answerAudits,bindingReviews,signoffs,registeredFacts:facts.length,status:delivery.status,reportHash:audit.draftHash,reviewedChars:report.content.length,deliveredChars:delivery.text.length,
+     handoff={recoveredSave,answerAudits,bindingReviews,signoffs,registeredFacts:reconstructed?reconstructed.query({limit:100}).facts.length:facts.length,status:delivery.status,reportHash:audit.draftHash,reviewedChars:report.content.length,deliveredChars:delivery.text.length,
        stateStatus:publishedState.delivery.status,trackingEnabled:publishedState.delivery.trackingEnabled,counts};
+     reconstructed?.close();
    }
    const repeated=handoff?result:await execute();
    const detail=result.details || {};
@@ -171,7 +185,7 @@ try {
     providerAttempts,arithmeticCorrections:replayedVerdict?.arithmeticCorrections,recordedVerdictReplay:args['review-loop']==='true',newFinancialVerdict:false});
   }
  }
- if(args.handoff==='true')assert.ok(summaries.some(s=>s.handoff),'no approved delivery replayed');
+ if(['true','replayed'].includes(args.handoff))assert.ok(summaries.some(s=>s.handoff),'no approved delivery replayed');
  fs.mkdirSync(args.output,{recursive:true});
  fs.writeFileSync(path.join(args.output,'report-flow-replay.json'),JSON.stringify({network:false,paidCalls:0,reports:summaries},null,2));
  console.log(JSON.stringify({network:false,paidCalls:0,reports:summaries.map(({remainingErrors,...s})=>s)},null,2));

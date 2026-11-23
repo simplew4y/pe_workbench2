@@ -595,6 +595,19 @@ sys.stdout.buffer.write(data.getvalue())
           const group = ui.page.locator("#liveTools .tool-group");
           await group.locator(".tool-row.done").nth(2).waitFor({ state: "attached" });
           await checkResults(group, calls, book);
+          const summary = group.locator(':scope > summary');
+          const refresh = () => ui.page.evaluate(async () => {
+            const { runtime } = await import('/ui/runtime.js');
+            await runtime.refreshSnapshot({ watch: false, throwOnError: true });
+          });
+          await summary.focus();
+          await refresh();
+          assert.ok(await group.evaluate(g => g.open && g.querySelector('summary') === document.activeElement));
+          await summary.press('Enter');
+          await refresh();
+          assert.equal(await group.evaluate(g => g.open), false);
+          await summary.press('Enter');
+          assert.ok(await group.evaluate(g => g.open));
         });
         await ui.context.setOffline(true);
         model.resume();
@@ -1647,6 +1660,16 @@ for filename, value in [('A.xlsx', 111), ('B.xlsx', 222)]:
       const { record } = await turn("请帮我列出收入和净利润", [
         ...reads.map(coord => query(a, "Model", coord)), { text: response },
       ], { attachments: [a.path] });
+      if (name === "swapped references before the claims") {
+        // Reconstruct from the two independent cell reads. Do not keep the
+        // draft's switched references or mark the original claims verified.
+        assert.equal(record.status, "partial");
+        assert.match(record.text, /净利润 33（\[A\.xlsx\]Model!B3）/);
+        assert.match(record.text, /收入 111（\[A\.xlsx\]Model!B2）/);
+        assert.ok(!record.text.includes(response));
+        assert.deepEqual(new Set(record.citations.map(c=>c.locator)),new Set(["Model!B2","Model!B3"]));
+        return;
+      }
       assert.equal(record.status, "failed", JSON.stringify(record));
       assert.equal(record.text, "");
       assert.deepEqual(record.citations, []);

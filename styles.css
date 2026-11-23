@@ -183,10 +183,6 @@ svg{display:block}
 .msg-body p{margin:0 0 8px}
 .msg-failure{margin:0;padding:8px 10px;border:1px solid #ead7c6;border-radius:8px;background:#f7e8dc;color:#8a5b21}
 .answer-note{margin-top:16px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;line-height:1.6;color:var(--muted,#656560)}
-.answer-diagnostics{margin-top:6px;overflow-wrap:anywhere}
-.answer-diagnostics summary{cursor:pointer;width:fit-content;text-decoration:underline;text-underline-offset:3px}
-.answer-diagnostics summary:focus-visible{outline:2px solid var(--blue-fg,#245d88);outline-offset:3px;border-radius:2px}
-.answer-diagnostics[open] summary{margin-bottom:8px}
 .msg-body p:last-child{margin-bottom:0}
 .msg.user .msg-body{color:#1D1D1B}
 .msg-files{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}

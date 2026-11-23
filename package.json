@@ -35,7 +35,7 @@
     "test:report-flow": "node scripts/test-report-tool-flow.mjs",
     "test:root-chain": "node --test scripts/test-research-root-chain.mjs scripts/test-report-publication.mjs scripts/test-delivery-bundle.mjs",
     "test:review-loop": "node --test scripts/test-review-loop.mjs",
-    "test:evidence-retention": "node scripts/test-research-evidence-retention.mjs && node scripts/test-financial-claim-matching.mjs && node scripts/test-task-delivery-consistency.mjs",
+    "test:evidence-retention": "node scripts/test-partial-source-delivery.mjs && node scripts/test-research-evidence-retention.mjs && node scripts/test-financial-claim-matching.mjs && node scripts/test-task-delivery-consistency.mjs && node scripts/test-research-delivery-invariants.mjs",
     "test:report-publication": "node scripts/test-report-publication.mjs",
     "test:delivery-bundle": "node scripts/test-delivery-bundle.mjs",
     "test:model-update": "node scripts/test-model-update.mjs",

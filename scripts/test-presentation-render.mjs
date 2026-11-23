@@ -1,3 +1,4 @@
+import { visibleAnswerText, linkDeclaredPages } from '../ui/chat/answer-presentation.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -213,6 +214,7 @@ assert.ok(renderPresentation(freshState,{asOf:turnOptions.asOf}).includes('çŽ°ä»
 // Exercise the actual message renderer so a lost snapshot boundary cannot silently hide current quotes.
 const messageRenderer=vm.runInNewContext(`${renderer.slice(renderer.indexOf('function messageHTML('),renderer.indexOf('let renderScheduled'))}; messageHTML`,{
   renderFrameworkPresentation: (s, options) => renderPresentation(s,{...options,asOf:options.asOf ?? '2026-11-03T02:10:00Z'}),
+  visibleAnswerText, linkDeclaredPages,
   renderMarkdownHTML: () => '', toolGroupHTML: () => '', reportPathsFor: () => [],
   esc: value => value, icon: () => '',
 });

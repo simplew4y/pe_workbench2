@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {recordedFactContext} from './recorded-fact-context.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
@@ -100,7 +101,8 @@ fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:
 // This cannot predict how a live model will rewrite after a changed audit.
 const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
 const branch=structuredClone(priorRows);
-const appendMessage=message=>{sessionMessages.push(message);branch.push({type:'message',message});};
+let recordedMemory;
+const appendMessage=message=>{recordedMemory?.observe(message);sessionMessages.push(message);branch.push({type:'message',message});};
 let replayCursor=0;
 const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,appendCustomEntry(type,data){records.push({type,data});branch.push({type:'custom',customType:type,data});}},
  async prompt(){
@@ -117,6 +119,10 @@ const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,app
  async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
 };
 const replayRoot=fs.mkdtempSync(path.join(os.tmpdir(),'research-delivery-replay-'));
+if (process.argv.includes('--recorded-facts')) {
+ recordedMemory=recordedFactContext(replayRoot,allRows.find(r=>r.type==='session')?.id);
+ priorMessages.forEach(recordedMemory.observe);
+}
 const published=[];
 const finalReceipts=()=>[...new Map([...fileReceipts(),...published].map(r=>[r.path,r])).values()];
 for(const receipt of fileReceipts()) {
@@ -128,7 +134,7 @@ const reportDraft=lastReport ? {path:lastReport.args.path,content:lastReport.arg
  fs.existsSync(path.join(replayRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(replayRoot,lastReport.args.path))) : null,
  issues:lastReport.success?[]:['录制的报告审校未通过']} : null;
 let deliveryRecord;
-try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artifactSnapshot:finalReceipts,
+try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot,factMemory:recordedMemory},artifactSnapshot:finalReceipts,
  publishReportDelivery:(outcome,question)=>publishFinalReport({root:replayRoot,draft:reportDraft,outcome,question,receipts:finalReceipts(),record:receipt=>{
   published.push(receipt);
   const destination=path.join(output,'published',receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
@@ -140,7 +146,7 @@ try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot},artif
   return {findings:findings.map(f=>({...f,...accepted.get(findingKey(f)),sourceText:f.sourceText})),status:'recorded_replay'};
  }},question,{attachments});
  if(published.length)fs.cpSync(path.join(replayRoot,'exports'),path.join(output,'published','exports'),{recursive:true});
-} finally {fs.rmSync(replayRoot,{recursive:true,force:true});}
+} finally {recordedMemory?.close();fs.rmSync(replayRoot,{recursive:true,force:true});}
 assert(['partial','completed'].includes(deliveryRecord.status),JSON.stringify(deliveryRecord));
 assert.deepEqual(artifactDeliveryFindings(deliveryRecord.text,finalReceipts()),[],'Final persisted delivery must agree with file readback receipts');
 fs.writeFileSync(path.join(output,'delivery.json'),JSON.stringify({network:false,generations,delivery:deliveryRecord,requests,records},null,2));

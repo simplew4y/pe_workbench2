@@ -796,8 +796,17 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     return !value.replace(/\[[^\]]+\]|[A-Z]{1,3}\d+|模型全模型重算|模型重算|全模型重算|[\s、，；;。.*`]/g,'');
   };
   const tokens=Lexer.lex(answer), rejectedDependency=answerDependencies(tokens,blocking,dependent);
-  let notice=false,contentCount=0;
+  let notice=false,contentCount=0,missingAntecedent=false;
   const omit=()=>{if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
+  const deliveredCorrections=new Set();
+  const repair=issues=>{
+    for(const finding of issues) {
+      if(finding.rule!=='research_reasoning' || !finding.correction || deliveredCorrections.has(finding.correction))continue;
+      kept.push(finding.correction);
+      deliveredCorrections.add(finding.correction);
+      contentCount++;
+    }
+  };
   const retain=(raw,token)=>{
     if(!raw.trim())return;
     const issues=blocking.filter(f=>span(f) && overlaps(raw,span(f)));
@@ -807,23 +816,50 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
     // A verdict paragraph carries one argument across its sentences. Do not
     // keep its unmarked continuation after removing only the opening verdict.
-    if(!issues.length && rejectedDependency(raw,token)){omit();return;}
-    if(!issues.length && !sentences.some(sentence=>rejectedDependency(sentence,token))) {
+    if(!issues.length && rejectedDependency(raw,token)){missingAntecedent=true;omit();return;}
+    const pointer=/^(?:注意[，,]?\s*)?(?:前者|后者|二者|两者|这两项|它们|但它|而它)/;
+    if(!issues.length && !(missingAntecedent && pointer.test(plain(raw))) && !sentences.some(sentence=>rejectedDependency(sentence,token))) {
       if(citationOnly(raw))return;
-      kept.push(presentation(correctionText(raw)));contentCount++;return;
+      kept.push(presentation(correctionText(raw)));missingAntecedent=false;contentCount++;return;
     }
     // Preserve independent complete sentences. If an issue spans multiple
     // sentences, keep the whole span blocked; never guess its numeric target.
     const multi=sentences.length>1 && issues.every(f=>sentences.some(s=>plain(s).includes(plain(span(f)))));
-    if(!multi){omit();return;}
+    if(!multi && issues.length){missingAntecedent=true;omit();repair(issues);return;}
+    let group=[],topic='';
+    const flush=()=>{
+      if(group.length){
+        const joined=group.map((s,i)=>i && group[i-1].endsWith('**')?' '+s:s).join('');
+        kept.push(joined);contentCount++;group=[];
+      }
+    };
     for(const sentence of sentences) {
-      if(issues.some(f=>overlaps(sentence,span(f))) || rejectedDependency(sentence,token))omit();
-      else if(!citationOnly(sentence)){kept.push(presentation(correctionText(sentence)));contentCount++;}
+      const local=issues.filter(f=>overlaps(sentence,span(f)));
+      if(local.length || rejectedDependency(sentence,token)) {
+        flush();omit();repair(local);missingAntecedent=true;
+        // Carry only a user-requested dimension, never a rejected verdict.
+        const heading=plain(sentence).match(/^([\p{L}]{2,8})[：:]/u)?.[1];
+        topic=heading && question.includes(heading) ? heading+'：' : '';
+      } else if(!citationOnly(sentence)) {
+        let value=presentation(correctionText(sentence));
+        if(missingAntecedent && pointer.test(plain(value))) {
+          // A scope qualification can stand on its own when it names the method.
+          // Its following pronoun still cannot inherit the rejected comparison.
+          const method=value.match(/^(?:注意[，,]?\s*)?(?:前者|后者)((?:用|采用|使用|按).+?(?:不能|无法|仅能|只适用).+)/);
+          if(method)group.push(method[1].replace(/[；;]$/,'。'));
+          continue;
+        }
+        missingAntecedent=false;
+        group.push((/^(若|如|需|看|跟踪)/.test(value)?topic:'')+value);
+        topic='';
+      }
     }
+    flush();
   };
   for(const token of tokens) {
     if(token.type==='space')continue;
     if(token.type==='heading') {
+      missingAntecedent=false;
       // Numeric assertions in headings need the same check as body claims.
       if(blocking.some(f=>span(f) && overlaps(token.raw,span(f)))){omit();continue;}
       // A verdict heading is itself dependent on possibly removed premises.
@@ -843,14 +879,20 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
   }
   if(!contentCount)return '';
   if (!kept.length) return '';
+  // Lead with the supported answer. The partial delivery state and its reason
+  // belong to the host's disclosure; specific limits still stay with the text.
+  const joined=kept.join('\n\n');
+  // Keep a proposed directional test distinct from an observed deterioration.
+  const needsCustomerTest=/可验证|证伪|推翻/.test(question) &&
+    blocking.some(f=>f.rule==='delivery_gap' && /客户/.test(f.message) && /方向|推翻/.test(f.message));
+  const readable=needsCustomerTest ? joined.replace(/(?:看|跟踪|观察)(?:同批客户的)?续约(?:单)?价(?:格)?[、与及和]应收(?:账款)?周转(?:天数)?/g,
+    '比较同批客户的续约价与应收周转天数。若续约降价或回款变慢，应下调对客户质量的判断') : joined;
   const labels={value:'数值',unit:'单位',currency:'币种',period:'期间',metric:'指标口径',basis_type:'实际与预测口径',dependency:'计算依据',source:'来源'};
   const gaps=[...new Set(findings.filter(blockingFinding).map(f=>
     f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
-    f.rule==='delivery_gap' ? (f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
+    f.rule==='delivery_gap' ? (readable!==joined && /客户/.test(f.message) && /续约价/.test(f.message) && /应收周转/.test(f.message) ? '客户续约与回款的实际结果' : f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
   ))].slice(0,6);
-  // Lead with the supported answer. The partial delivery state and its reason
-  // belong to the host's disclosure; specific limits still stay with the text.
-  const body=closeResearchDocument(answer,kept.join('\n\n')).text+
+  const body=closeResearchDocument(answer,readable).text+
     '\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
   // Let the existing sentence-aware bounded fallback handle strict budgets.
   // Never truncate a number, source, table or JSON object by character slicing.

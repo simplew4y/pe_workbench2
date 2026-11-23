@@ -12,28 +12,48 @@ const citation = { id: 'b', materialId: 'workbook-b', version: 1, locator: 'Mode
 const unused = { id: 'a', materialId: 'workbook-a', version: 1, locator: 'Model!A1' };
 const tool = { id: 'c', name: 'read', status: 'done', citations: [unused, citation] };
 
-// Persisted legacy banners move to disclosure without editing the original
-// delivery or hiding the answer's substantive caveats.
+// Legacy host notices stay hidden while substantive caveats remain visible.
 {
   const banner='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。';
   const text=banner+'\n\n核心驱动是销量和利润率。分部利润口径仍需核对。';
   const record={role:'assistant',turnId:'legacy-note',status:'partial',text,reason:'指标待核 <script>'};
-  const html=messageHTML(record),main=html.split('<aside class="answer-note">')[0];
-  assert.doesNotMatch(main,/本次尚未完成全部核验/);
-  assert.match(main,/核心驱动是销量和利润率/);assert.match(main,/分部利润口径仍需核对/);
-  assert.ok(html.indexOf(banner)>html.indexOf('<details class="answer-diagnostics">'));
-  assert.match(html,/指标待核 &lt;script&gt;/);assert.doesNotMatch(html,/answer-diagnostics" open/);
+  const html=messageHTML(record);
+  assert.doesNotMatch(html,/本次尚未完成全部核验|answer-note|answer-diagnostics|指标待核/);
+  assert.match(html,/核心驱动是销量和利润率/);assert.match(html,/分部利润口径仍需核对/);
   assert.equal(record.text,text);assert.equal(record.status,'partial');
   assert.match(messageHTML({role:'user',text}),/本次尚未完成全部核验/);
-  assert.match(messageHTML({...record,text:'引用：'+text}).split('<aside')[0],/本次尚未完成全部核验/);
+  assert.match(messageHTML({...record,text:'引用：'+text}),/本次尚未完成全部核验/);
   assert.match(messageHTML({...record,text:banner}),/本次分析尚未形成可交付答复/);
   const section='本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。';
   const sectionHTML=messageHTML({...record,text:'核心驱动是销量。\n\n> '+section+'\n\n利润口径仍需核对。'});
-  assert.doesNotMatch(sectionHTML.split('<aside')[0],/本节部分内容/);
-  assert.match(sectionHTML.split('<aside')[0],/利润口径仍需核对/);
-  assert.ok(sectionHTML.indexOf(section)>sectionHTML.indexOf('<details'));
+  assert.doesNotMatch(sectionHTML,/本节部分内容/);
+  assert.match(sectionHTML,/利润口径仍需核对/);
   const quoted=messageHTML({...record,text:'示例：\n```text\n> '+section+'\n```'});
-  assert.match(quoted.split('<aside')[0],/本节部分内容/);
+  assert.match(quoted,/本节部分内容/);
+}
+
+// Host diagnostics are persisted verbatim. Near-matching financial caveats,
+// quoted examples and source amounts with ambiguous identity remain untouched.
+{
+  const footer='**仍待核实**：部分结论的证据；cogs的单位；客户续约与回款的实际结果。';
+  const boundary='**证据边界**：部分引用的指标口径、单位、情景、期间尚未完整识别，仍需对照原表确认。以上分析保留这一不确定性，不应视为这些数据已完成独立核验。';
+  const m={role:'assistant',status:'partial',text:['客户：续约降价会改变客户质量判断。','估值：其余假设沿用原表。',footer,boundary].join('\n\n')};
+  const html=messageHTML(m);
+  assert.match(html,/续约降价会改变客户质量判断。 尚缺客户续约与回款的实际结果。[\s\S]*估值/);
+  assert.doesNotMatch(html,/cogs的单位|部分引用的指标口径/);
+  assert.ok(m.text.endsWith(boundary));
+  assert.doesNotMatch(messageHTML({...m,status:'completed',text:boundary}),/尚未完整识别/);
+  for(const text of ['**证据边界**：分部收入缺同口径成本，不能据此推断分部利润。',
+    '**仍待核实**：客户是否已在次期退货。','\x60\x60\x60text\n'+boundary+'\n\x60\x60\x60','> '+boundary]){
+    assert.match(messageHTML({...m,text}),/分部利润|次期退货|尚未完整识别/);
+  }
+  assert.match(messageHTML({...m,role:'user',text:boundary}),/尚未完整识别/);
+  const raw='- 2024 Revenue 125（[Example.xlsx]Sheet1!D3），原式 \x60=D5+D6\x60。';
+  const c={filename:'Example.xlsx',locator:'Sheet1!D3',value:125,metric:'Revenue'};
+  assert.match(messageHTML({...m,text:raw,citations:[c]}),/单凭该格无法换算成亿元/);
+  for(const cs of [[{...c,value:12}],[c,c],[{...c,raw_unit:'CNY mn'}],[]]) {
+    assert.doesNotMatch(messageHTML({...m,text:raw,citations:cs}),/无法换算成亿元/);
+  }
 }
 
 function page() {
@@ -92,9 +112,7 @@ for (const [status, body, label] of [
     if (body.includes('B2')) assert.match(html, /data-material-id="workbook-b"/);
     assert.match(html, /<details class="tool-group">/);
     if (status==='partial') {
-      assert.match(html,/部分结论仍待核实/);
-      assert.match(html,/<details class="answer-diagnostics"><summary>查看核验详情<\/summary><p>原因<\/p><\/details>/);
-      assert.doesNotMatch(html,/部分完成 ·|answer-diagnostics" open/);
+      assert.doesNotMatch(html,/部分结论仍待核实|查看核验详情|answer-note|answer-diagnostics/);
       assert.match(html,/tool-summary-meta">已结束/);
     } else if (label) assert.ok(html.includes(label + ' · 原因'));
     client.handle(final);

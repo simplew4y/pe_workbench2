@@ -11,6 +11,7 @@ import { approvalsShelfHTML } from "../approvals/approvals.js";
 import { renderToolPresentation } from "../tool-renderers/registry.js";
 import { sanitizeMarkdown } from "../previews/previews.js";
 import { renderFrameworkPresentation } from "./presentation.js";
+import { visibleAnswerText, linkDeclaredPages } from "./answer-presentation.js";
 import { linkCitations } from "./cell-citations.js";
 import { runtime } from "../runtime.js";
 import { getThreadScroll } from "./thread-scroll.js";
@@ -274,39 +275,17 @@ function messageHTML(m, { openGroups } = {}) {
   const isUser = m.role === 'user';
   const delivered = !isUser && Boolean(m.turnId);
   const cancelled = !isUser && m.status === 'cancelled';
-  // Older deliveries persisted this host-generated banner in the body. Move
-  // only that exact leading banner to diagnostics; never rewrite saved text,
-  // user quotations, research conclusions or specific evidence limitations.
-  const legacyNotice='本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。';
-  const relocateNotice=!isUser && m.status==='partial' &&
-    ((m.text || '')===legacyNotice || (m.text || '').startsWith(legacyNotice+'\n\n'));
-  let answerText=relocateNotice?m.text.slice(legacyNotice.length).trimStart():m.text || '';
-  const relocatedSections=[];
-  if(!isUser && m.status==='partial') {
-    const hostSectionNotice='本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。';
-    let fence=null;
-    answerText=answerText.split('\n').filter(line=>{
-      const marker=line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if(marker) {
-        if(!fence)fence=marker[1];
-        else if(marker[1][0]===fence[0] && marker[1].length>=fence.length)fence=null;
-        return true;
-      }
-      if(!fence && line==='> '+hostSectionNotice){relocatedSections.push(hostSectionNotice);return false;}
-      return true;
-    }).join('\n');
-  }
+  const answerText = visibleAnswerText(m);
   let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
     : renderMarkdownHTML(answerText, '', highlightBudget);
   const citations = m.citations ?? (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
+  if (!isUser && (m.status === 'partial' || m.status === 'completed')) body = linkDeclaredPages(body);
   // The vm-based renderer test intentionally omits the module binding.
   if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations, { compact: !isUser });
   if (!isUser && m.status && m.status !== 'completed') {
     if(m.status==='partial') {
-      const note=answerText.trim() ? '部分结论仍待核实，请结合答复中的适用条件阅读。' : '本次分析尚未形成可交付答复。';
-      const details=[...new Set([relocateNotice?legacyNotice:'',...relocatedSections,m.reason].filter(Boolean))];
-      body+=`<aside class="answer-note"><p role="status">${note}</p>${details.length ? `<details class="answer-diagnostics"><summary>查看核验详情</summary>${details.map(text=>`<p>${esc(text)}</p>`).join('')}</details>` : ''}</aside>`;
+      if (!answerText.trim()) body += '<p class="answer-note" role="status">本次分析尚未形成可交付答复。</p>';
     } else {
       const label = { failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
       if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
@@ -318,8 +297,7 @@ function messageHTML(m, { openGroups } = {}) {
     pendingMerge: delivered ? m.analysisStatePendingMerge === true
       : typeof state !== 'undefined' && (state.pendingMerges || []).some(item => item.path === m.analysisStatePath),
   }) : '';
-  const callId = m.tools?.find(tool => tool.id)?.id;
-  const groupKey = m.turnId ? 'turn:' + m.turnId : callId ? 'call:' + callId : '';
+  const groupKey = processGroupKey(m);
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '',
     open: openGroups?.has(groupKey), highlightBudget, settled: delivered && m.status==='partial',
     incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
@@ -334,6 +312,12 @@ function messageHTML(m, { openGroups } = {}) {
         ${reports}
       </div>
     </article>`;
+}
+
+function processGroupKey(message) {
+  if (message.turnId) return 'turn:' + message.turnId;
+  const id = message.tools?.find(tool => tool.id)?.id;
+  return id ? 'call:' + id : '';
 }
 
 // Keep matching nodes (including text nodes) alive while Markdown grows.
@@ -384,9 +368,10 @@ function citationsFromTools(tools = []) {
   return tools.flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
 }
 
-function liveMessageHTML() {
+function liveMessageHTML(openGroups) {
   const live = state.live;
   const hasContent = Boolean(live.text || live.tools.length);
+  const groupKey = processGroupKey(live);
   const status = esc(liveStatusText());
   const citations = citationsFromTools(live.tools);
   const shownLive = live.text || '';
@@ -394,13 +379,13 @@ function liveMessageHTML() {
   const inlineStatus = live.tools.length
     ? ''
     : `<div class="live-status" id="liveStatusHost"><span class="live-dot"></span><span id="liveStatus" aria-live="polite">${status}</span>${hasContent ? '' : '<span class="typing"><i></i><i></i><i></i></span>'}</div>`;
-  return `<article class="msg assistant" id="liveMsg">
+  return `<article class="msg assistant" id="liveMsg" data-process-key="${esc(groupKey)}">
       <span class="msg-avatar">${icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
         <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations, { compact: true }) : liveBody) : ''}</div>
         ${inlineStatus}
-        <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
+        <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true, open: openGroups?.has(groupKey) }) : ''}</div>
       </div>
     </article>`;
 }
@@ -408,6 +393,7 @@ function liveMessageHTML() {
 function updateLiveMessage() {
   if (!liveArticle) return;
   const live = state.live;
+  liveArticle.dataset.processKey = processGroupKey(live);
   const hasContent = Boolean(live.text || live.tools.length);
 
   const body = liveArticle.querySelector('#liveBody');
@@ -452,10 +438,10 @@ function updateLiveMessage() {
     const signature = live.tools.map(tool => `${tool.id}:${tool.status}:${String(tool.output || '').length}`).join('|');
     if (toolsHost.dataset.signature !== signature) {
       const wasOpen = Boolean(toolsHost.querySelector('details')?.open);
-      toolsHost.innerHTML = live.tools.length ? toolGroupHTML(live.tools, { live: true }) : '';
+      const template = document.createElement('template');
+      template.innerHTML = toolGroupHTML(live.tools, { live: true, open: wasOpen });
+      patchLiveChildren(toolsHost, template.content);
       toolsHost.dataset.signature = signature;
-      const details = toolsHost.querySelector('details');
-      if (wasOpen && details) details.open = true;
     } else {
       const label = toolsHost.querySelector('#liveStatus');
       const text = liveStatusText();
@@ -469,7 +455,7 @@ function pendingMergesBadgeHTML() {
 }
 
 let renderedSession;
-function historyHTML(messages) {
+function currentOpenGroups() {
   const openGroups = new Set();
   if (renderedSession === state.activeSession) {
     for (const group of threadEl.querySelectorAll('[data-process-key] .tool-group[open]')) {
@@ -477,7 +463,7 @@ function historyHTML(messages) {
     }
   }
   renderedSession = state.activeSession;
-  return messages.map(message => messageHTML(message, { openGroups })).join('');
+  return openGroups;
 }
 
 function renderThread(scroll = false) {
@@ -500,8 +486,24 @@ function renderThread(scroll = false) {
   }
   if (showLive) {
     if (!liveArticle || !threadEl.contains(liveArticle)) {
-      threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${historyHTML(messages)}${liveMessageHTML()}</div>`;
-      liveArticle = threadEl.querySelector('#liveMsg');
+      const sameSession = renderedSession === state.activeSession;
+      const openGroups = currentOpenGroups();
+      const history = pendingMergesBadgeHTML() + approvalsShelfHTML() +
+        messages.map(message => messageHTML(message, { openGroups })).join('');
+      const previous = threadEl.querySelector('#liveMsg');
+      const key = processGroupKey(state.live);
+      if (sameSession && key && previous?.dataset.processKey === key) {
+        // A snapshot refreshes history too. Keep the live disclosure and its
+        // focused summary attached while replacing the preceding history.
+        while (previous.previousSibling) previous.previousSibling.remove();
+        previous.insertAdjacentHTML('beforebegin', history);
+        liveArticle = previous;
+        delete liveArticle.querySelector('#liveTools').dataset.signature;
+        updateLiveMessage();
+      } else {
+        threadEl.innerHTML = `<div class="thread-inner">${history}${liveMessageHTML(openGroups)}</div>`;
+        liveArticle = threadEl.querySelector('#liveMsg');
+      }
       renderTraceHitl();
       void hydrateReports(threadEl);
     } else {
@@ -511,7 +513,9 @@ function renderThread(scroll = false) {
     restoreScroll();
     return;
   }
-  threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${historyHTML(messages)}</div>`;
+  const openGroups = currentOpenGroups();
+  const history = messages.map(message => messageHTML(message, { openGroups })).join('');
+  threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${history}</div>`;
   liveArticle = null;
   renderTraceHitl();
   void hydrateReports(threadEl);

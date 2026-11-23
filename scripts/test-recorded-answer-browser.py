@@ -30,7 +30,7 @@ with sync_playwright() as pw:
     body=page.locator('.msg-body');visible=body.inner_text()
     assert '本次尚未完成全部核验' not in visible
     assert '报告文件未完成' not in visible
-    assert page.locator('.answer-diagnostics').get_attribute('open') is None
+    assert page.locator('.answer-note, .answer-diagnostics').count()==0
     assert page.locator('a[href*=".md"]').count()>0
     page.screenshot(path=str(out/'recorded-desktop.png'))
     page.set_viewport_size({'width':390,'height':844})
@@ -40,4 +40,4 @@ with sync_playwright() as pw:
     (out/'visible.txt').write_text(visible)
     (out/'browser-check.json').write_text(json.dumps({'network':False,'fixture':True,'productionRenderer':True,'pageErrors':errors,'desktop':True,'mobile':True,'bodyChars':len(visible)},ensure_ascii=False,indent=2))
     browser.close()
-print('PASS recorded offline delivery: production renderer, file links, collapsed diagnostics, desktop and mobile; not live model acceptance')
+print('PASS recorded offline delivery: production renderer, file links, hidden footer, desktop and mobile; not live model acceptance')

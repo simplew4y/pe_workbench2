@@ -26,21 +26,16 @@ with sync_playwright() as pw:
       window.renderFixture=(patch={})=>document.querySelector('#thread').innerHTML=messageHTML({...window.fixture,...patch});
       window.renderFixture();
     }''')
-    body=page.locator('.msg-body');details=page.locator('.answer-diagnostics');summary=details.locator('summary')
-    assert '部分完成' not in body.inner_text()
-    assert '部分结论仍待核实' in body.inner_text()
+    body=page.locator('.msg-body')
+    assert '倍数选择依据仍待核实' in body.inner_text()
+    assert '部分结论仍待核实' not in body.inner_text()
+    assert page.locator('.answer-note, .answer-diagnostics').count()==0
     assert '主张数字' not in body.inner_text() and 'calc' not in body.inner_text()
-    assert details.get_attribute('open') is None
     page.screenshot(path=str(OUT/'partial-desktop.png'),full_page=True)
-    summary.focus();page.keyboard.press('Enter')
-    assert '主张数字' in body.inner_text() and details.get_attribute('open') is not None
-    assert not page.evaluate('Boolean(window.injected)')
-    page.screenshot(path=str(OUT/'partial-details.png'),full_page=True)
-    page.keyboard.press('Enter');assert details.get_attribute('open') is None
     page.set_viewport_size({'width':390,'height':844})
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     page.screenshot(path=str(OUT/'partial-mobile.png'),full_page=True)
-    summary.click();assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert page.get_by_text('查看核验详情').count()==0
     page.evaluate("window.renderFixture({text:''})")
     assert '尚未形成可交付答复' in body.inner_text()
     page.evaluate("window.renderFixture({status:'completed'})")
@@ -57,5 +52,17 @@ with sync_playwright() as pw:
     assert page.locator('.tool-status').inner_text()=='已保存 · 校验未通过'
     assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
     page.screenshot(path=str(OUT/'state-validation-mobile.png'),full_page=True)
+    # Promote only explicit page-to-file declarations, preserving code and
+    # declining ambiguous mappings to more than one source.
+    page.evaluate("""async () => {
+      const {linkDeclaredPages}=await import('/ui/chat/answer-presentation.js');
+      const reference='<p>来源：2024年报P26/37，<a href="https://example.org/report.pdf">年报</a></p>';
+      const raw='<p>合并收现比 [P37]，发货量 [P26]，其他 [P99]。</p><pre>[P26]</pre>';
+      const root=document.querySelector('#thread');
+      root.innerHTML=linkDeclaredPages(raw+reference);
+      if(root.querySelectorAll('p:first-child a').length !== 2 || root.querySelector('pre a'))throw Error('page binding');
+      root.innerHTML=linkDeclaredPages(raw+reference+reference.replace('report.pdf','other.pdf'));
+      if(root.querySelector('p:first-child a'))throw Error('ambiguous source');
+    }""")
     browser.close()
-print('PASS offline partial answer: collapsed details, keyboard, mobile, escaping, empty and completed states')
+print('PASS offline partial answer: hidden footer, mobile, empty and completed states')

@@ -1,3 +1,10 @@
+import {canonicalWorkbookRefs} from '../../lib/workbook-source-names.mjs';
+import {partialScenarioObservations} from '../../lib/partial-scenario-observations.mjs';
+import {asksModelOverview,valuationFormulaDelivery} from '../../lib/valuation-formula-delivery.mjs';
+import {retainReadEvidence,supportedCells} from '../../lib/retained-read-evidence.mjs';
+import { clarifyResearchInference } from '../../lib/research-inference.mjs';
+import { compactResearchBrief } from '../../lib/research-brief.mjs';
+import { workbookScenarioDelivery, missingScenarioResult } from '../../lib/workbook-scenario-delivery.mjs';
 import { accountingReasoningIssues } from '../../lib/research-reasoning.mjs';
 import {artifactDeliveryFindings,artifactDeliverySummary} from '../../lib/artifact-delivery.mjs';
 import {applyPassageVerification} from '../../lib/passage-verification.mjs';
@@ -27,7 +34,7 @@ import { sourceSearchGap } from './transcript-search-recovery.mjs';
 import { adoptedCitations, asksHistoricalSource, answerBlocks, answerGaps, blockingFinding, hasOcrPageSource, reportedLocatorEvidence, joinContinuation, missingSummaryItems, requestedSummaryItems, reviewBodyWithinBudget, verifiedPortion, researchPortion, workbookItemCoverage } from './answer-delivery.mjs';
 import { CONTEXT_BUDGET_FAILURE, isContextBudgetError } from '../../lib/context-budget.mjs';
 import { calculateUserScenario, scenarioInterpretationFindings } from '../../lib/scenario-calculation.mjs';
-import { answerCharCount, answerLengthHint, missingCompactItems, questionWithoutAttachments, requestedAnswerLength, requestedCompactItems } from '../../lib/answer-length.mjs';
+import { answerCharCount, visibleAnswerChars, answerLengthHint, missingCompactItems, questionWithoutAttachments, requestedAnswerLength, requestedCompactItems } from '../../lib/answer-length.mjs';
 import { readCitedPdfReports } from './pdf-period-evidence.mjs';
 import { appendDisclosure, prepareDisclosureAnswer, preparePdfDisclosure } from './pdf-disclosures.mjs';
 import { citedReportConflicts, scenarioDirectionFindings } from '../../lib/financial-evidence.mjs';
@@ -68,12 +75,55 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
     }
     if (!active.cancelled && active.pdfDisclosure) outcome = appendDisclosure(outcome, active.pdfDisclosure);
     if(!active.cancelled && ['completed','partial'].includes(outcome.status)) {
+      if(active.researchProse && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
+        outcome={...outcome,text:clarifyResearchInference(outcome.text,text,active.sourceReads,active.priorAnswers)};
+      }
+      const scenarios = active.workbookScenarios;
+      const budget = requestedAnswerLength(text);
+      if ((outcome.status === 'partial' || (asksModelOverview(text) && scenarios?.rebased &&
+          missingScenarioResult(outcome.text,scenarios.results))) &&
+          !outcome.reviewedReportHash && !outcome.deliveryBundle && !active.calculation && scenarios?.text &&
+          (!budget || answerCharCount(outcome.text + scenarios.text) <= budget.chars)) {
+        const paragraphs=outcome.text.split(/\n\s*\n/);
+        const section=scenarios.rebased && asksModelOverview(text)
+          ? paragraphs.findIndex(p=>/^(?:#{1,6}\s+|\*\*)[^\n]{0,30}(?:估值参数|敏感性|估值假设)/.test(p)) : -1;
+        if(section>=0)paragraphs.splice(section+1,0,scenarios.text);
+        else paragraphs.push(scenarios.text);
+        outcome = {...outcome, text:paragraphs.filter(Boolean).join('\n\n'),
+          scenarioToolCallIds:[...new Set([...(outcome.scenarioToolCallIds || []),...scenarios.callIds])],
+          citations:[...new Map([...outcome.citations,...scenarios.citations].map(c=>[c.id,c])).values()]};
+      }
+      if(active.formulaReads?.length && !outcome.deliveryBundle && !outcome.reviewedReportHash &&
+          !entry.reportDraftSnapshot?.()?.saveRequested && !scenarios?.text && !active.calculation) {
+        const proof=valuationFormulaDelivery(outcome.text,active.formulaReads);
+        if(proof && !outcome.text.includes(proof.text)) {
+          const paragraphs=outcome.text.split(/\n\s*\n/);
+          const anchor=paragraphs.findIndex(p=>adoptedCitations(p,[proof.output]).length);
+          if(anchor>=0) {
+            paragraphs.splice(anchor+1,0,proof.text);
+            const body=paragraphs.join('\n\n');
+            if(!budget || visibleAnswerChars(body)<=budget.chars)outcome={...outcome,text:body,
+              citations:[...new Map([...outcome.citations,...proof.citations].map(c=>[c.id,c])).values()],
+              formulaAnalysis:proof.receipt};
+          }
+        }
+      }
+      if (active.researchProse && (budget?.cap || budget?.strict) && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
+        const compact=compactResearchBrief(outcome.text,text,budget.chars);
+        if(compact!==outcome.text)outcome={...outcome,text:compact};
+      }
       if(entry.publishReportDelivery)outcome=await entry.publishReportDelivery(outcome,text);
       const summary=artifactDeliverySummary(entry.artifactSnapshot?.() || []);
       // A requested strict length remains binding; the visible file cards
       // already carry saved artifacts when there is no room for this note.
       const max=requestedAnswerLength(text);
-      if(summary && !outcome.deliveryBundle && (!max?.strict || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
+      if(summary && !outcome.deliveryBundle && (!(max?.strict || max?.cap) || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
+      if ((budget?.cap || budget?.strict) && !outcome.deliveryBundle && !outcome.reviewedReportHash) {
+        const chars = visibleAnswerChars(outcome.text);
+        outcome = {...outcome, lengthCheck:{chars,limit:budget.chars,withinLimit:chars<=budget.chars}};
+        if (chars>budget.chars) outcome={...outcome,status:'partial',reason:[outcome.reason,
+          '正文 '+chars+' 字，超过要求的 '+budget.chars+' 字。'].filter(Boolean).join(' ')};
+      }
     }
     try {
       const framework = outcome.status === 'completed' || outcome.status === 'partial'
@@ -151,12 +201,14 @@ async function generateAnswer(entry, promptText, options, active) {
   let continuationCount = 0;
   const userHistory=entry.session.messages.filter(m=>m.role==='user' && !m.peInternal && !m.customType).map(m=>textOfContent(m.content)).join('\n');
   const researchTurn=isResearchQuestion(text,userHistory);
+  active.researchProse=researchTurn && !asksHistoricalSource(text);
   entry.session.sessionManager?.appendCustomEntry('pe_task_route',{turnId,question:text,research:researchTurn,version:2});
   const scenarioOnly=isScenarioOnlyQuestion(text,userHistory);
   let lengthRewritten = false;
   let summaryRewritten = false;
   let safeText = '';
   let safeCitations = [];
+  let retainedSources = {};
   let beforeSoftCompaction;
   const attemptedRepairs=new Set();
   const recordLint = data => {
@@ -172,7 +224,7 @@ async function generateAnswer(entry, promptText, options, active) {
     }
     return {
       status: active.cancelled ? 'cancelled' : safeText ? 'partial' : 'failed',
-      text: safeText || (researchTurn && !asksHistoricalSource(text) && !active.cancelled ? researchFailureMessage(reason) : ''), citations: safeCitations, reason: failureReason(reason),
+      text: safeText || (researchTurn && !asksHistoricalSource(text) && !active.cancelled ? researchFailureMessage(reason) : ''), citations: safeCitations, ...retainedSources, reason: failureReason(reason),
     };
   };
   let latestMessage;
@@ -342,8 +394,6 @@ async function generateAnswer(entry, promptText, options, active) {
       const reviewedLimits = semanticReviewed ? new Set(message.researchAnsweredLimits || []) : new Set();
       const classified = !reviewedLimits.size ? modelText : modelText.replace(/(^|[。！？\n])([ \t]*(?:[-*][ \t]+)?)未核验[：:][ \t]*([^。！？\n]+)/gu,
         (line, start, indent, content) => reviewedLimits.has(content.trim()) ? start + indent + '判断还缺的资料：' + content : line);
-      const {text:answer, removed:disclosureAdjustments} = prepareDisclosureAnswer(classified, pdfDisclosure, requestedItems, text);
-      const visible = composeResearchAnswer(answer,{calculatedAnswer:calculation?.body, verifiedPdfDisclosure:pdfDisclosure});
       // Also support restored/minimal sessions that expose tool messages but no events.
       const scanned = [];
       const messages = entry.session.messages.slice(turnBoundary);
@@ -357,6 +407,10 @@ async function generateAnswer(entry, promptText, options, active) {
       // Deduplicate restored and live copies by execution ID. The live terminal
       // event is authoritative, including a failure with a valid-looking payload.
       const calls = [...new Map([...scanned, ...toolCalls].map(call => [call.id, call])).values()];
+      active.sourceReads=calls.filter(c=>c.name==='web_fetch');
+      // Legacy receipts have coordinates but often no scope or unit metadata.
+      // The recovery path renders their observations separately. Feeding them
+      // to the general numeric linter would validate unrelated prose by value.
       const thisTurnCitations = collectCitationsFromToolCalls(calls.toReversed());
       const historical = calls.filter(call => call.success && call.name === 'transcript_search')
         .flatMap(call => call.details?.matches || [])
@@ -367,9 +421,14 @@ async function generateAnswer(entry, promptText, options, active) {
       if(entry.ctx?.factMemory) {const project=entry.ctx.factMemory.query({limit:100}); refreshedLedger={...(refreshedLedger || {}),corrections:[],facts:project.facts.map(asLegacyFact)};}
       const materialIds = new Set([...thisTurnCitations, ...(refreshedLedger?.facts || []).map(f => f.citation)]
         .map(c => c?.materialId).filter(Boolean));
+      const readVersions=new Map();
       for (const call of calls) {
-        const id = (call.result?.details || call.details)?.materialId;
-        if (call.name === 'pdf_read' && id) materialIds.add(id);
+        const details=call.result?.details || call.details;
+        if (!['pdf_read','pe_pdf_read','pe_excel_range'].includes(call.name) || !call.success || call.result?.isError)continue;
+        const id=details?.materialId || details?.document?.doc_id;
+        const version=details?.version || details?.document?.version_no;
+        if(id)materialIds.add(id);
+        if(id && Number.isInteger(version))readVersions.set(id,Math.max(version,readVersions.get(id) || 0));
       }
       for (const id of materialIds) {
         const latest = entry.ctx?.store?.getLatestMaterialVersion?.(id)?.v;
@@ -377,11 +436,13 @@ async function generateAnswer(entry, promptText, options, active) {
       }
       // Minimal sessions may have no material catalogue. Use the newest
       // observed version in that case, independent of tool completion order.
-      const observedVersions = new Map();
+      const observedVersions = new Map(readVersions);
       for (const {materialId, version} of thisTurnCitations) if (version) {
         observedVersions.set(materialId, Math.max(version, observedVersions.get(materialId) || 0));
       }
       for (const [id, version] of observedVersions) currentVersions[id] ??= version;
+      const {text:answer, removed:disclosureAdjustments} = prepareDisclosureAnswer(asksHistoricalSource(text) || /逐字|原样|转录/.test(text) ? classified : canonicalWorkbookRefs(classified,thisTurnCitations,currentVersions,active.attachments), pdfDisclosure, requestedItems, text);
+      const visible = composeResearchAnswer(answer,{calculatedAnswer:calculation?.body, verifiedPdfDisclosure:pdfDisclosure});
       await markStaleVersions(entry.ctx?.root,entry.id,currentVersions).catch(()=>0);
       if (registered.length) {
         await updateTopicsFromFacts(entry.ctx?.root, entry.id, { factIds: registered.map(fact => fact.id) })
@@ -407,12 +468,18 @@ async function generateAnswer(entry, promptText, options, active) {
       const lintContext = { ...baseLintContext, question:text, scenarioOnly, citations: turnCitations, toolCalls: calls, sourceCalls: historicalSourceCalls(entry.session.messages.slice(0,turnBoundary),text), currentVersions, pdfReports, pdfDisclosure, calculation, ...(priorCitations.length ? { priorCitations } : {}) };
       const workbookReads = calls.filter(call => call.name === 'workbook_query' || call.name === 'workbook_trace');
       const workbookEvidence = collectCitationsFromToolCalls(workbookReads).filter(c => currentCitation(c, currentVersions));
+      if(workbookReads.length && asksModelOverview(text)) {
+        active.formulaReads=supportedCells(workbookReads.flatMap(call=>collectCitationsFromToolCalls([call]))
+          .filter(c=>!c.derivedFrom && currentCitation(c,currentVersions)));
+      }
       const blocks = answerBlocks(answer);
       const workbookTurn = active.attachments?.some(path => /\.xls[xm]$/i.test(path)) || workbookReads.length > 0;
       const coverage = workbookItemCoverage(text, blocks, workbookEvidence, workbookTurn);
       const locatorEvidence = candidate => reportedLocatorEvidence(candidate, text, turnCitations, historical, workbookEvidence);
       const sourceReport = locatorEvidence(answer);
       const available = sourceReport.citations;
+      if (researchTurn && !asksHistoricalSource(text) && (asksModelOverview(text) || /驱动|敏感|情景|重算|投资框架|估值构成|估值拆解|估值模型/.test(text)))
+        active.workbookScenarios = workbookScenarioDelivery(calls, [...turnCitations,...workbookEvidence], currentVersions,{overview:asksModelOverview(text)});
       const reconciled = new Map();
       const findingsFor = (candidate, checkContext = lintContext) => {
         const lastLine = candidate.slice(candidate.lastIndexOf('\n') + 1);
@@ -433,7 +500,7 @@ async function generateAnswer(entry, promptText, options, active) {
           }),
           ...checkTurnTools({ answer: candidate, routes: context.routes, toolCalls: calls, workbookContext:workbookTurn }),
           ...scenarioInterpretationFindings(candidate, calculation?.receipt),
-          ...accountingReasoningIssues(candidate,{question:text,sourceQuestions:[...priorQuestions,text]}).map(i=>({rule:'research_reasoning',severity:'error',message:i.reason,excerpt:i.excerpt,expected:i.reason})),
+          ...accountingReasoningIssues(candidate,{question:text,sourceQuestions:[...priorQuestions,text]}).map(i=>({rule:'research_reasoning',severity:'error',message:i.reason,excerpt:i.excerpt,expected:i.reason,...(i.correction?{correction:i.correction}:{})})),
         ];
         const chars = answerCharCount(candidate) + reservedChars;
         if (limit !== null && chars > limit) findings.push({
@@ -473,6 +540,8 @@ async function generateAnswer(entry, promptText, options, active) {
         } catch { /* An unavailable reviewer never forgives a blocking finding. */ }
       }
       for (const gap of executionGaps) findings.push({ ...gap, rule:'delivery_gap', severity:'error', excerpt:'', message:gap.message });
+      if (message.researchVerification?.status === 'limited' && !findings.some(f=>f.severity==='error') && !message.researchAnswerGaps?.length)
+        findings.push({rule:'delivery_gap',severity:'error',message:'本版答文的研究审校仍有未通过或未核实的项目。',excerpt:''});
       for (const issue of message.researchAnswerGaps || []) {
         findings.push({ rule: 'delivery_gap', severity: 'error', message: issue.reason, excerpt: issue.excerpt });
       }
@@ -525,12 +594,14 @@ async function generateAnswer(entry, promptText, options, active) {
       const sourceQuestion = asksHistoricalSource(text);
       const searchGap = sourceQuestion && sourceSearchGap(text, answer, scanned, toolCalls, sourceReport.historical, blocks, coverage,
         clause => Boolean(locatorEvidence(clause).historical?.length) && !findingsFor(clause).some(blockingFinding));
-      const resolvedFailures = new Set(semanticReviewed ? (message.researchResolvedToolFailures || []).map(item=>item.id) : []);
+      const failureDecisions = semanticReviewed ? message.researchResolvedToolFailures || [] : [];
+      const resolvedFailures = new Set(failureDecisions.filter(item=>item.index==null).map(item=>item.id));
       for(const id of recoveredUnitConversions(candidateCalls))resolvedFailures.add(id);
       // Calc items are superseded item by item by a later equivalent success,
       // independent of the semantic review of the rest of the answer.
       const calcRecovery = new Map(calcFailureRecovery(candidateCalls).map(entry => [entry.id, entry]));
-      const unresolvedCalc = call => calcRecovery.get(call.id)?.unresolved || [];
+      const unresolvedCalc = call => (calcRecovery.get(call.id)?.unresolved || []).filter(item=>
+        !failureDecisions.some(decision=>decision.id===call.id && decision.index===item.index));
       const failedTool = [...latestTools.values()].find(call => (call.name === 'calc' ? unresolvedCalc(call).length : !call.success) && !resolvedFailures.has(call.id) &&
         !(sourceQuestion && call.name === 'transcript_search') &&
         (call.name !== 'workbook_query' || candidateCalls.lastIndexOf(call) >= lastVerifiedRead));
@@ -591,7 +662,19 @@ async function generateAnswer(entry, promptText, options, active) {
           const qualified=evidenceCaveat(safeText,retainedWarnings).text;
           if(answerCharCount(qualified)<=reviewBudget)safeText=qualified;
         }
-        safeCitations = adoptedCitations(safeText, locatorEvidence(safeText).citations);
+        const recovered=!sourceQuestion && !calculation && !entry.reportDraftSnapshot?.()?.saveRequested
+          ? retainReadEvidence({answer,retained:safeText,findings,calls,question:text,versions:currentVersions,limit:length?.chars ?? Infinity})
+          : {text:safeText,citations:[]};
+        safeText=recovered.text;
+        retainedSources=recovered.pageSources?.length ? {pageSources:recovered.pageSources} : {};
+        const receipts=!sourceQuestion && !calculation && !entry.reportDraftSnapshot?.()?.saveRequested
+          ? partialScenarioObservations(length ? calls : calls.filter(c=>!active.workbookScenarios?.callIds?.includes(c.id)),currentVersions) : null;
+        if(receipts && (!length || visibleAnswerChars(safeText+'\n\n'+receipts.text)<=length.chars)) {
+          safeText=[safeText,receipts.text].filter(Boolean).join('\n\n');
+          recovered.citations.push(...receipts.citations);
+          retainedSources.scenarioToolCallIds=receipts.ids;
+        }
+        safeCitations=[...new Map([...adoptedCitations(safeText,locatorEvidence(safeText).citations),...recovered.citations].map(c=>[c.id,c])).values()];
       } else if (!softCompaction) {
         const qualified=evidenceCaveat(answer,findings);
         return { status: 'completed', text: qualified.text, citations: adopted, ...(qualified.reason ? {reason:qualified.reason} : {}) };
@@ -599,7 +682,7 @@ async function generateAnswer(entry, promptText, options, active) {
         beforeSoftCompaction = { data, chars: draftChars, record: { status: 'completed', text: answer, citations: adopted } };
       }
       const facingAnswer = [
-        '直接回答用户原问题，交付一份独立、完整的回答，保留已有依据的结论与解释。若用户主动要求复核旧答，请说明改了什么以及依据。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求的具体事项若仍缺证据，请另起一行写“未核验：具体事项”。',
+        '直接回答用户原问题，交付一份独立、完整的回答，保留已有依据的结论与解释。修订前逐项核对原题和可用回执；对有冲突的复合句，只重建有据的计算步骤，把对应出处放在旁边。删改前提后重新读该段，补上所指指标或撤回其依赖判断，保留独立的口径说明。若用户主动要求复核旧答，请说明改了什么以及依据。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求查证而资料不足的事项，在对应结论后写一句“未核验：缺少的具体资料，因此无法判断什么”。',
         PLAIN_ANSWER_GUIDANCE,
         argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint,
       ].filter(Boolean).join('\n');

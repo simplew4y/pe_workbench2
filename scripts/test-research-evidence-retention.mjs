@@ -95,3 +95,33 @@ test('historical page ranges and independent factual clauses survive qualificati
   const dependent=researchPortion('未核验收入999亿元。因此一定低估。',()=>[],[{rule:'unsourced_number',severity:'error',excerpt:'未核验收入999亿元'}],[]);
   assert.ok(!dependent.includes('因此一定低估'));
 });
+
+test('retaining a Markdown sentence keeps emphasis and leaves no dangling comparison',()=>{
+  const lost='成本增幅为 999%。';
+  const text='**核心驱动。** '+lost+'注意后者采用合并成本，不能代表单一产品成本；但它证明产品有优势。独立合同数据可用于检查价格。';
+  const result=researchPortion(text,()=>[],[{rule:'unsourced_number',severity:'error',sourceText:lost}],[]);
+  assert.match(result,/\*\*核心驱动。\*\*/);
+  assert.match(result,/采用合并成本，不能代表单一产品成本/);
+  assert.match(result,/独立合同数据/);
+  assert.doesNotMatch(result,/999|注意后者|它证明/);
+});
+
+test('local valuation proof uses bound scalar formulas and the workbook rounding policy',async()=>{
+  const {valuationFormulaDelivery,asksModelOverview}=await import('../lib/valuation-formula-delivery.mjs');
+  const cell=(ref,value,metric,unit,formula)=>({...source('Base!'+ref,value,unit,metric),raw_unit:unit,formula,sha256:'a'.repeat(64)});
+  const cells=[cell('B3',31,'Revenue','百万元'),cell('B4',4,'Shares','百万股'),
+    cell('B5',8,'Target Price','USD','=ROUND(B3/B4,0)')];
+  const draft='Revenue 决定该估值。目标价 8 美元 [模型.xlsx]Base!B5。';
+  const r=valuationFormulaDelivery(draft,cells);
+  assert.equal(r.receipt.base,8);
+  assert.equal(r.receipt.changes[0].output,7);
+  assert.equal(r.receipt.sourceIds.length,3);
+  assert.equal(valuationFormulaDelivery(draft,[...cells.slice(0,2),{...cells[2],value:9}]),null);
+  assert.equal(valuationFormulaDelivery(draft,[{...cells[0],version:2},...cells.slice(1)]),null);
+  assert.equal(valuationFormulaDelivery(draft,[{...cells[0],sha256:'b'.repeat(64)},...cells.slice(1)]),null);
+  assert.equal(valuationFormulaDelivery(draft,[...cells.slice(0,2),{...cells[2],formula:'=INDIRECT("B3")'}]),null);
+  assert.equal(valuationFormulaDelivery(draft,[...cells.slice(0,2),{...cells[2],value:'#NAME?'}]),null);
+  assert.ok(asksModelOverview('请拆解这份估值模型'));
+  assert.ok(!asksModelOverview('只核对模型收入，200字以内'));
+  assert.ok(!asksModelOverview('若成本下调 5%，请重算模型'));
+});
