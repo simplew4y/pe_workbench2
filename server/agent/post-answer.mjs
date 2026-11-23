@@ -8,7 +8,7 @@ import { lintAnswer, lintLedgerAnswer, answerStats, asksDeviationQuestion, conte
 import { collectCitationsFromToolCalls, currentCitation, rehydrateCitations, toolEvidenceState } from '../../lib/citations.mjs';
 import { validCitations } from '../../lib/contracts/citation.mjs';
 import { markStaleVersions, registerToolResult } from '../../lib/fact-register.mjs';
-import { frameworkForTurn, textOfContent } from './snapshot.mjs';
+import { frameworkForTurn, textOfContent, transcriptMessages } from './snapshot.mjs';
 import { indexJson, locateChatTopics, recentTopicDialogue } from './topic-locator.mjs';
 import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 
@@ -59,6 +59,13 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       if (!framework && active.frameworkEdits?.size) presentation.analysisState = null;
       const clarificationAttachments = outcome.status === 'completed' && attachments?.length && researchChoices(outcome.text) ? attachments : null;
       const record = saveTurnDelivery(entry, { ...(clarificationAttachments ? { clarificationAttachments } : {}), version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}), finishedAt: new Date().toISOString(), ...outcome, ...presentation });
+      if (entry.ctx?.projectMemory) {
+        try {
+          entry.ctx.projectMemory.recordTurn(entry.id, text, record);
+        } catch (error) {
+          console.warn('[project-memory] Could not queue the delivered turn:', error.message);
+        }
+      }
       try {
         broadcast({ type: 'turn.delivered', record });
         entry.onTurnDelivered?.(record);
@@ -104,6 +111,18 @@ async function generateAnswer(entry, promptText, options, active) {
   if (!previous && !entry.session.messages.some(message => message.role === 'user')) {
     const clarification = initialWorkbookClarification(question, active.attachments);
     if (clarification) return { status: 'completed', text: clarification, citations: [] };
+  }
+  if (entry.ctx?.projectMemory) {
+    const lookup = active.projectMemoryLookup = new AbortController();
+    try {
+      const history = recentTopicDialogue(transcriptMessages(entry.session, entry.ctx, { beforeTurnId: turnId }));
+      active.projectMemory = await entry.ctx.projectMemory.recall(text, { history, signal: lookup.signal });
+    } catch (error) {
+      console.warn('[project-memory] Could not read project memory:', error.message);
+    } finally {
+      delete active.projectMemoryLookup;
+    }
+    if (active.cancelled) return { status: 'cancelled', text: '', citations: [] };
   }
   entry.ctx?.factMemory?.recover();
   let correctionCount = 0;

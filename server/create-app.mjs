@@ -32,6 +32,7 @@ import { createTrackingScheduler } from "./schedulers/tracking.mjs";
 import { createMonitorScheduler } from "./schedulers/monitor.mjs";
 import { createSourceScheduler } from "./schedulers/source.mjs";
 import { createWatchScheduler } from "./schedulers/watch.mjs";
+import { createPeriodicScheduler } from "./schedulers/periodic.mjs";
 import { handleAgUiRequest } from "../lib/agent-protocol/ag-ui-endpoint.mjs";
 import { openStore } from "../store.mjs";
 import {
@@ -404,6 +405,24 @@ async function runPlan(ctx, planId) {
     enabled: config.watchSchedulerEnabled,
     logger,
   });
+  const memoryLifetime = new AbortController();
+  const projectMemoryScheduler = createPeriodicScheduler({
+    name: "project-memory",
+    enabled: config.projectMemoryEnabled === true,
+    logger,
+    tick: async () => {
+      for (const ctx of projectManager.list()) {
+        if (memoryLifetime.signal.aborted) return;
+        if (!ctx.projectMemory || [...live.values()].some(entry => entry.ctx === ctx && !entry.automated && entry.postAnswerPending)) continue;
+        try {
+          const revision = await ctx.projectMemory.dream({ signal: memoryLifetime.signal });
+          if (revision) logger.log?.(`[project-memory] ${ctx.id}: published revision ${revision}`);
+        } catch (error) {
+          logger.warn?.(`[project-memory] ${ctx.id}: ${error.message}`);
+        }
+      }
+    },
+  });
 
 async function serveVersionFile(ctx, req, res, url, materialId, version) {
   const row = ctx.store.getVersionRow(materialId, version);
@@ -558,6 +577,7 @@ async function handleApi(req, res, url) {
         monitorScheduler.start();
         sourceScheduler.start();
         watchScheduler.start();
+        if (config.projectMemoryEnabled) projectMemoryScheduler.start();
         resolve({ port: actualPort, host, url: `http://${host}:${actualPort}` });
       });
     });
@@ -568,6 +588,8 @@ async function handleApi(req, res, url) {
     monitorScheduler.stop();
     sourceScheduler.stop();
     watchScheduler.stop();
+    projectMemoryScheduler.stop();
+    memoryLifetime.abort();
     sessions?.close();
     projectManager?.close();
     bus.close();
@@ -621,6 +643,7 @@ async function handleApi(req, res, url) {
       monitor: monitorScheduler,
       source: sourceScheduler,
       watch: watchScheduler,
+      projectMemory: projectMemoryScheduler,
     },
     server,
     listen,

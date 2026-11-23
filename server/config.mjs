@@ -109,6 +109,7 @@ export async function loadConfig({ env = process.env, root = REPO_ROOT } = {}) {
     allowedModels,
     model,
     fakeAgent,
+    projectMemoryEnabled: env.PROJECT_MEMORY === "1" && !fakeAgent,
     testMode: env.WORKBENCH_TEST === "1",
     // Opt-in only. The pilot bundle is never requested when this is false and
     // the URL flag is absent.
