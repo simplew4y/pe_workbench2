@@ -259,6 +259,8 @@ export function createSessionService({
         getCalculation: () => entry?.activeTurn?.calculation,
         getCompactAnswer: () => entry?.activeTurn?.compactAnswer,
         getPriorAnswers: () => entry?.activeTurn?.priorAnswers,
+        getResearchIntent: () => entry?.activeTurn?.intent,
+        getPriorPublicDialogue: () => entry?.activeTurn?.priorPublicDialogue,
         getPdfDisclosure: () => entry?.activeTurn?.pdfDisclosure,
         audit: (source, model, context, options, draft, extra) =>
           auditResearch(source, model, context, options, draft, { ...extra, workbookEvidence: researchReview.evidenceSnapshot() }),
@@ -273,6 +275,8 @@ export function createSessionService({
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
               question:entry?.activeTurn?.question || '',
+              researchIntent:entry?.activeTurn?.intent,
+              priorPublicDialogue:entry?.activeTurn?.priorPublicDialogue,
               ...extra, workbookEvidence: researchReview.evidenceSnapshot(),deliveredFiles:researchReview.artifactSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });

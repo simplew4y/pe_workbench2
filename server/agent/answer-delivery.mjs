@@ -765,7 +765,7 @@ export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage
 // Research delivery retains complete, independently supported paragraphs and
 // conditional reasoning. Historical-source queries still use verifiedPortion.
 // Never promote a dependent conclusion after removing its disputed premise.
-export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity,visibleHistory,question=''}={}) {
+export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity,visibleHistory,question='', preserveAnswerUnits=false}={}) {
   // Findings are bound to the complete current draft. Re-linting isolated
   // paragraphs loses issuer, period, heading and reconciled source context.
   // A missing locator in a short paragraph is not new contradictory evidence.
@@ -870,7 +870,11 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     else if(token.type==='table') {
       const lines=token.raw.trimEnd().split(/\r?\n/),rows=lines.slice(2);
       const rejected=rows.map(row=>blocking.some(f=>span(f) && overlaps(row,span(f))));
-      const keptRows=rows.filter((row,i)=>!rejected[i] && !(rejected.some(Boolean) && /合计|总计|因此|据此|结论/.test(row)));
+      const hasTotals = rows.some(row => /合计|总计/.test(row));
+      // A reconciliation table answers one question as a whole. Its surviving
+      // rows cannot imply the original total was reconciled after a row fails.
+      const keptRows = preserveAnswerUnits && hasTotals && rejected.some(Boolean) ? [] :
+        rows.filter((row,i)=>!rejected[i] && !(rejected.some(Boolean) && /合计|总计|因此|据此|结论/.test(row)));
       if(keptRows.length){kept.push([...lines.slice(0,2),...keptRows].join('\n'));contentCount++;}
       if(keptRows.length!==rows.length)omit();
     }
@@ -892,7 +896,7 @@ export function researchPortion(answer, findingsFor, findings, citations = [], {
     f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
     f.rule==='delivery_gap' ? (readable!==joined && /客户/.test(f.message) && /续约价/.test(f.message) && /应收周转/.test(f.message) ? '客户续约与回款的实际结果' : f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
   ))].slice(0,6);
-  const body=closeResearchDocument(answer,readable).text+
+  const body=closeResearchDocument(answer,readable,{strictSections:!preserveAnswerUnits}).text+
     '\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
   // Let the existing sentence-aware bounded fallback handle strict budgets.
   // Never truncate a number, source, table or JSON object by character slicing.

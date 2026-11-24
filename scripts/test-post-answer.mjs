@@ -1585,3 +1585,72 @@ const clearSession = {messages:[], async prompt(text) {
 }};
 await runWithPostAnswer({session:clearSession}, '完整解释这个模型', {attachments:['uploads/model.xlsx']});
 assert.equal(scopePromises.length, 1);
+
+test('clarification, correction, continuation and a new topic share the delivered research intent', async () => {
+  const { normalizeResearchIntent } = await import('../server/agent/research-intent.mjs');
+  const contexts = [];
+  const requests = [];
+  const goals = ['解释收入增长来源', '解释收入增长来源', '解释收入增长来源', '复现目标价'];
+  const answers = ['刚才的分析覆盖的是预测期。', '历史要用已发生的数据，预测要看模型输入。', '预测收入还包括产品换代。', '用远期每股盈利乘市盈率，再折现。'];
+  const questions = ['B', '你跟我说目标价干嘛？分清过去和未来。', '预测段还有吗？', '模型的目标价怎么算？'];
+  let run = 0;
+  const entry = {
+    session: {
+      messages: [],
+      async sendCustomMessage(message) { contexts.push(message.content); },
+      async prompt(text) {
+        this.messages.push({role:'user', content:text}, {role:'assistant', stopReason:'stop', content:answers[run++]});
+      },
+    },
+    async resolveResearchIntent(input) {
+      requests.push(input);
+      if (requests.length === 1) return normalizeResearchIntent({
+        mode:'clarify', action:'start', goal:'理解工作簿', request:'理解工作簿',
+        choices:['复现目标价。', '解释收入增长来源。'],
+      });
+      const target = run === 3;
+      return normalizeResearchIntent({
+        mode:'direct', action:target ? 'switch' : run === 1 ? 'correct' : 'continue',
+        goal:goals[run], request:goals[run], deliverables:[goals[run]],
+        exclusions:run === 1 || run === 2 ? ['不要谈目标价'] : [],
+        open:run === 1 ? ['历史量价归因仍需数据'] : [],
+        routes:target ? ['target'] : ['evidence'],
+      });
+    },
+  };
+  const first = await runWithPostAnswer(entry,'这个模型怎么看？', {attachments:['model.xlsx']});
+  assert.match(first.text,/B\. 解释收入增长来源/);
+  for (const question of questions) await runWithPostAnswer(entry,question);
+  assert.equal(requests[1].choiceSelected,true);
+  assert.equal(requests[1].question,'解释收入增长来源。');
+  assert.equal(requests[1].hasWorkbook,true);
+  assert.ok(requests[2].history.some(({role,text}) => role === 'assistant' && text === answers[0]));
+  assert.deepEqual(requests[3].previous.exclusions,['不要谈目标价']);
+  assert.deepEqual(requests[3].previous.open,['历史量价归因仍需数据']);
+  assert.doesNotMatch(contexts[1],/复现原模型估值/);
+  assert.match(contexts[2],/不要谈目标价/);
+  assert.match(contexts[3],/复现原模型估值/);
+  assert.doesNotMatch(contexts[3],/不要谈目标价/);
+});
+
+test('scoped partial delivery keeps the answer about the previous turn and treats a reconciliation as a unit', async () => {
+  const { researchPortion } = await import('../server/agent/answer-delivery.mjs');
+  const opening = '刚才主要讲的是高盛预测。';
+  const bad = '历史涨价已得到完全证实。';
+  const contribution = '| 交叉项 | 124.09 个百分点 |';
+  const draft = [opening, bad, '| 驱动 | 贡献 |\n| --- | --- |\n| 出货量 | 38.40 个百分点 |\n'+contribution+'\n| 合计 | 485.63 个百分点 |'].join('\n\n');
+  const findings = [bad,contribution].map(excerpt => ({rule:'unsourced_number', severity:'error',excerpt}));
+  const result = researchPortion(draft, () => findings, findings, [], {preserveAnswerUnits:true});
+  assert.match(result,/^刚才主要讲的是高盛预测。/);
+  assert.doesNotMatch(result,/已得到完全证实|38\.40|124\.09|485\.63/);
+});
+
+test('contribution receipts use percentage points without treating rates and points interchangeably', async () => {
+  const {createCalcTool} = await import('../lib/calc-tool.mjs');
+  const bridgeTool = createCalcTool();
+  const pointItem = {expression:'(4.8563-0.384-3.2314)*100', outputUnit:'个百分点', ratioEncoding:'percentage_points', name:'量价交叉项'};
+  const bridgeReceipt = await bridgeTool.execute('growth-bridge', pointItem);
+  assert.equal(bridgeReceipt.details.results[0].unit, '个百分点');
+  assert.equal(bridgeReceipt.details.results[0].value, '124.09');
+  assert.equal((await bridgeTool.execute('wrong-unit', {...pointItem,ratioEncoding:'fraction'})).isError,true);
+});

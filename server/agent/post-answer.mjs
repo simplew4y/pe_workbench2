@@ -26,8 +26,9 @@ import { lintAnswer, lintLedgerAnswer, answerStats, asksDeviationQuestion, conte
 import { collectCitationsFromToolCalls, currentCitation, rehydrateCitations, toolEvidenceState } from '../../lib/citations.mjs';
 import { validCitations } from '../../lib/contracts/citation.mjs';
 import { markStaleVersions, registerToolResult } from '../../lib/fact-register.mjs';
-import { frameworkForTurn, referencedJudgments, textOfContent } from './snapshot.mjs';
+import { frameworkForTurn, referencedJudgments, textOfContent, transcriptMessages } from './snapshot.mjs';
 import { locateChatTopics, recentTopicDialogue } from './topic-locator.mjs';
+import { researchIntentHint, resolveResearchIntent } from './research-intent.mjs';
 import { updateTopicsFromFacts } from '../../lib/topic-index.mjs';
 
 import { initialWorkbookClarification, researchChoices, resolveResearchChoice } from '../../lib/research-clarification.mjs';
@@ -155,6 +156,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       const record = saveTurnDelivery(entry, {
         version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}),
         finishedAt: new Date().toISOString(), ...outcome, ...presentation,
+        ...(outcome.status !== 'cancelled' && active.intent && active.intent.mode !== 'other' ? { researchIntent: active.intent } : {}),
         ...(clarificationAttachments ? { clarificationAttachments } : {}),
         ...(Object.hasOwn(outcome, 'analysisState') ? {
           analysisState: outcome.analysisState, analysisStatePath: outcome.analysisStatePath,
@@ -212,14 +214,42 @@ function evidenceCaveat(answer, findings) {
 
 async function generateAnswer(entry, promptText, options, active) {
   const { turnId, question } = active;
-  const previous = turnTimeline(entry.session).findLast(item => item.kind === 'delivery')?.record;
+  const timeline = turnTimeline(entry.session);
+  const previous = timeline.findLast(item => item.kind === 'delivery')?.record;
   const selected = previous?.status === 'completed' ? resolveResearchChoice(question, previous.text) : null;
   const text = selected ?? question;
   if (selected) {
     if (!active.attachments?.length) active.attachments = previous.clarificationAttachments;
     promptText = promptWithAttachments(selected, active.attachments);
   }
-  if (!previous && !entry.session.messages.some(message => message.role === 'user')) {
+  const resolver = entry.resolveResearchIntent || (entry.indexModel ? resolveResearchIntent : null);
+  // A first-turn lookup that names the workbook and asks for a value already
+  // has enough scope for the answering model. It needs no planning request.
+  const firstTurn = !previous && !entry.session.messages.some(message => message.role === 'user');
+  const namedWorkbookLookup = firstTurn && /\.xls[xm]\b/i.test(text) &&
+    /^.{1,250}的[^、，,。？！?！\n]+(?:是|为)?多少[？?。]?$/u.test(text);
+  if (resolver && !namedWorkbookLookup && !asksHistoricalSource(text)) {
+    const priorIntent = timeline.findLast(item => item.kind === 'delivery' && item.record.researchIntent)?.record.researchIntent;
+    try {
+      const history = transcriptMessages(entry.session, entry.ctx, {beforeTurnId:turnId}).slice(-8)
+        .map(({role, content}) => ({role, text:String(content).slice(0, 1800)}));
+      active.priorPublicDialogue = history;
+      const signal = AbortSignal.timeout(15000);
+      active.intent = await resolver({model:entry.indexModel, question:text, history, previous:priorIntent,
+        hasWorkbook:active.attachments?.some(file => /\.xls[xm]$/i.test(file)) || false,
+        choiceSelected:Boolean(selected), onPayload:entry.modelPayload, signal});
+    } catch {
+      // The original chat path remains available during an intent-provider failure.
+    }
+    if (active.cancelled) return {status:'cancelled', text:'', citations:[]};
+    if (selected && active.intent?.mode === 'clarify') active.intent = null;
+    if (active.intent?.mode === 'clarify') {
+      const choices = active.intent.choices.map((choice, index) => `${'ABC'[index]}. ${choice}`);
+      return {status:'completed', text:['你想先弄清哪件事？', '', ...choices].join('\n'), citations:[]};
+    }
+  }
+  const intentHint = researchIntentHint(active.intent);
+  if (!active.intent && firstTurn) {
     const clarification = initialWorkbookClarification(question, active.attachments);
     if (clarification) return { status: 'completed', text: clarification, citations: [] };
   }
@@ -229,7 +259,7 @@ async function generateAnswer(entry, promptText, options, active) {
   let evidenceRetryCount = 0;
   let continuationCount = 0;
   const userHistory=entry.session.messages.filter(m=>m.role==='user' && !m.peInternal && !m.customType).map(m=>textOfContent(m.content)).join('\n');
-  const researchTurn=isResearchQuestion(text,userHistory);
+  const researchTurn=active.intent ? ['direct', 'report'].includes(active.intent.mode) : isResearchQuestion(text,userHistory);
   active.researchProse=researchTurn && !asksHistoricalSource(text);
   entry.session.sessionManager?.appendCustomEntry('pe_task_route',{turnId,question:text,research:researchTurn,version:2});
   const scenarioOnly=isScenarioOnlyQuestion(text,userHistory);
@@ -293,7 +323,8 @@ async function generateAnswer(entry, promptText, options, active) {
   const correctionHistory=deliveredHistory.length ? deliveredHistory : priorQuestions.length ? undefined : [];
   const argumentHint = argumentRequirements(text, priorAnswers);
   const priorAnswerHint = priorAnswers.length ? '指定轮次的正式答复，仅用来定位先前判断。text 为空代表没有可引用的正文，truncated 为真时可用 transcript_search 补查。\n' + JSON.stringify(priorAnswers) : '';
-  const priorDialogue = recentTopicDialogue(entry.session.messages.slice(0, turnBoundary));
+  const priorDialogue = active.intent ? active.priorPublicDialogue.map(({role,text}) => `${role}: ${text}`).join('\n') :
+    recentTopicDialogue(entry.session.messages.slice(0, turnBoundary));
   const requestedItems = requestedSummaryItems(text);
   const pdfDisclosure = !calculation ? await preparePdfDisclosure(entry.ctx, active.attachments, text, priorDialogue, requestedItems, limit, priorQuestions) : null;
   active.pdfDisclosure = pdfDisclosure;
@@ -361,14 +392,14 @@ async function generateAnswer(entry, promptText, options, active) {
   const correctionIds=(ledgerBefore?.facts||[]).filter(f=>f.source==='user_correction'&&f.turn===turn&&f.status==='current').map(f=>f.id);
   if(correctionIds.length) await updateTopicsFromFacts(entry.ctx?.root,entry.id,{factIds:correctionIds}).catch(()=>[]);
   const locator = input => locateChatTopics(entry.indexModel, input, entry.modelPayload);
-  const context = await buildTurnContext({ question: text, history:priorDialogue, root: entry.ctx?.root, sessionId: entry.id, factMemory:entry.ctx?.factMemory, locator:ledgerBefore?.topics?.length?locator:undefined });
+  const context = await buildTurnContext({ question: text, history:priorDialogue, root: entry.ctx?.root, sessionId: entry.id, factMemory:entry.ctx?.factMemory, intent:active.intent, locator:ledgerBefore?.topics?.length?locator:undefined });
   // DT-8: opt-in delivery checklist only. Empty/absent keeps old behavior.
   const requiredSections = Array.isArray(options.requiredSections)
     ? options.requiredSections
     : Array.isArray(entry.requiredSections) ? entry.requiredSections :
       pdfDisclosure?.kind === 'dividends' ? ['品牌定价','渠道','现金转化'].filter(label => text.includes(label) && !disclosureHeadings.includes(label)) : null;
   const injectedLintContext = { ...(entry.answerLintContext || {}), ...(options.answerLintContext || {}) };
-  const asksDeviation = injectedLintContext.userAsksDeviation ?? asksDeviationQuestion(text);
+  const asksDeviation = injectedLintContext.userAsksDeviation ?? asksDeviationQuestion(active.intent?.request || text);
   const baseLintContext = {
     ...injectedLintContext,
     ...(asksDeviation ? { userAsksDeviation: true } : {}),
@@ -399,7 +430,7 @@ async function generateAnswer(entry, promptText, options, active) {
     if (active.cancelled) return interrupted('用户已取消本次回答。');
     // Older fake sessions may omit custom messages: context injection is skipped there.
     if (entry.session.sendCustomMessage) {
-      const content = [context.content, argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint].filter(Boolean).join('\n\n');
+      const content = [intentHint, context.content, argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint].filter(Boolean).join('\n\n');
       await entry.session.sendCustomMessage({ customType: 'pe_turn_context', content, display: false, details: { turnId, routes: context.routes } }, { deliverAs: 'nextTurn' });
     }
     if (active.cancelled) return interrupted('用户已取消本次回答。');
@@ -682,7 +713,7 @@ async function generateAnswer(entry, promptText, options, active) {
       }
       if (blocking.length || !answer || toolGap) {
         safeText = researchTurn && !sourceQuestion ? researchPortion(answer, part => findingsFor(part, { ...lintContext, requiredSections: [] }), findings, available,
-          {maxChars:reviewBudget,question:text,visibleHistory:correctionHistory}) : verifiedPortion(answer, blocks, locatorEvidence,
+          {maxChars:reviewBudget,question:active.intent?.request || text,visibleHistory:correctionHistory,preserveAnswerUnits:active.intent?.mode === 'direct'}) : verifiedPortion(answer, blocks, locatorEvidence,
           part => findingsFor(part, { ...lintContext, requiredSections: [] }), coverage,
           part => hasOcrPageSource(part, calls, currentVersions));
         if(safeText && researchTurn && !sourceQuestion) {
@@ -714,7 +745,7 @@ async function generateAnswer(entry, promptText, options, active) {
       const facingAnswer = [
         '直接回答用户原问题，交付一份独立、完整的回答，保留已有依据的结论与解释。修订前逐项核对原题和可用回执；对有冲突的复合句，只重建有据的计算步骤，把对应出处放在旁边。删改前提后重新读该段，补上所指指标或撤回其依赖判断，保留独立的口径说明。若用户主动要求复核旧答，请说明改了什么以及依据。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求查证而资料不足的事项，在对应结论后写一句“未核验：缺少的具体资料，因此无法判断什么”。',
         PLAIN_ANSWER_GUIDANCE,
-        argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint,
+        intentHint, argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint,
       ].filter(Boolean).join('\n');
       let prompt;
       let customType = 'pe_answer_correct';
@@ -749,11 +780,12 @@ async function generateAnswer(entry, promptText, options, active) {
           JSON.stringify({question: text, previous:priorDialogue, draft:answer}),
         ].filter(Boolean).join('\n');
         active.compactAnswer = prompt;
-      } else if ((errors.length || (calculation && requestsEvidenceLimits(text) && blocking.some(item => item.rule === 'delivery_gap'))) && correctionCount < 1) {
+      } else if ((errors.length || ((active.intent || (calculation && requestsEvidenceLimits(text))) && blocking.some(item => item.rule === 'delivery_gap'))) && correctionCount < 1) {
         correctionCount++;
         continuationPrefix = null;
-        const issues = [...new Set(errors.map(item => [item.message, item.excerpt, item.expected].filter(Boolean).join('；')))];
-        prompt = `以下主张需要核对。工作簿派生值绑定已读出处；题设计算使用用户原始输入，不要求虚构单元格；公开披露回查原文。交付修订后的完整答复，保持原题要求的条数和每项理由，不写“原结论不变”“改了什么”等修改说明。先保留足以回答各问项的结论和有证据的关键数字。多余数字直接删去，题目要求的事实未能核对时再注明。\n${issues.join('\n')}\n${facingAnswer}`;
+        const repairItems = active.intent ? [...errors, ...blocking.filter(item => item.rule === 'delivery_gap')] : errors;
+        const issues = [...new Set(repairItems.map(item => [item.message, item.excerpt, item.expected].filter(Boolean).join('；')))];
+        prompt = `以下主张需要核对。工作簿派生值绑定已读出处；题设计算使用用户原始输入，不要求虚构单元格；公开披露回查原文。交付修订后的完整答复，保持原题要求的条数和每项理由，不写“原结论不变”“改了什么”等修改说明。优先完整交付每个问项。说明前文范围可引用已交付对话；归因拆分保留同一口径的贡献项、交叉项和合计，核对计算回执单位与正文。多余数字直接删去，题目要求的事实未能核对时再注明。\n${issues.join('\n')}\n${facingAnswer}`;
         if (calculation && !sourceQuestion && !toolGap && !unverified.length) {
           prompt = [
             '你在一份已有计算段的答复下续写解释，读者已看到下面的计算。根据原题重新写这一小段，逐项说清为什么。',
@@ -792,7 +824,7 @@ async function generateAnswer(entry, promptText, options, active) {
         customType = 'pe_answer_recover';
         // Last repair gets a small, evidence-focused context. Replaying the
         // entire failed tool history encourages the same sprawling draft.
-        active.researchRecovery = { question:text, draft:answer,
+        active.researchRecovery = { question:text, researchIntent:active.intent, draft:answer,
           findings:errors.map(({rule,excerpt,expected,evidenceStatus})=>({rule,excerpt,expected,evidenceStatus})),
           sources:researchRecoverySources(answer,turnCitations) };
 
