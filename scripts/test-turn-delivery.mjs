@@ -831,7 +831,9 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
         t.after(model.resume);
         await ui.send("请回答这个问题。");
         await bounded(model.paused, "browser send did not start verification");
-        await ui.page.locator("#liveTools .tool-group").waitFor();
+        const liveGroup = ui.page.locator("#liveTools .tool-group");
+        await liveGroup.locator("summary").click();
+        assert.equal(await liveGroup.evaluate(node => node.open), true);
         assert.equal(await answers(ui.page).count(), 0);
         assert.ok(!(await ui.page.locator("#thread").innerText()).includes(scenario.draft));
         assert.equal(await ui.page.evaluate(() => window.state.streaming), true);
@@ -853,6 +855,10 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
           assert.deepEqual(publicAnswer(row), publicAnswer(record));
         }
         await verifyAnswer();
+        const finishedGroup = answers(ui.page).locator("details.tool-group");
+        assert.equal(await finishedGroup.evaluate(node => node.open), false);
+        const timing = await finishedGroup.locator("summary").innerText();
+        assert.match(timing, /用时 .*秒/);
         if (transport === "legacy") {
           await ui.page.evaluate(record => {
             const stream = window.state.es;
@@ -864,6 +870,7 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
         }
         await ui.reload(id);
         await verifyAnswer();
+        assert.equal(await finishedGroup.locator("summary").innerText(), timing);
         await ui.newSession();
         await ui.select(id);
         await verifyAnswer();

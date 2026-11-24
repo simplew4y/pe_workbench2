@@ -146,7 +146,6 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
         : null;
       const presentation = framework ? {
         ...framework,
-        turnStartedAt: turn.startedAt,
         analysisStatePendingMerge: pendingMerges(readLedgerSync(entry.ctx.root, entry.id))
           .some(item => item.path === framework.analysisStatePath),
       } : {};
@@ -154,7 +153,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       const clarificationAttachments = outcome.status === 'completed' && attachments?.length && researchChoices(outcome.text) ? attachments : null;
       const record = saveTurnDelivery(entry, {
         version: 1, turnId: turn.turnId, ...(turn.runId ? { runId: turn.runId } : {}),
-        finishedAt: new Date().toISOString(), ...outcome, ...presentation,
+        turnStartedAt: turn.startedAt, finishedAt: new Date().toISOString(), ...outcome, ...presentation,
         ...(clarificationAttachments ? { clarificationAttachments } : {}),
         ...(Object.hasOwn(outcome, 'analysisState') ? {
           analysisState: outcome.analysisState, analysisStatePath: outcome.analysisStatePath,

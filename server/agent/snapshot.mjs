@@ -460,7 +460,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         } : {}),
         ...(turn.revisions?.length || legacyCitations.length ? { citations: legacyCitations } : {}),
         time: hm(turn.delivery?.finishedAt ?? firstAssistant?.timestamp ?? user?.timestamp),
-        turnStartedAt: user?.timestamp ?? firstAssistant?.timestamp,
+        turnStartedAt: turn.start?.startedAt ?? user?.timestamp ?? firstAssistant?.timestamp,
       });
     }
   }

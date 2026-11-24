@@ -174,10 +174,12 @@ function toolRowHTML(tool) {
     </div>${card ? `<div class="tool-card-slot">${card}</div>` : ''}`;
 }
 
-function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, settled = false, open = false } = {}) {
-  if (!tools.length && !processText) return '';
+function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, settled = false, open = false, duration = '' } = {}) {
+  if (!tools.length && !processText) {
+    return duration ? `<div class="process-duration">${esc(duration)}</div>` : '';
+  }
   const errors = tools.filter(tool => tool.status === 'error').length;
-  const label = live ? liveStatusText() : (tools.length ? `过程 · ${tools.length} 个工具调用` : '过程');
+  const label = live ? liveStatusText() : [duration, tools.length ? `${tools.length} 个工具调用` : '处理过程'].filter(Boolean).join(' · ');
   const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : settled ? '已结束' : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : tools.some(t=>t.validation?.passed===false) ? '已结束' : '已完成'));
   const status = live ? ' id="liveStatus" aria-live="polite"' : '';
   return `<details class="tool-group"${open ? ' open' : ''}>
@@ -303,19 +305,28 @@ function messageHTML(m, { openGroups } = {}) {
   }) : '';
   const groupKey = processGroupKey(m);
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '',
-    open: openGroups?.has(groupKey), highlightBudget, settled: delivered && m.status==='partial',
+    open: openGroups?.has(groupKey), duration: turnDuration(m), highlightBudget, settled: delivered && m.status==='partial',
     incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
   const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}"${group && groupKey ? ` data-process-key="${esc(groupKey)}"` : ''}>
       <span class="msg-avatar">${isUser ? '林' : icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">${isUser ? '林默' : 'Workbench'}</span><span class="msg-time">${esc(m.time || '')}</span></div>
+        ${group}
         <div class="msg-body${isUser ? '' : ' md-preview'}">${body}</div>
         ${framework}
-        ${group}
         ${reports}
       </div>
     </article>`;
+}
+
+function turnDuration(message) {
+  if (!message.turnStartedAt || !message.finishedAt) return '';
+  const ms = new Date(message.finishedAt).getTime() - new Date(message.turnStartedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `用时 ${minutes ? minutes + ' 分 ' : ''}${seconds % 60} 秒`;
 }
 
 function processGroupKey(message) {
@@ -372,7 +383,7 @@ function citationsFromTools(tools = []) {
   return tools.flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
 }
 
-function liveMessageHTML(openGroups) {
+function liveMessageHTML() {
   const live = state.live;
   const hasContent = Boolean(live.text || live.tools.length);
   const groupKey = processGroupKey(live);
@@ -389,7 +400,7 @@ function liveMessageHTML(openGroups) {
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
         <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations, { compact: true }) : liveBody) : ''}</div>
         ${inlineStatus}
-        <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true, open: openGroups?.has(groupKey) }) : ''}</div>
+        <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
       </div>
     </article>`;
 }
@@ -462,7 +473,7 @@ let renderedSession;
 function currentOpenGroups() {
   const openGroups = new Set();
   if (renderedSession === state.activeSession) {
-    for (const group of threadEl.querySelectorAll('[data-process-key] .tool-group[open]')) {
+    for (const group of threadEl.querySelectorAll('[data-process-key]:not(#liveMsg) .tool-group[open]')) {
       openGroups.add(group.closest('[data-process-key]').dataset.processKey);
     }
   }
@@ -505,7 +516,7 @@ function renderThread(scroll = false) {
         delete liveArticle.querySelector('#liveTools').dataset.signature;
         updateLiveMessage();
       } else {
-        threadEl.innerHTML = `<div class="thread-inner">${history}${liveMessageHTML(openGroups)}</div>`;
+        threadEl.innerHTML = `<div class="thread-inner">${history}${liveMessageHTML()}</div>`;
         liveArticle = threadEl.querySelector('#liveMsg');
       }
       renderTraceHitl();
