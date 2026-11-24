@@ -122,6 +122,16 @@ for (const [status, body, label] of [
     assert.equal(messageHTML(fresh.state.messages[1]), html);
   }
 }
+{
+  const record = { role: 'assistant', turnId: 'timed', status: 'completed', text: '最终答文',
+    turnStartedAt: '2026-11-24T01:00:00Z', finishedAt: '2026-11-24T01:03:05Z' };
+  const withTools = messageHTML({ ...record, tools: [tool] });
+  assert.match(withTools, /<details class="tool-group">[\s\S]*用时 3 分 5 秒[\s\S]*最终答文/);
+  const plain = messageHTML(record);
+  assert.match(plain, /用时 3 分 5 秒/);
+  assert.doesNotMatch(plain, /<details/);
+  assert.doesNotMatch(messageHTML({ ...record, finishedAt: null }), /用时/);
+}
 const legacy = messageHTML({ role: 'assistant', text: '旧答 Model!A1。', tools: [tool] });
 assert.match(messageHTML({role:'assistant',status:'partial',text:'',reason:'<script>bad()</script>'}),/尚未形成可交付答复/);
 assert.doesNotMatch(messageHTML({role:'assistant',status:'partial',text:'',reason:'<script>bad()</script>'}),/<script>/);

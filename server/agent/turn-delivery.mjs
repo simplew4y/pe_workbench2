@@ -101,7 +101,7 @@ export function recoverInterruptedTurns(entry) {
     if (item.kind === "start" && !delivered.has(item.turn.turnId)) {
       saveTurnDelivery(entry, {
         version: 1, turnId: item.turn.turnId, ...(item.turn.runId ? { runId: item.turn.runId } : {}), status: "failed", text: "", citations: [],
-        reason: "服务在回答交付前中断。", finishedAt: new Date().toISOString(),
+        reason: "服务在回答交付前中断。", turnStartedAt: item.turn.startedAt, finishedAt: new Date().toISOString(),
       });
     }
   }
