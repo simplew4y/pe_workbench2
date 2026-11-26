@@ -80,6 +80,14 @@ class FakeSession {
     this.sessionName = String(name || "");
   }
 
+  async setModel(model) {
+    this.model = model;
+  }
+
+  setThinkingLevel(level) {
+    this.thinkingLevel = level;
+  }
+
   emit(event) {
     if (this.disposed) return;
     for (const listener of [...this.listeners]) {

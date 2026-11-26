@@ -1,5 +1,6 @@
 import { cancelActiveTurn } from "../agent/turn-delivery.mjs";
 import { runWithPostAnswer } from "../agent/post-answer.mjs";
+import { defaultThinkingLevel, modelThinkingLevels, persistEmptySessionSettings, sessionModelSettings } from "../agent/session-model-settings.mjs";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -7,7 +8,7 @@ import crypto from "node:crypto";
 
 export async function handleSessions({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
-  const { sessions, bus, broadcast, nowIso, ALLOWED_MODELS, config, makeTitle } = app;
+  const { sessions, bus, broadcast, nowIso, config, makeTitle } = app;
   const pathname = url.pathname;
   if (pathname === "/api/sessions" && req.method === "GET") {
     return json(res, 200, await sessions.listSessions(ctx));
@@ -15,7 +16,7 @@ export async function handleSessions({ req, res, url, app, ctx }) {
 
   if (pathname === "/api/sessions" && req.method === "POST") {
     const entry = await sessions.createEntry({ id: crypto.randomUUID(), ctx });
-    return json(res, 201, { id: entry.id, title: entry.title, messageCount: 0, updatedAt: entry.updatedAt });
+    return json(res, 201, { id: entry.id, title: entry.title, messageCount: 0, updatedAt: entry.updatedAt, ...sessionModelSettings(entry) });
   }
 
   if (pathname === "/api/events" && req.method === "GET") {
@@ -41,6 +42,7 @@ export async function handleSessions({ req, res, url, app, ctx }) {
 
     if (action === "messages" && req.method === "POST") {
       const body = await readJson(req);
+      if (entry.modelSettingsPending) return json(res, 409, { error: "会话设置正在保存，请稍后发送" });
       // A legacy prompt must not be injected into an active AG-UI run: it would
       // be queued as a followUp and its events would leak into that run.
       if (entry.agui?.isRunning) {
@@ -92,14 +94,29 @@ export async function handleSessions({ req, res, url, app, ctx }) {
 
     if (action === "model" && req.method === "POST") {
       const body = await readJson(req);
-      const requested = String(body.model || "");
-      if (!ALLOWED_MODELS.has(requested)) return json(res, 400, { error: "unsupported model" });
-      const next = config.resolveModel(requested);
-      if (!next) return json(res, 400, { error: "model not found" });
-      await entry.session.setModel(next);
-      entry.modelId = requested;
-      broadcast(entry, { type: "session.updated", id: entry.id, title: entry.title, messageCount: entry.session.messages.length, updatedAt: entry.updatedAt, model: requested });
-      return json(res, 200, { ok: true, model: requested });
+      if (!body || typeof body !== "object" || (body.model === undefined && body.thinkingLevel === undefined))
+        return json(res, 400, { error: "请指定模型或推理档位" });
+      if (entry.session.isStreaming || entry.postAnswerPending || entry.agui?.isRunning || entry.modelSettingsPending)
+        return json(res, 409, { error: "会话正在运行或保存设置，请稍后切换模型或推理档位" });
+      const requested = body.model === undefined ? entry.modelId : body.model;
+      const next = typeof requested === "string" ? config.resolveModel(requested) : null;
+      if (!next) return json(res, 400, { error: "不支持的模型" });
+      const levels = modelThinkingLevels(next);
+      const previous = entry.session.thinkingLevel;
+      const level = body.thinkingLevel === undefined ? (levels.includes(previous) ? previous : defaultThinkingLevel(next)) : body.thinkingLevel;
+      if (!levels.includes(level)) return json(res, 400, { error: "此模型不支持该推理档位" });
+      entry.modelSettingsPending = true;
+      try {
+        if (requested !== entry.modelId) await entry.session.setModel(next);
+        entry.session.setThinkingLevel(level);
+        entry.modelId = requested;
+        persistEmptySessionSettings(entry.session);
+        const settings = sessionModelSettings(entry);
+        broadcast(entry, { type: "session.updated", id: entry.id, title: entry.title, messageCount: entry.session.messages.length, updatedAt: entry.updatedAt, ...settings });
+        return json(res, 200, { ok: true, ...settings });
+      } finally {
+        entry.modelSettingsPending = false;
+      }
     }
   }
 
