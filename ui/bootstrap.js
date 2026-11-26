@@ -55,6 +55,38 @@ const activeSession = () => selectors.activeSession();
 const fileById = (id) => selectors.fileById(id);
 const taskById = (id) => selectors.taskById(id);
 const latest = (file) => selectors.latest(file);
+const effortLabels = { off:'关闭', minimal:'最低', low:'低', medium:'中', high:'高', xhigh:'很高', max:'最高' };
+const modelUpdates = new Set();
+
+function renderModelSettings() {
+  const session = activeSession();
+  const model = session?.model || state.modelId;
+  const level = session?.thinkingLevel || state.defaultThinkingLevel;
+  const models = state.models;
+  const levels = session?.thinkingLevels || models.find(item => item.id === model)?.thinkingLevels || [];
+  const disabled = !session || state.streaming || modelUpdates.has(session.id) ? ' disabled' : '';
+  $('#modelName').textContent = model;
+  $('#modelEffort').textContent = effortLabels[level] || level;
+  $('#modelBtn').title = `${model} · 推理：${effortLabels[level] || level}`;
+  const choice = (kind, value, label, selected, note = '') =>
+    `<button type="button" class="menu-item${selected ? ' is-on' : ''}" role="menuitemradio" aria-checked="${selected}" data-${kind}="${esc(value)}"${disabled}>${esc(label)}${note ? `<span class="menu-note">${esc(note)}</span>` : ''}</button>`;
+  const menu = $('#modelMenu');
+  const markup = `<div role="group" aria-label="模型"><div class="model-menu-label" aria-hidden="true">模型</div>${
+    models.map(item => choice('model',item.id,item.id,item.id === model,item.name === item.id ? '' : item.name)).join('')
+  }</div><div role="group" aria-label="推理档位"><div class="model-menu-label" aria-hidden="true">推理档位</div>${
+    levels.map(item => choice('thinking-level',item,effortLabels[item] || item,item === level,item)).join('')
+  }</div>`;
+  if (menu.dataset.markup !== markup) {
+    menu.dataset.markup = markup;
+    menu.innerHTML = markup;
+  }
+}
+
+function modelSettingsPatch(item) {
+  return item.model && item.thinkingLevel ? {
+    model:item.model, thinkingLevel:item.thinkingLevel, thinkingLevels:item.thinkingLevels,
+  } : {};
+}
 
 function renderSessions() {
   const groups = ['今天', '本周', '更早'];
@@ -94,6 +126,7 @@ function renderAllChrome() {
   $('#wsSub').textContent = state.project.note || '项目';
   document.title = `${title} · ${state.project.name} — Workbench`;
   renderProjectMenu();
+  renderModelSettings();
 }
 
 
@@ -345,7 +378,9 @@ async function boot() {
     const health = await api('/api/health');
     if (health.model) {
       state.modelId = health.model;
-      $('#modelName').textContent = health.model;
+      state.defaultThinkingLevel = health.defaultThinkingLevel || 'high';
+      state.models = health.models || [];
+      renderModelSettings();
     }
     await installPilotIfRequested(health);
   } catch {
@@ -475,11 +510,8 @@ function handleServerEvent(ev) {
       updateSessionItem(ev.sessionId, {
         title: ev.title,
         updatedAt: new Date().toISOString(),
+        ...modelSettingsPatch(ev),
       });
-      if (ev.model) {
-        state.modelId = ev.model;
-        $('#modelName').textContent = ev.model;
-      }
       syncStop();
       renderSessions();
       renderAllChrome();
@@ -559,6 +591,7 @@ function handleServerEvent(ev) {
       updateSessionItem(ev.id, {
         title: ev.title,
         updatedAt: ev.updatedAt || new Date().toISOString(),
+        ...modelSettingsPatch(ev),
       });
       renderSessions();
       renderAllChrome();
@@ -601,7 +634,7 @@ async function refreshSnapshot({
       clearTimeout(snapshotPollTimer);
       snapshotPollTimer = null;
     }
-    updateSessionItem(id, { title: snap.title });
+    updateSessionItem(id, { title: snap.title, ...modelSettingsPatch(snap) });
     syncStop();
     renderSessions();
     renderAllChrome();
@@ -619,6 +652,7 @@ async function refreshSnapshot({
 
 function syncStop() {
   $('#stopBtn').hidden = !state.streaming;
+  renderModelSettings();
 }
 
 /* ---------- wiring ---------- */
@@ -835,23 +869,45 @@ async function init() {
   $('#modelBtn').addEventListener('click', e => {
     e.stopPropagation();
     toggleMenu($('#modelMenu'), $('#modelBtn'));
+    if (!$('#modelMenu').hidden) $('#modelMenu button[aria-checked="true"]:not(:disabled)')?.focus();
   });
   $('#modelMenu').addEventListener('click', async e => {
-    const item = e.target.closest('[data-model]');
-    if (!item) return;
-    const requested = item.dataset.model;
-    if (state.activeSession) {
-      try {
-        await api(`/api/sessions/${state.activeSession}/model`, { method: 'POST', body: { model: requested } });
-      } catch (error) {
-        toast(error.message || '切换模型失败');
-        return;
+    const item = e.target.closest('[data-model], [data-thinking-level]');
+    const id = state.activeSession;
+    const project = state.project.id;
+    if (!item || !id || state.streaming || modelUpdates.has(id)) return;
+    const body = item.dataset.model ? { model:item.dataset.model } : { thinkingLevel:item.dataset.thinkingLevel };
+    modelUpdates.add(id);
+    renderModelSettings();
+    try {
+      const saved = await api(`/api/sessions/${id}/model`, { method:'POST', body });
+      if (state.project.id === project) updateSessionItem(id, modelSettingsPatch(saved));
+      if (state.project.id === project && state.activeSession === id) {
+        toggleMenu($('#modelMenu'), $('#modelBtn'), false);
+        $('#modelBtn').focus();
       }
+    } catch (error) {
+      if (state.project.id === project && state.activeSession === id) toast(error.message || '会话设置保存失败');
+    } finally {
+      modelUpdates.delete(id);
+      renderModelSettings();
     }
-    state.modelId = requested;
-    $('#modelName').textContent = requested;
-    $$('#modelMenu .menu-item').forEach(b => b.classList.toggle('is-on', b === item));
-    toggleMenu($('#modelMenu'), $('#modelBtn'), false);
+  });
+  $('#modelMenu').addEventListener('keydown', e => {
+    if (!['ArrowDown','ArrowUp','Home','End','Escape'].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      toggleMenu($('#modelMenu'),$('#modelBtn'),false);
+      $('#modelBtn').focus();
+      return;
+    }
+    const items = $$('#modelMenu button:not(:disabled)');
+    if (!items.length) return;
+    const index = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 :
+      (index + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    items[next]?.focus();
   });
 
   document.addEventListener('click', e => {

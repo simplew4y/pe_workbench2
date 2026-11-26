@@ -32,6 +32,8 @@ const target = {
   es: null,
   globalEs: null,
   modelId: "deepseek-flash",
+  defaultThinkingLevel: "high",
+  models: [],
   uploading: false,
   uploadTotal: 0,
   uploadIndex: 0,
