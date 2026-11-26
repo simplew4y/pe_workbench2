@@ -160,6 +160,23 @@ function decorateSession(item) {
    materials.js) because open/closeProjectDialog own the focus lifecycle. */
 let projectLastFocus = null;
 
+function sessionFromLocation() {
+  return /^\/sessions\/([^/]+)\/?$/.exec(location.pathname)?.[1] || null;
+}
+
+function syncSessionUrl(id, mode) {
+  const url = new URL(location.href);
+  url.pathname = `/sessions/${encodeURIComponent(id)}`;
+  url.searchParams.set('project', state.project.id);
+  if (url.href === location.href) return;
+  if (mode === 'push') {
+    url.hash = '';
+    history.pushState(null, '', url);
+  } else {
+    history.replaceState(null, '', url);
+  }
+}
+
 async function loadProjects() {
   const items = await api('/api/projects');
   state.projects = Array.isArray(items) ? items : [];
@@ -258,7 +275,7 @@ async function switchProject(id) {
   void loadApprovals();
 
   try {
-    await loadSessions();
+    await loadSessions({ historyMode: 'push' });
     await loadFoundation();
     await window.Tracking?.reload?.();
     void window.Watch?.load?.();
@@ -344,7 +361,7 @@ async function boot() {
   void loadNotifications();
   void loadApprovals();
   try {
-    await loadSessions();
+    await loadSessions({ requestedId: sessionFromLocation() });
   } catch (error) {
     toast(error.message || '加载会话失败');
   }
@@ -353,41 +370,37 @@ async function boot() {
   initTraceHitl();
 }
 
-async function loadSessions() {
+async function loadSessions({ requestedId = null, historyMode = 'replace' } = {}) {
+  const projectId = state.project.id;
   const items = await api('/api/sessions');
+  if (state.project.id !== projectId) return;
   state.sessions = items.map(decorateSession);
+  const requested = state.sessions.find(item => item.id === requestedId);
+  if (requestedId && !requested) toast('该会话不存在或不属于当前项目');
   if (!state.sessions.length) {
-    await createSession();
+    await createSession({ historyMode });
     return;
   }
-  if (!state.sessions.some(s => s.id === state.activeSession)) state.activeSession = state.sessions[0].id;
-  renderSessions();
-  renderAllChrome();
-  renderThread();
-  connectSession(state.activeSession);
+  openSession(requested?.id || state.sessions[0].id, historyMode);
 }
 
-async function createSession() {
+async function createSession({ historyMode = 'push' } = {}) {
+  const projectId = state.project.id;
   const created = await api('/api/sessions', { method: 'POST' });
   const item = decorateSession({ ...created, updatedAt: created.updatedAt || new Date().toISOString() });
+  if (state.project.id !== projectId) return item;
   state.sessions.unshift(item);
-  state.activeSession = item.id;
-  state.messages = [];
-  state.pendingMerges = [];
-  state.streaming = false;
-  state.live = { text: '', tools: [], startedAt: 0 };
-  syncStop();
-  renderSessions();
-  renderAllChrome();
-  renderThread();
-  connectSession(item.id);
-  window.NextActions?.refresh?.();
+  openSession(item.id, historyMode);
   inputEl.focus();
-  win.classList.remove('side-open');
   return item;
 }
 
-function openSession(id) {
+function openSession(id, historyMode = 'push') {
+  syncSessionUrl(id, historyMode);
+  if (state.activeSession === id) {
+    win.classList.remove('side-open');
+    return;
+  }
   state.activeSession = id;
   state.messages = [];
   state.pendingMerges = [];
@@ -624,6 +637,16 @@ async function init() {
     const btn = e.target.closest('[data-session]');
     if (!btn) return;
     openSession(btn.dataset.session);
+  });
+
+  window.addEventListener('popstate', () => {
+    const id = sessionFromLocation();
+    const projectId = new URLSearchParams(location.search).get('project');
+    if (!id || projectId !== state.project.id || !state.sessions.some(item => item.id === id)) {
+      location.reload();
+      return;
+    }
+    openSession(id, 'replace');
   });
 
   $('#newSession').addEventListener('click', () => {
