@@ -21,6 +21,7 @@ import { Store } from "../store.mjs";
 import { WorkbookStore } from "../lib/workbook-store.mjs";
 import { ExcelPreviewStore } from "../lib/excel-preview.mjs";
 import { createWorkbookTool, workspaceRel } from "../lib/workbook-tool.mjs";
+import { createWorkbookTraceTool } from "../lib/workbook-trace-tool.mjs";
 import { tokenize, queryGraph, formatResult } from "../lib/workbook-query.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -83,6 +84,24 @@ async function main() {
     });
     const version = store.latestVersion(material.id);
     const sha = version.blob_sha256;
+
+    await test("batch traces retain source identity, deduplicate repeats and isolate failures", async () => {
+      const tool=createWorkbookTraceTool({store,workbooks,workspace});
+      const single={sheet:"模型",rows:"1-3"};
+      const result=await tool.execute("batch",{path:"uploads/test-model.xlsx",batch:[
+        single,{rows:"1-3",sheet:"模型"},{sheet:"不存在",rows:"1-3"},
+      ]});
+      assert.equal(result.isError,undefined);
+      assert.equal(result.details.partial,true);
+      assert.equal(result.details.sha256,sha);
+      assert.equal(result.details.subtraces[1].duplicateOf,1);
+      assert.match(result.details.subtraces[2].error,/工作表不存在/);
+      const baseline=await tool.execute("single",{path:"uploads/test-model.xlsx",...single});
+      assert.deepEqual(result.details.citations.map(item=>item.id),baseline.details.citations.map(item=>item.id));
+      assert.ok(result.details.cells.length);
+      const rejected=await tool.execute("bad",{path:"uploads/test-model.xlsx",batch:[{mode:"path",cell:"模型!A1"}]});
+      assert.equal(rejected.isError,true);
+    });
 
     console.log("\nfixture + cache");
     let summary;

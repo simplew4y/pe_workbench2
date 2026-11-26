@@ -19,6 +19,7 @@ import fs from "node:fs";
 import {readLedger} from "../../lib/ledger.mjs";
 import {createLedgerTool} from "../../lib/ledger-tool.mjs";
 import {createTranscriptSearchTool} from "../../lib/transcript-search-tool.mjs";
+import {createTraceReplayTool} from "../../lib/trace-replay.mjs";
 import path from "node:path";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import {
@@ -164,12 +165,15 @@ export function createSessionService({
     const memoryTools=ctx.factMemory ? createFactMemoryTools({memory:ctx.factMemory,getMetadata:metadata}) : [];
     const deliveredPdfReads = new Set((restoredManager?.getBranch() || [])
       .filter(e => e.type === "custom" && e.customType === "pe_disclosure_read").flatMap(e => e.data.ids));
-    const sessionTools = automated || writeRoots ? memoryTools.filter(t=>t.name==='fact_query') : [
+    const traceReplay = config.workbookQuery ? [createTraceReplayTool({ getMessages: () => session.sessionManager.getBranch()
+      .filter(entry => entry.type === "message").map(entry => entry.message) })] : [];
+    const sessionTools = automated || writeRoots ? [...memoryTools.filter(t=>t.name==='fact_query'), ...traceReplay] : [
       ...(ctx.updateModel ? [createUpdateModelTool(args => ctx.updateModel(args, metadata().session_id),
         { store: ctx.store, pdfs: ctx.pdfs, workbooks:ctx.workbooks, messages: () => session.sessionManager?.getBranch?.()
           .filter(e => e.type === "message" && (e.message.toolName !== "pdf_read" || deliveredPdfReads.has(e.message.toolCallId)))
           .map(e => e.message) ?? session.messages })] : []),
       ...memoryTools,
+      ...traceReplay,
       createLedgerTool({ctx, getSessionId: () => session.sessionId,
         getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
         broadcast: event => bus.broadcastGlobal(event, ctx.id),
@@ -203,7 +207,7 @@ export function createSessionService({
       const stream = session.agent.streamFunction;
       session.agent.streamFunction = async (model, context, options) => {
         const transcript = normalizeContext(context);
-        const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens);
+        const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens, { traceReplay: traceReplay.length > 0 });
         if (!assessContextBudget(messages, model, options?.maxTokens).ok) return contextBudgetFailureStream(model);
         const request = { messages };
         let sentIds = [];

@@ -123,7 +123,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       if (pdfMatches.length && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
         outcome = {...outcome,text:deliverPdfCalculationLinks(outcome.text,pdfMatches,entry.ctx?.id,pdfSearchKey)};
       }
-      if(entry.publishReportDelivery)outcome=await entry.publishReportDelivery(outcome,text);
+      if(entry.publishReportDelivery && !outcome.deferReportPublication)outcome=await entry.publishReportDelivery(outcome,text);
       const deliveredPdf = mentionedPdfCalculations(outcome.text, active.pdfCalculationEvidence || []);
       if (deliveredPdf.length) {
         const evidence = deliveredPdf.flatMap(({result,parents})=>[result,...parents]);
@@ -443,6 +443,10 @@ async function generateAnswer(entry, promptText, options, active) {
         return interrupted(message?.errorMessage || (failedTool && `工具 ${failedTool.name} 执行失败。`));
       }
       const delta = textOfContent(message.content);
+      if (message.researchReportLimitEvidence?.length && delta) {
+        return {status:'partial',text:delta,citations:message.researchReportLimitEvidence,
+          reason:'报告返工已达上限，未发布报告；交付已核验的模型证据。',deferReportPublication:true};
+      }
       const prefix = continuationPrefix ?? '';
       const joined = message.researchContinuation ? delta : joinContinuation(prefix, delta);
       const noProgress = continuationPrefix !== null && joined.trimEnd() === prefix.trimEnd();
