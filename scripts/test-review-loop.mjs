@@ -33,10 +33,13 @@ test('report retry only requests fresh numeric coverage for the changed block bu
   });
   const run=text=>review.tool.execute('report',{path:'exports/投资框架报告.md',content:draft(text)});
   assert.equal((await run(initial)).isError,true);
+  review.record({toolCall:{name:'calc',id:'pe'},args:{expression:'42.85/2.87759'},
+   result:{content:[{type:'text',text:'按2026E EPS 复核 PE 为14.89倍'}]}});
   const result=await run(revised);
   assert.equal(result.isError,false);
   assert.deepEqual(audits.map(audit=>audit.extra.unboundNumericLines.length),[2,1]);
   assert.equal(audits[1].text,draft(revised));
+  assert.deepEqual(audits[1].extra.numericReuseGuard.requiredCalculationIds,['pe']);
   assert.equal(result.details.reusedNumericCoverageCount,1);
   await writeFile(path.join(root,'source.txt'),'new evidence');
   review.record({toolCall:{name:'read',id:'new'},args:{path:'source.txt'},result:{content:[{type:'text',text:'new evidence'}]}});
@@ -60,6 +63,31 @@ test('numeric receipts cannot cover changed context, ambiguous lines, gaps or a 
  assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
  reuse.prepare('same',draft,[3],[line]).merge({...receipt,reusableNumericCoverage:[]});
  assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
+});
+
+test('numeric coverage falls back in the same audit if an added calculation is not supplied in full',async()=>{
+ const draft='目标价为 129 元。\n\n市盈率为 14.89 倍。';
+ const all=draft.split('\n\n');
+ const extra={mode:'report',unboundNumericLines:[all[1]],reusedNumericCoverageCount:1,
+  numericReuseGuard:{requiredCalculationIds:['pe'],unboundNumericLines:all}};
+ const messages=[call('pe','calc',{expression:'42.85/2.87759'}),
+  success('pe','calc','PE=14.89',{results:[{name:'PE',value:14.89,expression:'42.85/2.87759'}]})];
+ for(const [context,expected] of [[{messages},false],[{messages:[]},true]]) {
+  let requests=0;
+  const verdict=await auditResearch((_model,ctx)=>{
+   requests++;
+   const payload=JSON.parse(ctx.messages[0].content[0].text);
+   assert.deepEqual(payload.unboundNumericLines,expected?all:[all[1]]);
+   assert.equal(payload.numericReuseGuard,undefined);
+   return stream(pass);
+  },{},context,{},draft,extra);
+  assert.equal(requests,1);
+  assert.equal(verdict.numericReuseFallback,expected);
+ }
+ const reuse=createNumericReviewReuse();
+ const covered={status:'reviewed',issues:[],coverageValidated:[0],reusableNumericCoverage:[{index:0,evidenceIds:['pe']}]};
+ reuse.prepare('same',draft,[1],all.slice(0,1),new Map([['pe','original']])).merge(covered);
+ assert.equal(reuse.prepare('same',draft,[1],all.slice(0,1),new Map([['pe','changed']])).reusedCount,0);
 });
 
 test('report auditor issues reusable coverage only for real, included evidence without a matching objection',async()=>{
