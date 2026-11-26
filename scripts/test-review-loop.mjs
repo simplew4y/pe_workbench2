@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createResearchReview} from '../lib/research-review.mjs';
-import {createNumericReviewReuse} from '../lib/report-numeric-reuse.mjs';
+import {planReportDelta} from '../lib/report-delta-review.mjs';
 import {auditResearch,createResearchAuditor,evidenceTimeline,AUDIT_CHECKS} from '../lib/research-audit.mjs';
 import {selectResearchEvidence,recoveryEvidenceRows} from '../lib/research-evidence-package.mjs';
 import {correctReviewerArithmetic} from '../lib/audit-arithmetic.mjs';
@@ -17,89 +17,61 @@ const call=(id,name,args)=>({role:'assistant',content:[{type:'toolCall',id,name,
 const pass={checks:Object.fromEntries(AUDIT_CHECKS.map(k=>[k,'pass'])),issues:[]};
 const stream=(body,stopReason='stop')=>({async *[Symbol.asyncIterator](){yield {type:'done'};},result:async()=>({stopReason,content:[{type:'text',text:JSON.stringify(body)}]})});
 
-test('report retry only requests fresh numeric coverage for the changed block but still sends the whole draft',async()=>{
- const root=await mkdtemp(path.join(tmpdir(),'pe-numeric-review-'));
+test('report retries send only the affected fragment until it passes, then validate the full report',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'pe-delta-review-'));
  try {
   const review=createResearchReview({ctx:{root,store:{findMaterialByPath:()=>null}}});
-  const stable='基准目标价为 129 元。', initial='现价隐含市盈率为 19.5 倍。', revised='现价隐含市盈率为 14.89 倍。';
-  const draft=text=>`## 模型估值\n\n${stable}\n\n## 市场对比\n\n${text}`;
+  const initial='现价隐含市盈率为 19.5 倍。', stillWrong='现价隐含市盈率为 19.51 倍。', fixed='现价隐含市盈率为 14.89 倍。';
+  const target='基准目标价为 129 元，依据 Discount PE!H29。';
+  const draft=text=>`## 模型估值\n\n${target}\n\n${'模型以原工作簿为准，不把期间不同的估值直接比较。'.repeat(12)}\n\n## 市场对比\n\n${text}`;
   const audits=[];
   review.setAuditor(async(text,extra)=>{
    audits.push({text,extra});
-   if(audits.length===1)return {status:'reviewed',ok:false,coverageValidated:[0],
-    reusableNumericCoverage:[{index:0,evidenceIds:['cell:model:Valuation!A1']}],
-    issues:[{check:'comparison_basis',excerpt:initial,reason:'分母口径有误'}]};
-   return {status:'reviewed',ok:true,coverageValidated:extra.unboundNumericLines.map((_,index)=>index),issues:[]};
+   const wrong=[initial,stillWrong].find(line=>text.includes(line));
+   return wrong ? {status:'reviewed',ok:false,verifiedEvidenceCount:1,issues:[{check:'comparison_basis',excerpt:wrong,reason:'分母口径有误'}]} :
+    {status:'reviewed',ok:true,issues:[],coverageValidated:extra.unboundNumericLines?.map((_line,index)=>index)};
   });
   const run=text=>review.tool.execute('report',{path:'exports/投资框架报告.md',content:draft(text)});
   assert.equal((await run(initial)).isError,true);
-  review.record({toolCall:{name:'calc',id:'pe'},args:{expression:'42.85/2.87759'},
-   result:{content:[{type:'text',text:'按2026E EPS 复核 PE 为14.89倍'}]}});
-  const result=await run(revised);
-  assert.equal(result.isError,false);
-  assert.deepEqual(audits.map(audit=>audit.extra.unboundNumericLines.length),[2,1]);
-  assert.equal(audits[1].text,draft(revised));
-  assert.deepEqual(audits[1].extra.numericReuseGuard.requiredCalculationIds,['pe']);
-  assert.equal(result.details.reusedNumericCoverageCount,1);
-  await writeFile(path.join(root,'source.txt'),'new evidence');
-  review.record({toolCall:{name:'read',id:'new'},args:{path:'source.txt'},result:{content:[{type:'text',text:'new evidence'}]}});
-  await run(revised);
-  assert.equal(audits[2].extra.unboundNumericLines.length,2);
+  const blocked=await run(stillWrong);
+  assert.equal(blocked.isError,true);
+  assert.equal(blocked.details.reviewScope,'delta');
+  assert.equal(audits.length,2);
+  assert.equal(audits[1].text,`## 市场对比\n\n${stillWrong}`);
+  assert.ok(!audits[1].text.includes(target));
+  assert.equal(audits[1].extra.relatedReports,undefined);
+  assert.equal((await run(fixed)).isError,false);
+  assert.deepEqual(audits.map(audit=>audit.extra.mode),['report','report_delta','report_delta','report']);
+  assert.equal(audits.at(-1).text,draft(fixed));
  } finally { await rm(root,{recursive:true,force:true}); }
 });
 
-test('numeric receipts cannot cover changed context, ambiguous lines, gaps or a later contradiction',()=>{
- const reuse=createNumericReviewReuse();
- const line='目标价 129 元', draft=`## 目标估值\n\n${line}`;
- const receipt={status:'reviewed',coverageValidated:[0],reusableNumericCoverage:[{index:0,evidenceIds:['valid']}],issues:[]};
- reuse.prepare('same',draft,[3],[line]).merge(receipt);
- assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,1);
- assert.equal(reuse.prepare('same',draft.replace('目标估值','实际价格'),[3],[line]).reusedCount,0);
- assert.equal(reuse.prepare('same',draft+'\n\n'+line,[3,5],[line,line]).reusedCount,0);
- const gap=reuse.prepare('same',draft,[3],[line]).merge({status:'unavailable',inputCoverageGaps:[{}]});
- assert.deepEqual(gap.coverageValidated,[]);
- const contradiction=reuse.prepare('same',draft,[3],[line]).merge({status:'reviewed',issues:[{excerpt:line}]});
- assert.deepEqual(contradiction.coverageValidated,[]);
- assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
- reuse.prepare('same',draft,[3],[line]).merge({...receipt,reusableNumericCoverage:[]});
- assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
+test('unlocalized report issues and structural changes cannot use delta review',()=>{
+ const content='## A\n\nStable unrelated text keeps the fragment meaningfully smaller.\n\n## B\n\nPE is 19.5.';
+ const verdict={status:'reviewed',ok:false,issues:[{check:'comparison_basis',excerpt:'PE is 19.5.'}]};
+ const updated=content.replace('19.5','14.89');
+ assert.equal(planReportDelta({content,verdict},updated).text,'## B\n\nPE is 14.89.');
+ assert.equal(planReportDelta({content,verdict},updated.replace('## B','## C')),null);
+ assert.equal(planReportDelta({content,verdict:{...verdict,issues:[{check:'coverage',excerpt:'PE is 19.5.'}]}},updated),null);
+ assert.equal(planReportDelta({content,verdict:{...verdict,status:'unavailable'}},updated),null);
 });
 
-test('numeric coverage falls back in the same audit if an added calculation is not supplied in full',async()=>{
- const draft='目标价为 129 元。\n\n市盈率为 14.89 倍。';
- const all=draft.split('\n\n');
- const extra={mode:'report',unboundNumericLines:[all[1]],reusedNumericCoverageCount:1,
-  numericReuseGuard:{requiredCalculationIds:['pe'],unboundNumericLines:all}};
- const messages=[call('pe','calc',{expression:'42.85/2.87759'}),
-  success('pe','calc','PE=14.89',{results:[{name:'PE',value:14.89,expression:'42.85/2.87759'}]})];
- for(const [context,expected] of [[{messages},false],[{messages:[]},true]]) {
-  let requests=0;
-  const verdict=await auditResearch((_model,ctx)=>{
-   requests++;
-   const payload=JSON.parse(ctx.messages[0].content[0].text);
-   assert.deepEqual(payload.unboundNumericLines,expected?all:[all[1]]);
-   assert.equal(payload.numericReuseGuard,undefined);
-   return stream(pass);
-  },{},context,{},draft,extra);
-  assert.equal(requests,1);
-  assert.equal(verdict.numericReuseFallback,expected);
- }
- const reuse=createNumericReviewReuse();
- const covered={status:'reviewed',issues:[],coverageValidated:[0],reusableNumericCoverage:[{index:0,evidenceIds:['pe']}]};
- reuse.prepare('same',draft,[1],all.slice(0,1),new Map([['pe','original']])).merge(covered);
- assert.equal(reuse.prepare('same',draft,[1],all.slice(0,1),new Map([['pe','changed']])).reusedCount,0);
-});
-
-test('report auditor issues reusable coverage only for real, included evidence without a matching objection',async()=>{
- const first='目标价为 129 元。', second='市盈率为 19.5 倍。';
- const reviewed=await auditResearch(()=>stream({
-  ...pass,checks:{...pass.checks,comparison_basis:'fail'},
-  issues:[{check:'comparison_basis',excerpt:second,reason:'口径不一致'}],
-  numericCoverage:[{index:0,evidenceIds:['source']},{index:1,evidenceIds:['source']},{index:2,evidenceIds:['invented']}],
- }),{}, {messages:[success('source','web_fetch','模型目标价为 129 元；历史市盈率为 19.5 倍。')]}, {},
- `${first}\n\n${second}\n\n净利润为 999 元。`, {mode:'report',unboundNumericLines:[first,second,'净利润为 999 元。']});
- assert.deepEqual(reviewed.reusableNumericCoverage,[{index:0,evidenceIds:['source']}]);
- assert.equal(reviewed.ok,false);
+test('scoped audit does not transmit full report reads, and has a narrow output budget',async()=>{
+ const omitted='全稿中的未改章节。'.repeat(100);
+ const fragment='当前 PE 为 19.5 倍。';
+ const messages=[call('old-report','read',{path:'exports/report.md'}),success('old-report','read',omitted),
+  call('pe','calc',{expression:'42.85/2.87759'}),success('pe','calc','PE=14.89',{results:[{name:'PE',value:14.89,expression:'42.85/2.87759'}]})];
+ const verdict=await auditResearch((_model,ctx,options)=>{
+  const wire=ctx.messages[0].content[0].text;
+  assert.equal(JSON.parse(wire).draft,fragment);
+  assert.ok(!wire.includes(omitted));
+  assert.ok(wire.includes('42.85/2.87759'));
+  assert.equal(options.reasoning,'off');
+  assert.equal(options.maxTokens,1600);
+  return stream({...pass,checks:{...pass.checks,comparison_basis:'fail'},issues:[{check:'comparison_basis',excerpt:fragment,reason:'公式计算为 14.89 倍'}]});
+ },{reasoning:true}, {messages},{},fragment,{mode:'report_delta'});
+ assert.equal(verdict.status,'reviewed');
+ assert.equal(verdict.ok,false);
 });
 
 test('standalone cash-flow and tax metrics do not inherit prior interest income; product rows still retain sections',()=>{
