@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createResearchReview} from '../lib/research-review.mjs';
+import {createNumericReviewReuse} from '../lib/report-numeric-reuse.mjs';
 import {auditResearch,createResearchAuditor,evidenceTimeline,AUDIT_CHECKS} from '../lib/research-audit.mjs';
 import {selectResearchEvidence,recoveryEvidenceRows} from '../lib/research-evidence-package.mjs';
 import {correctReviewerArithmetic} from '../lib/audit-arithmetic.mjs';
@@ -11,6 +16,63 @@ const success=(id,name,text,details={})=>({role:'toolResult',toolCallId:id,toolN
 const call=(id,name,args)=>({role:'assistant',content:[{type:'toolCall',id,name,arguments:args}]});
 const pass={checks:Object.fromEntries(AUDIT_CHECKS.map(k=>[k,'pass'])),issues:[]};
 const stream=(body,stopReason='stop')=>({async *[Symbol.asyncIterator](){yield {type:'done'};},result:async()=>({stopReason,content:[{type:'text',text:JSON.stringify(body)}]})});
+
+test('report retry only requests fresh numeric coverage for the changed block but still sends the whole draft',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'pe-numeric-review-'));
+ try {
+  const review=createResearchReview({ctx:{root,store:{findMaterialByPath:()=>null}}});
+  const stable='基准目标价为 129 元。', initial='现价隐含市盈率为 19.5 倍。', revised='现价隐含市盈率为 14.89 倍。';
+  const draft=text=>`## 模型估值\n\n${stable}\n\n## 市场对比\n\n${text}`;
+  const audits=[];
+  review.setAuditor(async(text,extra)=>{
+   audits.push({text,extra});
+   if(audits.length===1)return {status:'reviewed',ok:false,coverageValidated:[0],
+    reusableNumericCoverage:[{index:0,evidenceIds:['cell:model:Valuation!A1']}],
+    issues:[{check:'comparison_basis',excerpt:initial,reason:'分母口径有误'}]};
+   return {status:'reviewed',ok:true,coverageValidated:extra.unboundNumericLines.map((_,index)=>index),issues:[]};
+  });
+  const run=text=>review.tool.execute('report',{path:'exports/投资框架报告.md',content:draft(text)});
+  assert.equal((await run(initial)).isError,true);
+  const result=await run(revised);
+  assert.equal(result.isError,false);
+  assert.deepEqual(audits.map(audit=>audit.extra.unboundNumericLines.length),[2,1]);
+  assert.equal(audits[1].text,draft(revised));
+  assert.equal(result.details.reusedNumericCoverageCount,1);
+  await writeFile(path.join(root,'source.txt'),'new evidence');
+  review.record({toolCall:{name:'read',id:'new'},args:{path:'source.txt'},result:{content:[{type:'text',text:'new evidence'}]}});
+  await run(revised);
+  assert.equal(audits[2].extra.unboundNumericLines.length,2);
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('numeric receipts cannot cover changed context, ambiguous lines, gaps or a later contradiction',()=>{
+ const reuse=createNumericReviewReuse();
+ const line='目标价 129 元', draft=`## 目标估值\n\n${line}`;
+ const receipt={status:'reviewed',coverageValidated:[0],reusableNumericCoverage:[{index:0,evidenceIds:['valid']}],issues:[]};
+ reuse.prepare('same',draft,[3],[line]).merge(receipt);
+ assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,1);
+ assert.equal(reuse.prepare('same',draft.replace('目标估值','实际价格'),[3],[line]).reusedCount,0);
+ assert.equal(reuse.prepare('same',draft+'\n\n'+line,[3,5],[line,line]).reusedCount,0);
+ const gap=reuse.prepare('same',draft,[3],[line]).merge({status:'unavailable',inputCoverageGaps:[{}]});
+ assert.deepEqual(gap.coverageValidated,[]);
+ const contradiction=reuse.prepare('same',draft,[3],[line]).merge({status:'reviewed',issues:[{excerpt:line}]});
+ assert.deepEqual(contradiction.coverageValidated,[]);
+ assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
+ reuse.prepare('same',draft,[3],[line]).merge({...receipt,reusableNumericCoverage:[]});
+ assert.equal(reuse.prepare('same',draft,[3],[line]).reusedCount,0);
+});
+
+test('report auditor issues reusable coverage only for real, included evidence without a matching objection',async()=>{
+ const first='目标价为 129 元。', second='市盈率为 19.5 倍。';
+ const reviewed=await auditResearch(()=>stream({
+  ...pass,checks:{...pass.checks,comparison_basis:'fail'},
+  issues:[{check:'comparison_basis',excerpt:second,reason:'口径不一致'}],
+  numericCoverage:[{index:0,evidenceIds:['source']},{index:1,evidenceIds:['source']},{index:2,evidenceIds:['invented']}],
+ }),{}, {messages:[success('source','web_fetch','模型目标价为 129 元；历史市盈率为 19.5 倍。')]}, {},
+ `${first}\n\n${second}\n\n净利润为 999 元。`, {mode:'report',unboundNumericLines:[first,second,'净利润为 999 元。']});
+ assert.deepEqual(reviewed.reusableNumericCoverage,[{index:0,evidenceIds:['source']}]);
+ assert.equal(reviewed.ok,false);
+});
 
 test('standalone cash-flow and tax metrics do not inherit prior interest income; product rows still retain sections',()=>{
  const rowLabels={1:'Interest income',2:'Effective tax rate',3:'Tax, ex-SBC',4:'Capex',5:'Free cash flow',6:'Revenue',7:'Product A'};
