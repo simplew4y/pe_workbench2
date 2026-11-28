@@ -154,8 +154,12 @@ svg{display:block}
 .model-chip{display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface-2);font-size:12px;color:var(--ink-2);transition:border-color .14s}
 .model-chip:hover{border-color:var(--line-2)}
 .model-chip svg{color:var(--faint)}
+.model-effort{border-left:1px solid var(--line);padding-left:6px;white-space:nowrap}
 .dot{width:5px;height:5px;border-radius:50%;background:#5E8C61;flex:none}
-.model-menu{right:0;top:calc(100% + 6px)}
+.model-menu{right:0;top:calc(100% + 6px);width:220px;max-width:calc(100vw - 24px)}
+.model-menu-label{padding:6px 8px 3px;font-size:11px;color:var(--muted)}
+.model-menu .menu-item:disabled{opacity:.55;cursor:not-allowed}
+.model-menu .menu-note{margin-left:auto}
 .notify-btn{position:relative}
 .notify-badge{position:absolute;top:2px;right:2px;min-width:13px;height:13px;padding:0 3px;border-radius:999px;background:#9A3B35;color:#fff;font-size:9px;line-height:13px;text-align:center}
 .notify-menu{right:0;top:calc(100% + 6px);width:360px;max-width:calc(100vw - 32px);max-height:440px;overflow:auto;padding:0}

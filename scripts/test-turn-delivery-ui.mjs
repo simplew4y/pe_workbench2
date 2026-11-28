@@ -8,6 +8,7 @@ globalThis.window = {};
 const { messageHTML } = await import('../ui/chat/renderer.js');
 const bootstrap = readFileSync(new URL('../ui/bootstrap.js', import.meta.url), 'utf8');
 const handlerSource = bootstrap.slice(bootstrap.indexOf('function handleServerEvent('), bootstrap.indexOf('async function refreshSnapshot('));
+const settingsSource = bootstrap.slice(bootstrap.indexOf('function modelSettingsPatch('), bootstrap.indexOf('function renderSessions('));
 const citation = { id: 'b', materialId: 'workbook-b', version: 1, locator: 'Model!B2' };
 const unused = { id: 'a', materialId: 'workbook-a', version: 1, locator: 'Model!A1' };
 const tool = { id: 'c', name: 'read', status: 'done', citations: [unused, citation] };
@@ -59,7 +60,7 @@ const tool = { id: 'c', name: 'read', status: 'done', citations: [unused, citati
 function page() {
   const state = { messages: [], streaming: false, live: { text: '', tools: [] } };
   const noop = () => {};
-  const handle = vm.runInNewContext(handlerSource + '\nhandleServerEvent', {
+  const handle = vm.runInNewContext(settingsSource + handlerSource + '\nhandleServerEvent', {
     state, applyTurnSnapshot, receiveDelivery, startTurn, wasDelivered, window: {}, runtime: {},
     renderThread: noop, syncStop: noop, scheduleThread: noop, renderSessions: noop,
     renderAllChrome: noop, scheduleSnapshotPoll: noop, updateSessionItem: noop,

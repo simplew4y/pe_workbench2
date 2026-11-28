@@ -42,6 +42,7 @@ import {
 } from "./snapshot.mjs";
 import { assessContextBudget, contextBudgetFailureStream, fitContextMessages } from "../../lib/context-budget.mjs";
 import { systemHint } from "../project-context.mjs";
+import { defaultThinkingLevel, modelThinkingLevels, sessionModelSettings } from "./session-model-settings.mjs";
 
 export function createSessionService({
   config,
@@ -152,6 +153,12 @@ export function createSessionService({
 
     // Restore the persisted background boundary even through generic session routes.
     const restoredManager = !config.fakeAgent && file ? SessionManager.open(file, ctx.sessionsDir) : null;
+    const branch = restoredManager?.getBranch();
+    const savedSelection = branch?.findLast(item => item.type === "model_change");
+    const savedModel = savedSelection && config.resolveModel(savedSelection.modelId);
+    const selectedModel = savedModel?.provider === savedSelection?.provider && savedModel ? savedModel : config.model;
+    const savedLevel = branch?.findLast(item => item.type === "thinking_level_change")?.thinkingLevel;
+    const selectedLevel = modelThinkingLevels(selectedModel).includes(savedLevel) ? savedLevel : defaultThinkingLevel(selectedModel);
     const restoredName = restoredManager?.getSessionName?.() || "";
     if (/^\[(计划|跟踪|盯)\]/.test(restoredName)) automated = true;
     if (/^\[盯\]/.test(restoredName) && !writeRoots) writeRoots = [".watch/"];
@@ -179,6 +186,8 @@ export function createSessionService({
     ];
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
+      await session.setModel(selectedModel);
+      session.setThinkingLevel(selectedLevel);
     } else {
       const sessionManager = file
         ? restoredManager
@@ -188,8 +197,8 @@ export function createSessionService({
       const created = await createAgentSession({
         cwd: ctx.root,
         agentDir: config.agentDir,
-        model: config.model,
-        thinkingLevel: config.model?.reasoning ? "high" : "off",
+        model: selectedModel,
+        thinkingLevel: selectedLevel,
         sessionManager,
         resourceLoader: loader,
         tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
@@ -260,6 +269,8 @@ export function createSessionService({
         getCalculation: () => entry?.activeTurn?.calculation,
         getCompactAnswer: () => entry?.activeTurn?.compactAnswer,
         getPriorAnswers: () => entry?.activeTurn?.priorAnswers,
+        getResearchIntent: () => entry?.activeTurn?.intent,
+        getPriorPublicDialogue: () => entry?.activeTurn?.priorPublicDialogue,
         getPdfDisclosure: () => entry?.activeTurn?.pdfDisclosure,
         audit: (source, model, context, options, draft, extra) =>
           auditResearch(source, model, context, options, draft, { ...extra, workbookEvidence: researchReview.evidenceSnapshot() }),
@@ -274,6 +285,8 @@ export function createSessionService({
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
               question:entry?.activeTurn?.question || '',
+              researchIntent:entry?.activeTurn?.intent,
+              priorPublicDialogue:entry?.activeTurn?.priorPublicDialogue,
               ...extra, workbookEvidence: researchReview.evidenceSnapshot(),deliveredFiles:researchReview.artifactSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });
@@ -283,8 +296,11 @@ export function createSessionService({
       });
       // Pi omits reasoning when thinking is off. Keep the explicit choice on
       // review/repair requests, which otherwise have their own reasoning default.
-      session.agent.streamFunction = (model, context, options) => researchStream(model, context,
-        entry?.activeTurn?.thinkingMode === "normal" ? { ...options, reasoning: "off" } : options);
+      session.agent.streamFunction = (model, context, options) => {
+        const mode = entry?.activeTurn?.thinkingMode;
+        const level = mode === "normal" ? "off" : mode === "deep" ? defaultThinkingLevel(model) : session.thinkingLevel;
+        return researchStream(model, context, model.reasoning && level ? { ...options, reasoning:level } : options);
+      };
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
@@ -342,7 +358,7 @@ export function createSessionService({
       threadId: entry.id,
       workspaceId: ctx.id,
       log: ctx.agentEvents,
-      isBusy: () => Boolean(entry.postAnswerPending),
+      isBusy: () => Boolean(entry.postAnswerPending || entry.modelSettingsPending),
       ...(entry.automated ? {} : {
         promptRunner: (text, options) => runWithPostAnswer(entry, text, options, event => bus.broadcast(entry, event)),
         cancelTurn: () => cancelActiveTurn(entry),
@@ -386,7 +402,7 @@ export function createSessionService({
       .filter((info) => !/^\[(计划|跟踪|盯)\]/.test(String(info.name || "")))
       .map((info) => ({
         id: info.id,
-        title: info.name || makeTitle(info.firstMessage) || "未命名会话",
+        title: info.name || (info.messageCount ? makeTitle(info.firstMessage) : "新会话") || "未命名会话",
         messageCount: info.messageCount,
         updatedAt: info.modified.toISOString(),
       }));
@@ -399,6 +415,7 @@ export function createSessionService({
         title: entry.session.sessionName || entry.title || "新会话",
         messageCount: entry.session.messages.length,
         updatedAt: entry.updatedAt,
+        ...sessionModelSettings(entry),
       };
       const index = items.findIndex((candidate) => candidate.id === entry.id);
       if (index >= 0) items[index] = item;

@@ -1,4 +1,5 @@
 import {restoreModelOverview} from '../../lib/model-overview-delivery.mjs';
+import { sessionModelSettings } from "./session-model-settings.mjs";
 /**
  * Conversation snapshot: Pi session messages -> the compact DTO the browser
  * renders. Tool presentations are joined from the host's durable table, never
@@ -479,7 +480,7 @@ export function serializeSession(entry) {
     messages: snapshotMessages(entry.session, entry.ctx, entry),
     streaming: Boolean(entry.session.isStreaming || entry.postAnswerPending),
     activeTurnId: entry.activeTurn?.turnId ?? null,
-    model: entry.modelId,
+    ...sessionModelSettings(entry),
     projectId: entry.ctx.id,
     approvals: entry.ctx.store.listApprovalRequests({ threadId: entry.id, limit: 50 }),
   };

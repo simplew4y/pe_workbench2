@@ -12,13 +12,13 @@ export function recentTopicDialogue(messages) {
 // The locator needs dates and qualitative dialogue. Amounts belong to the fact register.
 const amounts = /[+−-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:万亿元|千亿元|百亿元|亿元|千万元|百万元|万元|千元|元|个百分点|%|％)/gu;
 
-export async function indexJson(model, prompt, onPayload) {
+export async function indexJson(model, prompt, onPayload, options = {}) {
   let result;
   try {
     result = await completeSimple(
       model ?? getModel('deepseek', 'deepseek-flash'),
       { messages: [{ role: 'user', content: prompt }] },
-      { temperature: 0, onPayload },
+      { temperature: 0, onPayload, ...options },
     );
   } catch (error) {
     throw Object.assign(new Error(error.message, { cause: error }), { code: 'provider_error' });

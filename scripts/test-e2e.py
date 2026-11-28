@@ -128,11 +128,7 @@ class UI:
 
     def reload_open(self, session_id: str) -> None:
         self.page.reload(wait_until="domcontentloaded")
-        self.page.wait_for_timeout(900)
-        active = self.session_id()
-        if active != session_id:
-            self.page.click(f'[data-session="{session_id}"]')
-            self.page.wait_for_timeout(700)
+        self.page.wait_for_function("id => window.state?.activeSession === id", arg=session_id)
 
     def assert_no_page_errors(self) -> None:
         if self.errors:
@@ -224,6 +220,27 @@ def run(ui: UI) -> None:
 
     print("\nbrowser: project isolation and materials")
 
+    def session_links():
+        ui.reset()
+        first_id = ui.session_id()
+        first_url = f"{BASE}/sessions/{first_id}?project=product-eng"
+        ui.page.wait_for_url(first_url)
+        ui.new_session()
+        second_id = ui.session_id()
+        second_url = f"{BASE}/sessions/{second_id}?project=product-eng"
+        assert first_id != second_id
+        ui.page.wait_for_url(second_url)
+        ui.page.locator(f'[data-session="{first_id}"]').click()
+        ui.page.wait_for_url(first_url)
+        ui.reload_open(first_id)
+        ui.page.go_back()
+        ui.page.wait_for_function("id => window.state?.activeSession === id", arg=second_id)
+        ui.page.go_forward()
+        ui.page.wait_for_function("id => window.state?.activeSession === id", arg=first_id)
+        ui.assert_no_page_errors()
+
+    check("session URLs survive refresh and browser history", session_links)
+
     def project_switch():
         project = api("POST", "/api/projects", {"name": "Project B", "note": "隔离测试"})
         ui.reset()
@@ -238,12 +255,17 @@ def run(ui: UI) -> None:
         ui.page.wait_for_timeout(200)
         ui.page.locator(".proj-item", has_text="Project B").click()
         ui.page.wait_for_timeout(1200)
+        project_url = f"{BASE}/sessions/{ui.session_id()}?project={project['id']}"
+        ui.page.wait_for_url(project_url)
         assert ui.page.locator(".approval-card").count() == 0, "approval leaked into project B"
         assert "A 项目的秘密消息" not in ui.page.locator("#thread").inner_text()
         ui.page.click("#workspaceBtn")
         ui.page.wait_for_timeout(200)
         ui.page.locator(".proj-item", has_text="Product Eng").click()
         ui.page.wait_for_timeout(1200)
+        ui.page.goto(project_url, wait_until="domcontentloaded")
+        ui.page.wait_for_function("id => window.state?.project.id === id && window.state?.activeSession", arg=project["id"])
+        ui.page.wait_for_url(project_url)
         ui.assert_no_page_errors()
 
     check("project switch isolates sessions and approvals", project_switch)

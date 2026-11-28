@@ -19,26 +19,9 @@ const upsertMaterial = (material) => runtime.upsertMaterial?.(material);
 const syncStop = () => runtime.syncStop?.();
 const createSession = () => runtime.createSession?.();
 
-export function initThinkingMode(available) {
-  const control = $('#thinkingMode');
-  control.hidden = !available;
-  if (!available) return;
-  const normal = control.querySelector('[value="normal"]');
-  try { if (localStorage.getItem('pe.thinkingMode') === 'normal') normal.checked = true; } catch {}
-  control.addEventListener('change', () => {
-    try { localStorage.setItem('pe.thinkingMode', selectedThinkingMode()); } catch {}
-  });
-}
-
-export function selectedThinkingMode() {
-  const control = $('#thinkingMode');
-  return control && !control.hidden ? control.querySelector(':checked').value : undefined;
-}
-
 async function send() {
   if (state.uploading) return;
   const text = inputEl.value.trim();
-  const thinkingMode = selectedThinkingMode();
   const attached = state.pending.slice();
   if (!text && !attached.length) return;
   if (state.agentTransport === 'copilotkit' && !runtime.pilot) {
@@ -91,7 +74,7 @@ async function send() {
       return;
     }
     try {
-      await runtime.pilot.send({ text: text || '看一下这几个文件。', attachments: paths, thinkingMode });
+      await runtime.pilot.send({ text: text || '看一下这几个文件。', attachments: paths });
     } catch (error) {
       state.streaming = false;
       syncStop();
@@ -109,7 +92,7 @@ async function send() {
   try {
     await api(`/api/sessions/${sessionId}/messages`, {
       method: 'POST',
-      body: { text, attachments: paths, thinkingMode },
+      body: { text, attachments: paths },
     });
   } catch (error) {
     state.streaming = false;

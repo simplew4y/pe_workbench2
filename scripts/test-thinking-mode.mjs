@@ -37,6 +37,7 @@ try {
   function settled(event) {
     if (event.type === 'turn.delivered') ranges.push(requests.length);
   }
+  entry.session.setThinkingLevel('max');
   const normal = runWithPostAnswer(entry, question, {thinkingMode:'normal'}, settled);
   const deep = runWithPostAnswer(entry, question, {}, settled);
   await Promise.all([normal, deep]);
@@ -45,8 +46,9 @@ try {
   assert.ok(ordinary.some(r => r.tools?.length), 'ordinary primary');
   assert.ok(ordinary.some(r => !r.tools?.length), 'ordinary review');
   assert.ok(ordinary.every(r => r.thinking?.type === 'disabled' && !r.reasoning_effort));
-  assert.ok(reasoning.some(r => r.tools?.length && r.thinking?.type === 'enabled' && r.reasoning_effort === 'high'));
+  assert.ok(reasoning.some(r => r.tools?.length && r.thinking?.type === 'enabled' && r.reasoning_effort === 'max'));
   assert.ok(reasoning.some(r => !r.tools?.length && r.thinking?.type === 'enabled' && r.reasoning_effort === 'low'));
+  assert.equal(entry.session.thinkingLevel, 'max');
   const input = {messages:[{role:'user',content:question}], forwardedProps:{thinkingMode:'normal'}};
   assert.equal(normalizeRunInput(input, ctx).thinkingMode, 'normal');
   input.forwardedProps.thinkingMode = 'oops';
