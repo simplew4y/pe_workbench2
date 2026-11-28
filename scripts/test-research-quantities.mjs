@@ -4,6 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {queryGraph} from '../lib/workbook-query.mjs';
 import {deterministicEvidenceIssues, auditResearch, AUDIT_CHECKS} from '../lib/research-audit.mjs';
 import {createAssistantMessageEventStream} from '@earendil-works/pi-ai';
+import { quantityIssues } from '../lib/research-quantities.mjs';
 const file=process.argv[2];
 assert.ok(file,'pass the regression workbook path');
 const parsed=spawnSync('python3',['services/workbook/parse_workbook.py',file],{encoding:'utf8',maxBuffer:30e6});
@@ -70,3 +71,8 @@ for(const index of [0,6,10,15,18,cases.findIndex(([name])=>name==='inconsistent 
 }
 if(process.env.RESULT_PATH)fs.writeFileSync(process.env.RESULT_PATH,JSON.stringify(results,null,2));
 console.log(`PASS ${cases.length} targeted cases + 6 audit integration cases; no external model calls`);
+const hbm={ref:'Assumption!AI13',value:68307.37753125,period:'2027E',rowLabel:'HBM',
+  metricContext:{label:'Revenues'},amount:{unit:'百万元'}};
+assert.deepEqual(quantityIssues('2027年HBM收入从72.93亿元跳到683.07亿元。',[hbm]),[]);
+assert.deepEqual(quantityIssues('2027E HBM收入683.07→544.96亿元（−20%）。',[hbm]),[]);
+assert.equal(quantityIssues('2027E HBM收入68.307亿元。',[hbm])[0].check,'numeric_units');

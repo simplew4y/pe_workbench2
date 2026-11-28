@@ -170,6 +170,19 @@ try {
   await capped.result();
   assert.ok(payload.messages.some(m => m.role === "tool" && m.tool_call_id === "review-5"));
   assert.deepEqual(payload.tools || [], [], "the serialized recovery request exposes no tools");
+  payload = undefined;
+  const target = { ref:"Discount PE!H29", value:129, formula:"=ROUND(H28,0)", rowLabel:"Target price", cacheStatus:"cached" };
+  const sha256 = "a".repeat(64);
+  const verifiedRead = pair(["trace-price","workbook_trace",{path:"uploads/model.xlsx"},
+    {path:"uploads/model.xlsx",sha256,version:1,materialId:"M7",target,
+      citations:[{id:"verified-target",locator:target.ref,materialId:"M7",version:1,sha256,value:129,
+        filename:"model.xlsx",display_unit:"元/股"}]}],0);
+  const partial = await (await entry.session.agent.streamFunction(model,{messages:[
+    system,{...user,content:"复现目标价并保存投资报告。"},...verifiedRead,...reportRetries,
+  ]},options)).result();
+  assert.equal(payload,undefined,"verified evidence is delivered without a new request");
+  assert.equal(partial.researchReportLimitEvidence?.[0]?.value,129);
+  assert.match(partial.content[0].text,/129.*Discount PE!H29[\s\S]*报告未通过发布校验/);
   console.log("full request budget, immutable replay, coverage, retries and value provenance PASS");
 } finally {
   await app?.close();

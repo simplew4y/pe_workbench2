@@ -41,7 +41,7 @@
     "test:model-update": "node scripts/test-model-update.mjs",
     "test:model": "node scripts/test-model-writer.mjs",
     "test:tracking-tool": "node scripts/test-tracking-tool.mjs",
-    "test:context-budget": "node scripts/test-context-budget.mjs && node scripts/test-transcript-search.mjs",
+    "test:context-budget": "node scripts/test-context-budget.mjs && node scripts/test-trace-context-reuse.mjs && node scripts/test-trace-replay.mjs && node scripts/test-transcript-search.mjs",
     "test:session-model": "node scripts/test-session-model-settings.mjs",
     "test:turn-delivery": "node scripts/test-post-answer.mjs && node scripts/test-turn-delivery.mjs && node scripts/test-turn-delivery-ui.mjs && node scripts/test-agui-delivery-recovery.mjs && node scripts/test-presentation-snapshot.mjs && node scripts/test-legacy-turn-delivery.mjs && node scripts/test-transcript-search.mjs && node scripts/test-f5-session.mjs",
     "test:protocol": "node scripts/test-protocol.mjs",

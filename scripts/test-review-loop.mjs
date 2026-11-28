@@ -1,6 +1,11 @@
 import {unfixedLocalFindings} from '../lib/research-delivery.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createResearchReview} from '../lib/research-review.mjs';
+import {planReportDelta} from '../lib/report-delta-review.mjs';
 import {auditResearch,createResearchAuditor,revisionScope,evidenceTimeline,AUDIT_CHECKS} from '../lib/research-audit.mjs';
 import {selectResearchEvidence,recoveryEvidenceRows} from '../lib/research-evidence-package.mjs';
 import {correctReviewerArithmetic,draftArithmetic} from '../lib/audit-arithmetic.mjs';
@@ -12,6 +17,63 @@ const success=(id,name,text,details={})=>({role:'toolResult',toolCallId:id,toolN
 const call=(id,name,args)=>({role:'assistant',content:[{type:'toolCall',id,name,arguments:args}]});
 const pass={checks:Object.fromEntries(AUDIT_CHECKS.map(k=>[k,'pass'])),issues:[]};
 const stream=(body,stopReason='stop')=>({async *[Symbol.asyncIterator](){yield {type:'done'};},result:async()=>({stopReason,content:[{type:'text',text:JSON.stringify(body)}]})});
+
+test('report retries send only the affected fragment until it passes, then validate the full report',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'pe-delta-review-'));
+ try {
+  const review=createResearchReview({ctx:{root,store:{findMaterialByPath:()=>null}}});
+  const initial='现价隐含市盈率为 19.5 倍。', stillWrong='现价隐含市盈率为 19.51 倍。', fixed='现价隐含市盈率为 14.89 倍。';
+  const target='基准目标价为 129 元，依据 Discount PE!H29。';
+  const draft=text=>`## 模型估值\n\n${target}\n\n${'模型以原工作簿为准，不把期间不同的估值直接比较。'.repeat(12)}\n\n## 市场对比\n\n${text}`;
+  const audits=[];
+  review.setAuditor(async(text,extra)=>{
+   audits.push({text,extra});
+   const wrong=[initial,stillWrong].find(line=>text.includes(line));
+   return wrong ? {status:'reviewed',ok:false,verifiedEvidenceCount:1,issues:[{check:'comparison_basis',excerpt:wrong,reason:'分母口径有误'}]} :
+    {status:'reviewed',ok:true,issues:[],coverageValidated:extra.unboundNumericLines?.map((_line,index)=>index)};
+  });
+  const run=text=>review.tool.execute('report',{path:'exports/投资框架报告.md',content:draft(text)});
+  assert.equal((await run(initial)).isError,true);
+  const blocked=await run(stillWrong);
+  assert.equal(blocked.isError,true);
+  assert.equal(blocked.details.reviewScope,'delta');
+  assert.equal(audits.length,2);
+  assert.equal(audits[1].text,`## 市场对比\n\n${stillWrong}`);
+  assert.ok(!audits[1].text.includes(target));
+  assert.equal(audits[1].extra.relatedReports,undefined);
+  assert.equal((await run(fixed)).isError,false);
+  assert.deepEqual(audits.map(audit=>audit.extra.mode),['report','report_delta','report_delta','report']);
+  assert.equal(audits.at(-1).text,draft(fixed));
+ } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('unlocalized report issues and structural changes cannot use delta review',()=>{
+ const content='## A\n\nStable unrelated text keeps the fragment meaningfully smaller.\n\n## B\n\nPE is 19.5.';
+ const verdict={status:'reviewed',ok:false,issues:[{check:'comparison_basis',excerpt:'PE is 19.5.'}]};
+ const updated=content.replace('19.5','14.89');
+ assert.equal(planReportDelta({content,verdict},updated).text,'## B\n\nPE is 14.89.');
+ assert.equal(planReportDelta({content,verdict},updated.replace('## B','## C')),null);
+ assert.equal(planReportDelta({content,verdict:{...verdict,issues:[{check:'coverage',excerpt:'PE is 19.5.'}]}},updated),null);
+ assert.equal(planReportDelta({content,verdict:{...verdict,status:'unavailable'}},updated),null);
+});
+
+test('scoped audit does not transmit full report reads, and has a narrow output budget',async()=>{
+ const omitted='全稿中的未改章节。'.repeat(100);
+ const fragment='当前 PE 为 19.5 倍。';
+ const messages=[call('old-report','read',{path:'exports/report.md'}),success('old-report','read',omitted),
+  call('pe','calc',{expression:'42.85/2.87759'}),success('pe','calc','PE=14.89',{results:[{name:'PE',value:14.89,expression:'42.85/2.87759'}]})];
+ const verdict=await auditResearch((_model,ctx,options)=>{
+  const wire=ctx.messages[0].content[0].text;
+  assert.equal(JSON.parse(wire).draft,fragment);
+  assert.ok(!wire.includes(omitted));
+  assert.ok(wire.includes('42.85/2.87759'));
+  assert.equal(options.reasoning,'off');
+  assert.equal(options.maxTokens,1600);
+  return stream({...pass,checks:{...pass.checks,comparison_basis:'fail'},issues:[{check:'comparison_basis',excerpt:fragment,reason:'公式计算为 14.89 倍'}]});
+ },{reasoning:true}, {messages},{},fragment,{mode:'report_delta'});
+ assert.equal(verdict.status,'reviewed');
+ assert.equal(verdict.ok,false);
+});
 
 test('standalone cash-flow and tax metrics do not inherit prior interest income; product rows still retain sections',()=>{
  const rowLabels={1:'Interest income',2:'Effective tax rate',3:'Tax, ex-SBC',4:'Capex',5:'Free cash flow',6:'Revenue',7:'Product A'};
