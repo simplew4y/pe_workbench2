@@ -248,13 +248,14 @@ export function createSessionService({
       const recordAudit = record => {
         fs.appendFileSync(path.join(ctx.root, ".pi", "research-audit.jsonl"), JSON.stringify(record) + "\n");
       };
-      session.agent.streamFunction = guardResearchDelivery(provider, {
+      const researchStream = guardResearchDelivery(provider, {
         recordAudit,
         getSessionMessages: () => session.messages,
         getReportDraft: () => researchReview.draftSnapshot(),
         getArtifacts: () => researchReview.artifactSnapshot(),
         getContinuation: () => entry?.activeTurn?.continueResearchAnswer,
         getRecovery: () => entry?.activeTurn?.researchRecovery,
+        queueReviewCorrection: request => entry?.activeTurn?.queueReviewCorrection?.(request),
         getAnswerLengthHint: () => entry?.activeTurn?.answerLengthHint,
         getCalculation: () => entry?.activeTurn?.calculation,
         getCompactAnswer: () => entry?.activeTurn?.compactAnswer,
@@ -280,6 +281,10 @@ export function createSessionService({
           },JSON.stringify([model.provider,model.id,options?.reasoning,options?.maxTokens]));
         },
       });
+      // Pi omits reasoning when thinking is off. Keep the explicit choice on
+      // review/repair requests, which otherwise have their own reasoning default.
+      session.agent.streamFunction = (model, context, options) => researchStream(model, context,
+        entry?.activeTurn?.thinkingMode === "normal" ? { ...options, reasoning: "off" } : options);
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {

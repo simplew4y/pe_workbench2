@@ -455,7 +455,7 @@ export class CopilotPilotClient {
       });
   }
 
-  async send({ text, attachments = [] } = {}) {
+  async send({ text, attachments = [], thinkingMode } = {}) {
     const sessionId = state.activeSession;
     if (!sessionId) throw new Error("还没有会话");
     if (this.connectPromise) await this.connectPromise;
@@ -504,6 +504,7 @@ export class CopilotPilotClient {
         runId: this.runIdOnWire,
         forwardedProps: {
           projectId: this.projectId,
+          thinkingMode,
           attachments: Array.isArray(attachments) ? attachments : [],
         },
       });

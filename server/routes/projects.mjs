@@ -18,6 +18,7 @@ export async function handleProjects({ req, res, url, app, ctx }) {
       sourceScheduler: process.env.SOURCE_SCHEDULER !== "0",
       features: {
         copilotkit: Boolean(COPILOTKIT_ENABLED),
+        thinkingMode: app.config.fakeAgent || (app.config.modelProvider === "deepseek" && app.config.model?.reasoning === true),
       },
       copilotkit: {
         enabled: Boolean(COPILOTKIT_ENABLED),

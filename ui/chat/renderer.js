@@ -278,7 +278,8 @@ function messageHTML(m, { openGroups } = {}) {
   const isUser = m.role === 'user';
   const delivered = !isUser && Boolean(m.turnId);
   const cancelled = !isUser && m.status === 'cancelled';
-  let answerText = visibleAnswerText(m);
+  const question = delivered && state.messages?.findLast(q => q.role === 'user' && q.turnId === m.turnId)?.text;
+  let answerText = visibleAnswerText(m, question);
   if (delivered && m.citations?.some(c=>c.role==='pdf_number')) {
     answerText = deliverPdfCalculationLinks(answerText,mentionedPdfCalculations(answerText,m.citations),state.project?.id);
   }

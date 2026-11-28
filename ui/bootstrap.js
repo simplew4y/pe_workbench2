@@ -30,7 +30,7 @@ import {
   renderThread, scheduleThread, retainLiveUntilSnapshot, resetLive, clearCaches, mdToHtml,
 } from './chat/renderer.js';
 import {
-  renderAttachments, syncReferenceButton, syncComposer, autosize, addFiles, send,
+  renderAttachments, syncReferenceButton, syncComposer, autosize, addFiles, send, initThinkingMode,
 } from './chat/composer.js';
 import {
   renderPanel, refreshFileCards, upsertMaterial, upsertPlan, loadFoundation,
@@ -330,6 +330,7 @@ async function boot() {
       state.modelId = health.model;
       $('#modelName').textContent = health.model;
     }
+    initThinkingMode(health.features?.thinkingMode === true);
     await installPilotIfRequested(health);
   } catch {
     toast('本地服务未连接');

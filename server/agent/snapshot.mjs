@@ -1,3 +1,4 @@
+import {restoreModelOverview} from '../../lib/model-overview-delivery.mjs';
 /**
  * Conversation snapshot: Pi session messages -> the compact DTO the browser
  * renders. Tool presentations are joined from the host's durable table, never
@@ -232,7 +233,7 @@ function legacyAnswer(turn, allowProcessFallback) {
 function answerMessage(turn, { allowProcessFallback = true } = {}) {
   const { start, delivery } = turn;
   if (!start) return legacyAnswer(turn, allowProcessFallback);
-  return {
+  const answer = {
     turnId: start.turnId,
     text: delivery?.text ?? "",
     citations: delivery?.citations ?? [],
@@ -240,6 +241,8 @@ function answerMessage(turn, { allowProcessFallback = true } = {}) {
     ...(delivery?.reason ? { reason: delivery.reason } : {}),
     ...(delivery ? { finishedAt: delivery.finishedAt } : {}),
   };
+  if (!delivery || delivery.deliveryBundle || delivery.reviewedReportHash) return answer;
+  return restoreModelOverview(answer,start.question,turn.messages);
 }
 
 // Only the answer actually shown on this branch can establish a prior position.

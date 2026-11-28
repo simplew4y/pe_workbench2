@@ -6,7 +6,7 @@ import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
 import {researchPortion} from '../server/agent/answer-delivery.mjs';
 import {isResearchQuestion} from '../lib/research-task.mjs';
 import {questionWithoutAttachments} from '../lib/answer-length.mjs';
-import {findingKey} from '../lib/evidence-reconciliation.mjs';
+import {findingKey,reconcileEvidence} from '../lib/evidence-reconciliation.mjs';
 import {artifactDeliveryFindings,artifactDeliverySummary} from '../lib/artifact-delivery.mjs';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -99,6 +99,9 @@ fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:
 // Replay the actual final-delivery state machine too. The model is a tape of
 // recorded drafts, tools are already-recorded results, and fetch is disabled.
 // This cannot predict how a live model will rewrite after a changed audit.
+const correctionArg=args.find(arg=>arg.startsWith('--review-corrections='));
+const queuedCorrections=correctionArg?JSON.parse(fs.readFileSync(correctionArg.slice('--review-corrections='.length),'utf8')):{};
+const bindingRequests=[];
 const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
 const branch=structuredClone(priorRows);
 let recordedMemory;
@@ -115,6 +118,7 @@ const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,app
     m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'))))appendMessage(message);
   replayCursor=Math.max(replayCursor,at+1);
   appendMessage(structuredClone(next));
+  if(queuedCorrections[generations-1])assert.ok(entry.activeTurn.queueReviewCorrection(queuedCorrections[generations-1]));
  },
  async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
 };
@@ -122,6 +126,19 @@ const replayRoot=fs.mkdtempSync(path.join(os.tmpdir(),'research-delivery-replay-
 if (process.argv.includes('--recorded-facts')) {
  recordedMemory=recordedFactContext(replayRoot,allRows.find(r=>r.type==='session')?.id);
  priorMessages.forEach(recordedMemory.observe);
+}
+// A supplied contemporaneous project query restores pre-existing facts used
+// by the live finalizer. Only the exact unfiltered lookup can use this window.
+const factWindowArg=args.find(arg=>arg.startsWith('--fact-window='));
+if(factWindowArg) {
+ const window=JSON.parse(fs.readFileSync(factWindowArg.slice('--fact-window='.length),'utf8'));
+ assert.ok(recordedMemory && window.facts.length===100 && window.facts.every(f=>f.created_at<window.asOf));
+ assert.ok(Date.parse(window.asOf)<=Date.parse(rows.find(r=>r.customType==='pe_turn_started').timestamp));
+ const query=recordedMemory.query.bind(recordedMemory);
+ const recordedRoot=allRows.find(row=>row.type==='session')?.cwd;
+ assert.equal(path.basename(recordedRoot),window.projectId);
+ recordedMemory.query=(filters={})=>Object.keys(filters).length===1 && filters.limit===100 ?
+   {status:'ambiguous',facts:window.facts,coverage:'project_registered_only'} : query(filters);
 }
 const published=[];
 const finalReceipts=()=>[...new Map([...fileReceipts(),...published].map(r=>[r.path,r])).values()];
@@ -134,21 +151,30 @@ const reportDraft=lastReport ? {path:lastReport.args.path,content:lastReport.arg
  fs.existsSync(path.join(replayRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(replayRoot,lastReport.args.path))) : null,
  issues:lastReport.success?[]:['录制的报告审校未通过']} : null;
 let deliveryRecord;
-try {deliveryRecord=await runWithPostAnswer({session,ctx:{root:replayRoot,factMemory:recordedMemory},artifactSnapshot:finalReceipts,
+const entry={session,ctx:{root:replayRoot,factMemory:recordedMemory},artifactSnapshot:finalReceipts,
  publishReportDelivery:(outcome,question)=>publishFinalReport({root:replayRoot,draft:reportDraft,outcome,question,receipts:finalReceipts(),record:receipt=>{
   published.push(receipt);
   const destination=path.join(output,'published',receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
   fs.copyFileSync(path.join(replayRoot,receipt.path),destination);
  }}),
- reconcileEvidence:async(answer,findings)=>{
-  const recorded=lintRecords[draftMessages.findIndex(m=>text(m)===answer)];
-  const accepted=new Map((recorded?.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
-  return {findings:findings.map(f=>({...f,...accepted.get(findingKey(f)),sourceText:f.sourceText})),status:'recorded_replay'};
- }},question,{attachments});
+ reconcileEvidence:async(answer,findings,context)=>{
+  // The finalizer expands workbook filenames before calling reconciliation.
+  // Select the corresponding generation, then require the same finding,
+  // source text and currently eligible original source before reusing a decision.
+  const recorded=lintRecords[Math.min(generations,draftMessages.length)-1];
+  const accepted=(recorded?.findings || []).filter(f=>f.evidenceStatus==='semantic_supported');
+  return reconcileEvidence(findings,context,pending=>{bindingRequests.push({generation:generations,candidates:pending.length});return {decisions:pending.flatMap(p=>{
+   const match=accepted.find(f=>findingKey(f)===findingKey(p.finding) && f.sourceText===p.finding.sourceText &&
+    p.sources.some(s=>f.evidenceIds?.includes(s.id)));
+   return match?[{index:p.index,status:'supported',sourceId:p.sources.find(s=>match.evidenceIds.includes(s.id)).id,
+    reason:match.reviewReason || match.message}]:[];
+  })};});
+ }};
+try {deliveryRecord=await runWithPostAnswer(entry,question,{attachments});
  if(published.length)fs.cpSync(path.join(replayRoot,'exports'),path.join(output,'published','exports'),{recursive:true});
 } finally {recordedMemory?.close();fs.rmSync(replayRoot,{recursive:true,force:true});}
 assert(['partial','completed'].includes(deliveryRecord.status),JSON.stringify(deliveryRecord));
 assert.deepEqual(artifactDeliveryFindings(deliveryRecord.text,finalReceipts()),[],'Final persisted delivery must agree with file readback receipts');
-fs.writeFileSync(path.join(output,'delivery.json'),JSON.stringify({network:false,generations,delivery:deliveryRecord,requests,records},null,2));
+fs.writeFileSync(path.join(output,'delivery.json'),JSON.stringify({network:false,generations,bindingRequests,delivery:deliveryRecord,requests,records},null,2));
 fs.writeFileSync(path.join(output,'delivered.md'),deliveryRecord.text);
 console.log({actualPostprocessor:deliveryRecord.status,deliveredChars:deliveryRecord.text.length,generations,network:false});

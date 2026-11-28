@@ -12,6 +12,7 @@ import { esc, icon, threadEl } from "../shared/dom.js";
 import { state } from "../state/store.js";
 import { api } from "../api/client.js";
 import { toast } from "../shared/toast.js";
+import { selectedThinkingMode } from "../chat/composer.js";
 import { runtime } from "../runtime.js";
 import { getTraceData, loadTrace, setTraceData } from "./panel.js";
 
@@ -368,9 +369,10 @@ async function submitJudgment({ adopt = false, force = false } = {}) {
 }
 
 async function sendAdjustment(prompt) {
+  const thinkingMode = selectedThinkingMode();
   if (!prompt) return;
   if (state.agentTransport === "copilotkit" && runtime.pilot?.send) {
-    await runtime.pilot.send({ text: prompt, attachments: [] });
+    await runtime.pilot.send({ text: prompt, attachments: [], thinkingMode });
     return;
   }
   let sessionId = state.activeSession;
@@ -381,7 +383,7 @@ async function sendAdjustment(prompt) {
   if (!sessionId) throw new Error("没有可用会话");
   await api(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
-    body: { text: prompt },
+    body: { text: prompt, thinkingMode },
   });
 }
 

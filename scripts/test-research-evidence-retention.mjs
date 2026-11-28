@@ -1,3 +1,4 @@
+import {retainedScenarioCalculations} from '../lib/retained-read-evidence.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createResearchReview} from '../lib/research-review.mjs';
@@ -124,4 +125,28 @@ test('local valuation proof uses bound scalar formulas and the workbook rounding
   assert.ok(asksModelOverview('请拆解这份估值模型'));
   assert.ok(!asksModelOverview('只核对模型收入，200字以内'));
   assert.ok(!asksModelOverview('若成本下调 5%，请重算模型'));
+});
+
+test('retain only an independently reproducible local shocked result on the same evidence',()=>{
+ const c={...source('Costs!B12',200,'万元','采购成本'),sha256:'a'.repeat(64),id:'cite:book:v1:Costs!B12',period:'2029E',raw_unit:'万元'};
+ const r={name:'2029年原料价下调15%(产量不变)时成本',unit:'万元',value:'170',expression:'cost*0.85',
+  evaluatedExpression:'(200)*0.85',bindings:{cost:{...c}},provenance:'bound_inputs'};
+ r.citations=derivedCitation(r,[c],{toolCallId:'testcalc',role:'derived_calc_0'});
+ const calls=[{id:'read',name:'workbook_query',success:true,details:{citations:[c]}},
+  {id:'testcalc',name:'calc',success:true,details:{results:[r],citations:r.citations}}];
+ const args={answer:'假设 2029 年原料价下调 15%、产量不变，成本降至 170 万元。',retained:'采购计划。',findings:[],calls,versions:{book:1}};
+ const run=changes=>retainedScenarioCalculations({...args,...changes});
+ assert.equal(run({}).citations.length,2);
+ for(const change of [
+  {answer:args.answer.replace('2029','2027')},{answer:args.answer.replace('万元','元')},
+  {answer:args.answer.replace('原料价下调','原料价不变，售价下调')},
+  {answer:args.answer.replace('成本降至 170 万元','成本从 170 万元降至 120 万元')},
+  {answer:args.answer.replace('产量不变','产量下降')},{retained:args.answer},{versions:{book:2}},
+  {calls:calls.slice(1)},{disputedCalcIds:[r.citations[0].id]},{limit:4}
+ ])assert.deepEqual(run(change).citations,[]);
+ const mutate=fn=>{const altered=structuredClone(calls);fn(altered);assert.deepEqual(run({calls:altered}).citations,[]);};
+ mutate(a=>a[0].details.citations[0].sha256='b'.repeat(64));
+ mutate(a=>a[1].details.results[0].evaluatedExpression='(200)*1.15');
+ mutate(a=>a[1].details.results[0].unit='美元');
+ mutate(a=>a[1].success=false);
 });

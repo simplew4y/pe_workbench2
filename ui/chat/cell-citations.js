@@ -206,6 +206,7 @@ export function linkCitations(textHtml, citations, { compact = false } = {}) {
   let output = "";
   let cursor = 0;
   let skipDepth = 0;
+  let inFormula = false;
   const tag = /<[^>]*>/g;
   for (const match of html.matchAll(tag)) {
     const start = match.index ?? 0;
@@ -215,10 +216,12 @@ export function linkCitations(textHtml, citations, { compact = false } = {}) {
     }
     const token = match[0];
     output += token;
-    if (/^<\s*(?:a|button)\b/i.test(token)) {
+    if (/^<\s*(?:a|button|pre)\b/i.test(token) || (/^<code\b/i.test(token) && /^\s*=/.test(html.slice(start + token.length)))) {
+      if (/^<code\b/i.test(token)) inFormula = true;
       skipDepth += 1;
       reset();
-    } else if (/^<\s*\/\s*(?:a|button)\s*>/i.test(token)) {
+    } else if (/^<\s*\/\s*(?:a|button|pre)\s*>/i.test(token) || (inFormula && /^<\/code>/i.test(token))) {
+      if (/^<\/code>/i.test(token)) inFormula = false;
       skipDepth = Math.max(0, skipDepth - 1);
       reset();
     } else if (!INLINE_TAG.test(token) && !(state.sep && /^<br\s*\/?\s*>$/i.test(token))) {
