@@ -1572,11 +1572,8 @@ const workbookSession = { messages: [],
 };
 const workbookEntry = {session:workbookSession};
 const optionsTurn = await runWithPostAnswer(workbookEntry, '这个模型怎么看？', {attachments:['uploads/model.xlsx']});
-assert.equal(initialPrompts.length, 0);
-assert.equal(optionsTurn.status, 'completed');
-assert.match(optionsTurn.text, /^你想先弄清哪件事？/);
-assert.equal((await runWithPostAnswer(workbookEntry, 'A')).status, 'completed');
-assert.match(initialPrompts[0], /^复现原表估值/);
+assert.equal(initialPrompts.length, 1);
+assert.doesNotMatch(optionsTurn.text, /^你想先弄清哪件事？/);
 assert.match(initialPrompts[0], /uploads\/model\.xlsx/);
 const scopePromises = [];
 const clearSession = {messages:[], async prompt(text) {

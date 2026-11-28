@@ -95,6 +95,10 @@
             <div class="composer-bar">
               <div class="composer-left">
                 <button type="button" class="attach" id="attachBtn"><svg class="i" width="15" height="15"><use href="#i-paperclip"/></svg>添加附件</button>
+                <fieldset id="thinkingMode" class="thinking-mode" aria-label="回答模式" hidden>
+                  <label><input type="radio" name="thinkingMode" value="normal"><span>普通</span></label>
+                  <label><input type="radio" name="thinkingMode" value="deep" checked><span>深度思考</span></label>
+                </fieldset>
                 <input type="file" id="fileInput" multiple hidden>
               </div>
               <div class="composer-right">

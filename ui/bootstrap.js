@@ -65,6 +65,15 @@ function renderModelSettings() {
   const models = state.models;
   const levels = session?.thinkingLevels || models.find(item => item.id === model)?.thinkingLevels || [];
   const disabled = !session || state.streaming || modelUpdates.has(session.id) ? ' disabled' : '';
+  const quickMode = $('#thinkingMode');
+  quickMode.hidden = !levels.includes('off') || levels.length < 2;
+  quickMode.disabled = Boolean(disabled);
+  const normal = quickMode.querySelector('[value="normal"]');
+  const deep = quickMode.querySelector('[value="deep"]');
+  normal.checked = level === 'off';
+  deep.checked = level !== 'off';
+  normal.dataset.thinkingLevel = 'off';
+  deep.dataset.thinkingLevel = levels.includes('high') ? 'high' : levels.at(-1);
   $('#modelName').textContent = model;
   $('#modelEffort').textContent = effortLabels[level] || level;
   $('#modelBtn').title = `${model} · 推理：${effortLabels[level] || level}`;
@@ -871,7 +880,10 @@ async function init() {
     toggleMenu($('#modelMenu'), $('#modelBtn'));
     if (!$('#modelMenu').hidden) $('#modelMenu button[aria-checked="true"]:not(:disabled)')?.focus();
   });
-  $('#modelMenu').addEventListener('click', async e => {
+  $('#modelMenu').addEventListener('click', saveModelChoice);
+  $('#thinkingMode').addEventListener('change', saveModelChoice);
+  async function saveModelChoice(e) {
+    const fromMenu = e.currentTarget.id === 'modelMenu';
     const item = e.target.closest('[data-model], [data-thinking-level]');
     const id = state.activeSession;
     const project = state.project.id;
@@ -882,7 +894,7 @@ async function init() {
     try {
       const saved = await api(`/api/sessions/${id}/model`, { method:'POST', body });
       if (state.project.id === project) updateSessionItem(id, modelSettingsPatch(saved));
-      if (state.project.id === project && state.activeSession === id) {
+      if (fromMenu && state.project.id === project && state.activeSession === id) {
         toggleMenu($('#modelMenu'), $('#modelBtn'), false);
         $('#modelBtn').focus();
       }
@@ -892,7 +904,7 @@ async function init() {
       modelUpdates.delete(id);
       renderModelSettings();
     }
-  });
+  }
   $('#modelMenu').addEventListener('keydown', e => {
     if (!['ArrowDown','ArrowUp','Home','End','Escape'].includes(e.key)) return;
     e.preventDefault();

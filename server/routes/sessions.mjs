@@ -52,6 +52,9 @@ export async function handleSessions({ req, res, url, app, ctx }) {
           threadId: entry.id,
         });
       }
+      if (body.thinkingMode !== undefined && !["normal", "deep"].includes(body.thinkingMode)) {
+        return json(res, 400, { error: "invalid thinkingMode" });
+      }
       const text = String(body.text || "").trim();
       const attachments = Array.isArray(body.attachments) ? body.attachments : [];
       if (!text && !attachments.length) return json(res, 400, { error: "empty message" });
@@ -69,7 +72,7 @@ export async function handleSessions({ req, res, url, app, ctx }) {
 
       entry.updatedAt = nowIso();
       const streaming = Boolean(entry.session.isStreaming || entry.postAnswerPending);
-      const run = runWithPostAnswer(entry, text || "看一下这几个文件。", { attachments: safeAttachments }, event => broadcast(entry, event));
+      const run = runWithPostAnswer(entry, text || "看一下这几个文件。", { attachments: safeAttachments, thinkingMode: body.thinkingMode }, event => broadcast(entry, event));
       run.catch((error) => {
         broadcast(entry, { type: "run.error", message: error?.message || String(error) });
       });

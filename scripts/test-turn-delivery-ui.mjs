@@ -228,3 +228,26 @@ for (const [turnId, text] of [['turn-b', 'B，见 Model!B2。'], ['turn-full', '
   assert.equal(state.streaming, false);
 }
 console.log('Copilot client: atomic delivery survives replay and a failed final snapshot');
+
+{
+  const {readableArchivedLine,formulaStep}=await import('../ui/chat/workbook-formulas.js');
+  const fields={filename:'Peer.xlsx',sha256:'abc',materialId:'peer',version:3};
+  const cell=(ref,metric,value,unit,formula)=>({...fields,locator:'Case!'+ref,metric,value,raw_unit:unit,display_unit:unit,formula});
+  const eps=cell('B3','EPS (USD, diluted)',2,'USD/sh');
+  const pe=cell('B4','2034E target P/E',8,'倍');pe.period='2034E';
+  const base=cell('B5','Target multiple x EPS',16,'USD/sh','=B3*$B$4');
+  const rate=cell('B6','COE',0.25,'decimal');rate.display_unit='%';
+  const term=cell('B7',null,2,'unit_unknown');
+  const target=cell('B8','Discounted back to 2032; TP (USD)',10,'USD','=ROUND(B5/(1+B6)^B7,0)');
+  const cells=[eps,pe,base,rate,term,target];
+  const old='Target multiple x EPS 16 USD/sh [Peer.xlsx]Case!B5、COE 25% [Peer.xlsx]Case!B6、2 [Peer.xlsx]Case!B7。目标价按 \x60ROUND(16/(1+0.25)^2,0)\x60 计算约为 10 美元 [Peer.xlsx]Case!B8。';
+  // The old formatter used the raw USD/sh unit. Only convert the exact template.
+  const line='- Target multiple x EPS 16 USD/sh（[Peer.xlsx]Case!B5），原式 \x60=B3*$B$4\x60。';
+  assert.match(readableArchivedLine(line,cells),/摊薄每股收益 2 美元\/股[\s\S]* × 2034 年预计目标市盈率 8 倍/);
+  const rendered=formulaStep(target,[base,rate,term],'ROUND(16/(1+0.25)^2,0)',true,cells);
+  assert.match(rendered,/股权成本 25%.*折现 2 年/);
+  assert.match(rendered,/16 ÷ \(1 \+ 25%\)² ≈ \*\*10 美元\*\*/);
+  assert.equal(readableArchivedLine(old,cells),rendered);
+  assert.equal(readableArchivedLine(old.replace('25%','30%'),cells),old.replace('25%','30%'));
+  assert.equal(readableArchivedLine(line,[...cells,{...base,version:2}]),line);
+}

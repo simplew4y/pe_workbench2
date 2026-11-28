@@ -1,3 +1,4 @@
+import {unfixedLocalFindings} from '../lib/research-delivery.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -5,9 +6,9 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {createResearchReview} from '../lib/research-review.mjs';
 import {planReportDelta} from '../lib/report-delta-review.mjs';
-import {auditResearch,createResearchAuditor,evidenceTimeline,AUDIT_CHECKS} from '../lib/research-audit.mjs';
+import {auditResearch,createResearchAuditor,revisionScope,evidenceTimeline,AUDIT_CHECKS} from '../lib/research-audit.mjs';
 import {selectResearchEvidence,recoveryEvidenceRows} from '../lib/research-evidence-package.mjs';
-import {correctReviewerArithmetic} from '../lib/audit-arithmetic.mjs';
+import {correctReviewerArithmetic,draftArithmetic} from '../lib/audit-arithmetic.mjs';
 import {canonicalMetricContext,indexGraph,metricContext} from '../lib/workbook-query.mjs';
 import {selectWorkbookAuditEvidence} from '../lib/workbook-audit-evidence.mjs';
 
@@ -194,4 +195,78 @@ test('reviewer arithmetic is corrected deterministically while retaining real me
  assert.equal(verdict.ok,false);assert.equal(verdict.arithmeticCorrections.length,1);assert.match(verdict.issues[0].reason,/73546/);
  for(const reason of ['100-30=70','1/3≈0.33','1/2=50%','2024-2025为两个财年','该指标含税，不可与不含税指标相比。'])
   assert.equal(correctReviewerArithmetic({...issue,reason}).corrections.length,0,reason);
+});
+
+test('preflight separates percentage points, contributions, currencies and rounded units',()=>{
+ const one=text=>draftArithmetic(text).map(f=>[f.matches,f.value,f.unit]);
+ assert.deepEqual(one('利润率由 18.2% 升至 23.7%，增加 23.7 个百分点。'),[[false,5.5,'个百分点']]);
+ assert.deepEqual(one('由 18.2% 降至 13.7%，下降 4.5 个百分点。'),[[true,-4.5,'个百分点']]);
+ assert.equal(one('由 18.2% 降至 13.7%，增加 4.5 个百分点。')[0][0],false);
+ assert.deepEqual(one('由 18.2% 升至 23.7%，2 个百分点来自提价。'),[]);
+ assert.deepEqual(one('收入从 2% 到 3%，净利润率下降 9 个百分点。'),[]);
+ assert.deepEqual(one('收入 12,345 百万元 = 123.5 亿元。'),[[true,123.45,'亿元']]);
+ assert.deepEqual(one('计算：(6+2)×5 = 400。'),[[false,40,'']]);
+ assert.deepEqual(one('份额：3/20 = 15%。'),[[true,15,'%']]);
+ assert.deepEqual(one('收入/利润+2 = 4。'),[]);
+ assert.deepEqual(one('5 GWh = 50 MWh。'),[[false,5000,'MWh']]);
+ assert.deepEqual(one('5 GWh = 5 GW。'),[]);
+ assert.deepEqual(one('100 美元 = 100 元。'),[]);
+ assert.deepEqual(one('摊薄成本 2 元 = 2 元/股。'),[]);
+});
+
+test('a revision retains independent reviewed evidence and checks the whole answer for omissions',async()=>{
+ const seen=[];
+ const provider=(_model,ctx)=>{
+  const payload=JSON.parse(ctx.messages[0].content[0].text);
+  seen.push(payload);
+  if(payload.revisionScope && !payload.draft.includes('取消订单即失效')) {
+   return stream({checks:{...pass.checks,coverage:'fail'},issues:[{check:'coverage',excerpt:'需要跟踪订单。',reason:'原题要求给出证伪条件，改稿删除了条件。'}]});
+  }
+  return stream(pass);
+ };
+ const ask='说明经营驱动、估值、风险和证伪条件。';
+ const messages=[{role:'user',content:ask,timestamp:1},success('source','workbook_query','财务原表')];
+ const auditor=createResearchAuditor();
+ const audit=draft=>auditor(provider,{provider:'offline',id:'model'},{messages},{},draft,{revisionAnswer:true,question:ask});
+ const old='## 经营\n销量取决于订单。\n\n## 倍数\n按模型 PE!B4 取 15 倍。\n\n## 估值\n目标价按 PE!B4 乘预期盈利。\n\n## 风险\n取消订单即失效。';
+ assert.equal((await audit(old)).ok,true);
+ const changed=old.replace('15 倍','13 倍').replace('取消订单即失效。','需要跟踪订单。');
+ const verdict=await audit(changed),scope=seen.at(-1).revisionScope;
+ assert.equal(verdict.ok,false);
+ assert.ok(scope.localReview.some(s=>s.heading==='估值'));
+ assert.ok(scope.localReview.some(s=>s.heading==='风险'));
+ assert.deepEqual(scope.retainedSections.map(s=>s.heading),['经营']);
+ assert.equal(seen.at(-1).draft,changed);
+ messages.push(success('revised-source','workbook_query','不同版本的新依据'));
+ await audit(changed.replace('订单。','合同。'));
+ assert.equal(seen.at(-1).revisionScope,undefined);
+});
+
+test('an initial numeric rejection cannot approve the revised or unrepaired answer',async()=>{
+ const auditor=createResearchAuditor();
+ const ctx={messages:[{role:'user',content:'请解释',timestamp:10}]};
+ let calls=0;
+ const provider=()=>{calls++;return stream(pass);};
+ const run=async(draft,allowNumericPreflight)=>auditor(provider,{provider:'offline',id:'m'},ctx,{},draft,{revisionAnswer:true,allowNumericPreflight});
+ const bad='营业利润率由 10.0% 升至 20.0%，提高了 20 个百分点。';
+ assert.equal((await run(bad,true)).status,'precheck_failed');assert.equal(calls,0);
+ assert.equal((await run(bad,false)).ok,false);assert.equal(calls,1);
+ assert.equal((await run(bad.replace('提高了 20','提高了 10'),false)).ok,true);assert.equal(calls,2);
+});
+
+test('negative review reuse needs an unresolved local defect and unchanged context',()=>{
+ const fact='该市场 2028 年销量为 390 万件。', issues=[{check:'comparison_basis',excerpt:fact}];
+ const old=['首段','国内业务',fact,'假设不变'].join('\n\n');
+ assert.ok(unfixedLocalFindings(old,old.replace('首段','新版摘要'),issues));
+ for(const after of [old.replace('2028','2029'),old.replace('国内业务','海外业务'),old+'\n\n'+fact])
+  assert.equal(unfixedLocalFindings(old,after,issues),false);
+ assert.equal(unfixedLocalFindings(old,old,[{check:'coverage',excerpt:fact}]),false);
+});
+
+test('a revised cell range affects overlapping cells, not unrelated sections on the same worksheet',()=>{
+ const previous={ok:true,issues:[],draft:'## 订单\n来源 Model!C3，订单金额为五万。\n\n## 融资\n来源 Model!Z9，借款已归还。\n\n## 经营\n采用 Model!B2:D5 的订单明细。'};
+ const draft=previous.draft.replace('订单明细','最新订单明细');
+ const scope=revisionScope(previous,draft);
+ assert.deepEqual(scope.localReview.map(x=>x.heading),['订单','经营']);
+ assert.deepEqual(scope.retainedSections.map(x=>x.heading),['融资']);
 });

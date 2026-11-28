@@ -1,3 +1,4 @@
+import { readableArchivedLine, groupFormulaProof, wantsWorkbookSyntax } from './workbook-formulas.js';
 // Chat presentation only. The delivery, its findings and the original report
 // keep their exact text. Match host templates, never arbitrary uncertainty.
 const legacyBanner = '本次尚未完成全部核验。以下保留有依据的分析与成立条件；存在争议的数值及其确定性结论暂不采用。';
@@ -64,9 +65,10 @@ function qualifyAmount(line, citations) {
   return line + '这条取数记录未附金额单位，单凭该格无法换算成亿元。';
 }
 
-export function visibleAnswerText(message) {
+export function visibleAnswerText(message, question) {
   const text = message.text || '';
   if (message.role !== 'assistant' || !['partial','completed'].includes(message.status)) return text;
+  const originalSyntax = wantsWorkbookSyntax(question);
   const partial = message.status === 'partial';
   const source = partial && (text === legacyBanner || text.startsWith(legacyBanner + '\n\n'))
     ? text.slice(legacyBanner.length).trimStart() : text;
@@ -90,7 +92,8 @@ export function visibleAnswerText(message) {
       continue;
     }
     if (marker) { fence = marker[1]; continue; }
-    const presented = qualifyAmount(presentLine(line, partial, inlineGaps), message.citations || []);
+    const qualified = qualifyAmount(presentLine(line, partial, inlineGaps), message.citations || []);
+    const presented = originalSyntax ? qualified : readableArchivedLine(qualified, message.citations || []);
     if (presented !== line) lines[i] = presented;
     const topic = /^(?:\*\*)?([\p{L}]{2,16})[：:](?:\*\*)?\s*\S/u.exec(line);
     if (topic && presented === line) topics.push({name:topic[1],index:i});
@@ -101,7 +104,7 @@ export function visibleAnswerText(message) {
     if (matching.length === 1) lines[matching[0].index] += ' ' + sentence;
     else lines.push('', sentence);
   }
-  return lines.join('\n');
+  return originalSyntax ? lines.join('\n') : groupFormulaProof(lines.join('\n'),message.citations);
 }
 
 

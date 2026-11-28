@@ -1,9 +1,12 @@
+import {overviewGuidance} from '../../ui/chat/model-overview.js';
+import {overviewLayoutIssue,restoreModelOverview} from '../../lib/model-overview-delivery.mjs';
+import {groupFormulaProof} from '../../ui/chat/workbook-formulas.js';
 import {pdfSearchKey} from '../../lib/remote-pdf.mjs';
 import {mentionedPdfCalculations,deliverPdfCalculationLinks} from '../../ui/chat/pdf-calculation-links.js';
 import {canonicalWorkbookRefs} from '../../lib/workbook-source-names.mjs';
 import {partialScenarioObservations} from '../../lib/partial-scenario-observations.mjs';
 import {asksModelOverview,valuationFormulaDelivery} from '../../lib/valuation-formula-delivery.mjs';
-import {retainReadEvidence,supportedCells} from '../../lib/retained-read-evidence.mjs';
+import {retainReadEvidence,retainedScenarioCalculations,supportedCells} from '../../lib/retained-read-evidence.mjs';
 import { clarifyResearchInference } from '../../lib/research-inference.mjs';
 import { compactResearchBrief } from '../../lib/research-brief.mjs';
 import { workbookScenarioDelivery, missingScenarioResult } from '../../lib/workbook-scenario-delivery.mjs';
@@ -50,7 +53,7 @@ function promptWithAttachments(text, attachments) {
 }
 
 export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {}) {
-  const { runId, attachments, ...promptOptions } = options;
+  const { runId, attachments, thinkingMode, ...promptOptions } = options;
   const prompt = promptWithAttachments(text, attachments);
   if (entry.automated) return entry.session.prompt(prompt, promptOptions);
   const previous = entry.postAnswerRun;
@@ -62,7 +65,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
   const execute = async () => {
     if (turn.queued) activateQueuedTurn(entry, turn.turnId);
     entry.managedChat = true;
-    const active = entry.activeTurn = { ...turn, attachments, cancelled: false };
+    const active = entry.activeTurn = { ...turn, attachments, thinkingMode, cancelled: false };
     broadcast({ type: 'turn.started', turnId: turn.turnId, question: text, startedAt: turn.startedAt });
     let outcome;
     try {
@@ -108,7 +111,7 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
           const anchor=paragraphs.findIndex(p=>adoptedCitations(p,[proof.output]).length);
           if(anchor>=0) {
             paragraphs.splice(anchor+1,0,proof.text);
-            const body=paragraphs.join('\n\n');
+            const body=groupFormulaProof(paragraphs.join('\n\n'),[...outcome.citations,...proof.citations]);
             if(!budget || visibleAnswerChars(body)<=budget.chars)outcome={...outcome,text:body,
               citations:[...new Map([...outcome.citations,...proof.citations].map(c=>[c.id,c])).values()],
               formulaAnalysis:proof.receipt};
@@ -117,7 +120,13 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       }
       if (active.researchProse && (budget?.cap || budget?.strict) && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
         const compact=compactResearchBrief(outcome.text,text,budget.chars);
-        if(compact!==outcome.text)outcome={...outcome,text:compact};
+        if(compact!==outcome.text) {
+          const alreadyMissing=new Set(active.finalCoverage?.(outcome.text));
+          if(!active.finalCoverage?.(compact).some(item=>!alreadyMissing.has(item)))outcome={...outcome,text:compact};
+        }
+      }
+      if (active.overviewEvidence && !outcome.reviewedReportHash && !outcome.deliveryBundle && !budget) {
+        outcome=restoreModelOverview(outcome,text,active.overviewEvidence);
       }
       const pdfMatches = mentionedPdfCalculations(outcome.text, active.pdfCalculationEvidence || []);
       if (pdfMatches.length && !outcome.reviewedReportHash && !outcome.deliveryBundle) {
@@ -134,6 +143,11 @@ export function runWithPostAnswer(entry, text, options = {}, broadcast = () => {
       // already carry saved artifacts when there is no room for this note.
       const max=requestedAnswerLength(text);
       if(summary && !outcome.deliveryBundle && (!(max?.strict || max?.cap) || answerCharCount(outcome.text+'\n\n'+summary)<=max.chars))outcome={...outcome,text:outcome.text+'\n\n'+summary};
+      if(active.finalCoverage && !outcome.deliveryBundle && !outcome.reviewedReportHash) {
+        const missing=active.finalCoverage(outcome.text);
+        if(missing.length)outcome={...outcome,status:'partial',missingRequestedItems:missing,
+          reason:[outcome.reason,'最终正文缺少问项：'+missing.join('、')].filter(Boolean).join(' ')};
+      }
       if ((budget?.cap || budget?.strict) && !outcome.deliveryBundle && !outcome.reviewedReportHash) {
         const chars = visibleAnswerChars(outcome.text);
         outcome = {...outcome, lengthCheck:{chars,limit:budget.chars,withinLimit:chars<=budget.chars}};
@@ -248,7 +262,7 @@ async function generateAnswer(entry, promptText, options, active) {
     }
   }
   const intentHint = researchIntentHint(active.intent);
-  if (!active.intent && firstTurn) {
+  if (!active.intent && firstTurn && !asksModelOverview(question)) {
     const clarification = initialWorkbookClarification(question, active.attachments);
     if (clarification) return { status: 'completed', text: clarification, citations: [] };
   }
@@ -259,6 +273,12 @@ async function generateAnswer(entry, promptText, options, active) {
   let continuationCount = 0;
   const userHistory=entry.session.messages.filter(m=>m.role==='user' && !m.peInternal && !m.customType).map(m=>textOfContent(m.content)).join('\n');
   const researchTurn=active.intent ? ['direct', 'report'].includes(active.intent.mode) : isResearchQuestion(text,userHistory);
+  active.queueReviewCorrection=request=>{
+    if(active.cancelled || correctionCount || recoveryCount || !researchTurn || active.compactAnswer ||
+       active.reviewCorrection || !entry.session.sendCustomMessage)return false;
+    active.reviewCorrection=request;
+    return true;
+  };
   active.researchProse=researchTurn && !asksHistoricalSource(text);
   entry.session.sessionManager?.appendCustomEntry('pe_task_route',{turnId,question:text,research:researchTurn,version:2});
   const scenarioOnly=isScenarioOnlyQuestion(text,userHistory);
@@ -417,13 +437,7 @@ async function generateAnswer(entry, promptText, options, active) {
     }
     if (event.type === 'agent_settled' && event.aborted) active.cancelled = true;
   });
-  // All workbench answers default to reasoning, including vague attachment
-  // requests and restored sessions. Research keywords only shape the task.
-  const enableDefaultThinking = entry.session.model?.reasoning === true &&
-    (!entry.session.thinkingLevel || entry.session.thinkingLevel === 'off') &&
-    typeof entry.session.setThinkingLevel === 'function';
   try {
-    if (enableDefaultThinking) entry.session.setThinkingLevel('high', {persist:false});
     const priorCitations = Array.isArray(entry.citationIndex) ? entry.citationIndex : [];
     let boundary = entry.session.messages.length;
     if (active.cancelled) return interrupted('用户已取消本次回答。');
@@ -533,12 +547,19 @@ async function generateAnswer(entry, promptText, options, active) {
       const workbookReads = calls.filter(call => call.name === 'workbook_query' || call.name === 'workbook_trace');
       const workbookEvidence = collectCitationsFromToolCalls(workbookReads).filter(c => currentCitation(c, currentVersions));
       if(workbookReads.length && asksModelOverview(text)) {
+        active.overviewEvidence=messages.filter(m=>m.role==='toolResult' && !m.isError);
         active.formulaReads=supportedCells(workbookReads.flatMap(call=>collectCitationsFromToolCalls([call]))
           .filter(c=>!c.derivedFrom && currentCitation(c,currentVersions)));
       }
       const blocks = answerBlocks(answer);
       const workbookTurn = active.attachments?.some(path => /\.xls[xm]$/i.test(path)) || workbookReads.length > 0;
       const coverage = workbookItemCoverage(text, blocks, workbookEvidence, workbookTurn);
+      const overviewTurn=Boolean(active.overviewEvidence?.length && !length);
+      if(overviewTurn || requestedItems.length || coverage.missing.length || coverage.supported.size) {
+        active.finalCoverage=body=>[...new Set([...missingSummaryItems(body,requestedItems),
+          ...workbookItemCoverage(text,answerBlocks(body),workbookEvidence,workbookTurn).missing,
+          ...(overviewTurn?[overviewLayoutIssue(body,true)].filter(Boolean):[])])];
+      }
       const locatorEvidence = candidate => reportedLocatorEvidence(candidate, text, turnCitations, historical, workbookEvidence);
       const sourceReport = locatorEvidence(answer);
       const available = sourceReport.citations;
@@ -592,17 +613,20 @@ async function generateAnswer(entry, promptText, options, active) {
           details:{turnId,evidenceRetryCount}}, {triggerTurn:true});
         continue;
       }
+      const retry=active.reviewCorrection;
+      active.reviewCorrection=null;
       const findings = findingsFor(answer);
       findings.splice(0,findings.length,...applyPassageVerification(findings,joined,message.researchVerification,calls));
       for(const finding of findings)if(finding.evidenceStatus==='semantic_supported')reconciled.set(findingKey(finding),finding);
       findings.push(...artifactDeliveryFindings(answer,entry.artifactSnapshot?.() || []));
-      if (researchTurn && !asksHistoricalSource(text) && entry.reconcileEvidence && !active.cancelled) {
+      if (!retry && researchTurn && !asksHistoricalSource(text) && entry.reconcileEvidence && !active.cancelled) {
         try {
           const result=await entry.reconcileEvidence(answer,findings,lintContext);
           for (const finding of result.findings) if (finding.evidenceStatus==='semantic_supported') reconciled.set(findingKey(finding),finding);
           findings.splice(0,findings.length,...result.findings);
         } catch { /* An unavailable reviewer never forgives a blocking finding. */ }
       }
+      if(retry)for(const i of retry.issues)findings.push({rule:'unchanged_review_finding',severity:'error',excerpt:i.excerpt,message:i.reason});
       for (const gap of executionGaps) findings.push({ ...gap, rule:'delivery_gap', severity:'error', excerpt:'', message:gap.message });
       if (message.researchVerification?.status === 'limited' && !findings.some(f=>f.severity==='error') && !message.researchAnswerGaps?.length)
         findings.push({rule:'delivery_gap',severity:'error',message:'本版答文的研究审校仍有未通过或未核实的项目。',excerpt:''});
@@ -730,6 +754,13 @@ async function generateAnswer(entry, promptText, options, active) {
           ? retainReadEvidence({answer,retained:safeText,findings,calls,question:text,versions:currentVersions,limit:length?.chars ?? Infinity})
           : {text:safeText,citations:[]};
         safeText=recovered.text;
+        let scenarioCitations=[];
+        if(!sourceQuestion && !calculation && !entry.reportDraftSnapshot?.()?.saveRequested &&
+           !retry && message.researchVerification?.reviewStatus==='reviewed') {
+          const scenarios=retainedScenarioCalculations({answer,retained:safeText,findings,calls,versions:currentVersions,disputedCalcIds:message.researchVerification.disputedCalcIds,limit:length?.chars ?? Infinity});
+          safeText=scenarios.text;
+          scenarioCitations=scenarios.citations;
+        }
         retainedSources=recovered.pageSources?.length ? {pageSources:recovered.pageSources} : {};
         const receipts=!sourceQuestion && !calculation && !entry.reportDraftSnapshot?.()?.saveRequested
           ? partialScenarioObservations(length ? calls : calls.filter(c=>!active.workbookScenarios?.callIds?.includes(c.id)),currentVersions) : null;
@@ -738,7 +769,7 @@ async function generateAnswer(entry, promptText, options, active) {
           recovered.citations.push(...receipts.citations);
           retainedSources.scenarioToolCallIds=receipts.ids;
         }
-        safeCitations=[...new Map([...adoptedCitations(safeText,locatorEvidence(safeText).citations),...recovered.citations].map(c=>[c.id,c])).values()];
+        safeCitations=[...new Map([...scenarioCitations,...adoptedCitations(safeText,locatorEvidence(safeText).citations),...recovered.citations].map(c=>[c.id,c])).values()];
       } else if (!softCompaction) {
         const qualified=evidenceCaveat(answer,findings);
         return { status: 'completed', text: qualified.text, citations: adopted, ...(qualified.reason ? {reason:qualified.reason} : {}) };
@@ -747,13 +778,18 @@ async function generateAnswer(entry, promptText, options, active) {
       }
       const facingAnswer = [
         '直接回答用户原问题，交付一份独立、完整的回答，保留已有依据的结论与解释。修订前逐项核对原题和可用回执；对有冲突的复合句，只重建有据的计算步骤，把对应出处放在旁边。删改前提后重新读该段，补上所指指标或撤回其依赖判断，保留独立的口径说明。若用户主动要求复核旧答，请说明改了什么以及依据。出处写在句子里，工作簿坐标采用 [文件名]Sheet!A1。用户要求查证而资料不足的事项，在对应结论后写一句“未核验：缺少的具体资料，因此无法判断什么”。',
-        PLAIN_ANSWER_GUIDANCE,
+        PLAIN_ANSWER_GUIDANCE, asksModelOverview(text)?overviewGuidance:'',
         intentHint, argumentHint, priorAnswerHint, lengthHint, calculationHint, disclosureHint, reportPeriodHint, gapsHint, directionHint, summaryHint,
       ].filter(Boolean).join('\n');
       let prompt;
       let customType = 'pe_answer_correct';
       const targetErrors = errors.filter(item => item.code === 'G1' || item.code === 'G2');
-      if (message.stopReason === 'length' && continuationCount < 1) {
+      if(retry && correctionCount<1) {
+        correctionCount++;
+        continuationPrefix=null;
+        prompt='修订稿仍保留上轮指出的原句。先对照原始证据修正具体错误，再核对依赖它的判断和原题各问。'+
+          JSON.stringify({question:text,issues:retry.issues,draft:retry.draft})+'\n'+facingAnswer;
+      } else if (message.stopReason === 'length' && continuationCount < 1) {
         customType = 'pe_answer_continue';
       } else if (targetErrors.length && correctionCount < 1) {
         correctionCount++;

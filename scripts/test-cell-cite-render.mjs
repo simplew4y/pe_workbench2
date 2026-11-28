@@ -320,3 +320,11 @@ console.log('PASS compact source numbers preserve identity, repeat numbering and
   assert.match(compact,/结论<span class="cell-cite-group">/);
   assert.ok(compact.includes('（模型假设，'));
 }
+
+{
+  const cell=cite('Model!B2');
+  const formula='<code>=Model!B2*2</code>', block='<pre><code>Model!B2</code></pre>';
+  const html=linkCitations(formula+' '+block+' 取自 <code>Model!B2</code>。',[cell],{compact:true});
+  assert.ok(html.includes(formula) && html.includes(block));
+  assert.equal(buttonCount(html),1);
+}
