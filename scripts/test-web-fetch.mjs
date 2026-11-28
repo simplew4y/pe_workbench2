@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { createWebFetchTool } from "../lib/web-fetch-tool.mjs";
+import { createWebFetchTool, fetchDisclosurePdf } from "../lib/web-fetch-tool.mjs";
 
 let passed = 0;
 const failures = [];
@@ -220,11 +220,17 @@ async function main() {
       assert.match(result.content[0].text, /"items": \[/);
     });
 
-    await test("rejects PDF links with a clear next step", async () => {
-      const result = await tool.execute("call-8", { url: `${base}/pdf` });
-      assert.equal(result.isError, true);
-      assert.equal(result.details.error, "pdf_not_supported");
-      assert.match(result.content[0].text, /pdf_read/);
+    await test("reads PDF pages with provenance and reports scanned pages honestly", async () => {
+      const pdfTool=createWebFetchTool({allowPrivate:true,pdfExtractor:async()=>[
+        {page:1,text:'封面'}, {page:2,text:'经营现金流 123 百万元'}]});
+      const result=await pdfTool.execute('pdf',{url:`${base}/pdf`,query:'经营现金流'});
+      assert.equal(result.isError,undefined);
+      assert.match(result.content[0].text,/PDF第2页/);
+      assert.deepEqual(result.details.pages,[2]);
+      assert.equal(result.details.truncated,true);
+      assert.match(result.details.contentHash,/^[a-f0-9]{64}$/);
+      const empty=createWebFetchTool({allowPrivate:true,pdfExtractor:async()=>[{page:1,text:''}]});
+      assert.equal((await empty.execute('scan',{url:`${base}/pdf`})).details.error,'pdf_needs_ocr');
     });
 
     await test("reports empty JS-rendered pages instead of inventing text", async () => {
@@ -244,6 +250,39 @@ async function main() {
       const result = await tool.execute("call-12", { url: `${base}/redirect-ftp` });
       assert.equal(result.isError, true);
       assert.equal(result.details.error, "unsupported_protocol");
+    });
+
+    await test("financial disclosure PDFs retain bytes and accept catalogue links via HTTPS", async () => {
+      const bytes = Buffer.from("%PDF-1.7\nsource");
+      const source = await fetchDisclosurePdf("http://static.cninfo.com.cn/source.pdf", {
+        lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+        fetchImpl: async url => {
+          assert.equal(url.protocol, "https:");
+          return new Response(bytes);
+        },
+      });
+      assert.deepEqual(source.buffer, bytes);
+      assert.equal(source.url, "https://static.cninfo.com.cn/source.pdf");
+    });
+
+    await test("notice detail pages expose PDF attachment titles and absolute URLs", async () => {
+      const tool = createWebFetchTool({
+        lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+        fetchImpl: async () => new Response('<html><main><a href="../filing.pdf">中期报告全文</a></main></html>',
+          { headers: { "Content-Type": "text/html;charset=utf-8" } }),
+      });
+      const response = await tool.execute("notice", { url: "https://www1.hkexnews.hk/notice/detail.html" });
+      assert.deepEqual(response.details.pdfLinks, [{ title: "中期报告全文", url: "https://www1.hkexnews.hk/filing.pdf" }]);
+      assert.match(response.content[0].text, /filing\.pdf/);
+    });
+
+    await test("a disclosure requires an exchange PDF through every redirect", async () => {
+      const options = { lookup: async () => [{ address: "1.1.1.1", family: 4 }],
+        fetchImpl: async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.example/redirect.pdf" } }) };
+      await assert.rejects(fetchDisclosurePdf("https://www1.hkexnews.hk/notice", options), /交易所/);
+      await assert.rejects(fetchDisclosurePdf("https://cninfo.com.cn.example/source.pdf", options), /交易所/);
+      await assert.rejects(fetchDisclosurePdf("https://static.cninfo.com.cn/source.pdf",
+        { ...options, fetchImpl: async () => new Response("<html>login</html>") }), /PDF 原文/);
     });
 
     await test("maps 404 to not_found", async () => {

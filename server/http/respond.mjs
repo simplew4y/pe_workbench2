@@ -147,7 +147,9 @@ function safeStaticPath(root, pathname) {
 }
 
 export async function serveStatic({ root, req, res, pathname }) {
-  const filePath = safeStaticPath(root, pathname);
+  const sessionPage = (req.method === "GET" || req.method === "HEAD") &&
+    /^\/sessions\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/?$/i.test(pathname);
+  const filePath = safeStaticPath(root, sessionPage ? "/" : pathname);
   if (!filePath) return false;
   try {
     const stat = await fs.promises.stat(filePath);

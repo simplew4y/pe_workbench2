@@ -41,7 +41,7 @@ const PROJECT = path.join(ROOT, "project");
 await fsp.mkdir(path.join(PROJECT, "exports", "track"), { recursive: true });
 await fsp.mkdir(path.join(PROJECT, "uploads"), { recursive: true });
 await fsp.mkdir(path.join(PROJECT, "inputs"), { recursive: true });
-execFileSync("python3", [
+execFileSync(process.env.PYTHON_BIN || "python3", [
   path.join(import.meta.dirname, "fixtures", "make-workbook-fixture.py"),
   path.join(PROJECT, "uploads", "model.xlsx"),
   "100",

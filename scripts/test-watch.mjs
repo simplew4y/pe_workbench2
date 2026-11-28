@@ -548,6 +548,11 @@ console.log("service 端到端（stub session / stub tools）");
   check("创建后 brief 有基准", created.watch?.brief?.valuation?.base?.value === 62);
   check("欢迎消息存在", store.listWatchMessages({ watchId: created.watch.id }).length === 1);
 
+  check("创建默认关闭", !created.watch.enabled && created.watch.status === "paused" && !created.watch.nextScanAt && !created.watch.nextDeepAt);
+  check("关闭时不扫描", (await service.scan(ctx, created.watch.id)).reason === "disabled");
+  check("关闭时不触发深度复核", (await service.runCheck(ctx, created.watch.id, { trigger:"deep", force:true })).reason === "disabled");
+  const resumed = await service.updateWatch(ctx, created.watch.id, { enabled:true });
+  check("手动开启后安排扫描和深度复核", resumed.enabled && resumed.nextScanAt && resumed.nextDeepAt);
   const scan = await service.scan(ctx, created.watch.id);
   check("规则扫描入库", scan.added >= 2, JSON.stringify(scan));
   check("候选事件可查", store.listWatchEvents({ watchId: created.watch.id }).length >= 2);

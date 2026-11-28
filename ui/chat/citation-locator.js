@@ -18,7 +18,8 @@ const WORD = String.raw`[A-Za-z0-9_.&()\-]+`;
 const MULTI_WORD_SHEET = String.raw`(?:${WORD} ){0,3}${WORD}`;
 const SIMPLE_SHEET = String.raw`[A-Za-z0-9_\u4e00-\u9fff]+`;
 const CELL = String.raw`\$?[A-Za-z]{1,3}\$?\d{1,7}`;
-const SHEET = `(?:${QUOTED_SHEET}|${MULTI_WORD_SHEET}|${SIMPLE_SHEET})`;
+const QUALIFIED_PUNCTUATED_SHEET = String.raw`(?<=\])[A-Za-z0-9_.&()+\-]+(?: [A-Za-z0-9_.&()+\-]+){0,3}`;
+const SHEET = `(?:${QUALIFIED_PUNCTUATED_SHEET}|${QUOTED_SHEET}|${MULTI_WORD_SHEET}|${SIMPLE_SHEET})`;
 
 const QUALIFIER = String.raw`\[([^\[\]\r\n]+)\]`;
 export const LOCATOR_SOURCE = `(?:${QUALIFIER})?${SHEET}!${CELL}(?::${CELL})?(?![A-Za-z0-9_:])`;

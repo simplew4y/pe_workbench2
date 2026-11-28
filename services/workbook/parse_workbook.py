@@ -29,7 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = 12
+PARSER_VERSION = 13
 
 try:
     import openpyxl
@@ -205,6 +205,10 @@ def profile_sheet(
     return label_cols or [1]
 
 
+def row_text_labels(values):
+    return (value.strip() for value in values if is_text(value))
+
+
 def build_labels(
     display: dict[tuple[int, int], Any],
     max_row: int,
@@ -219,13 +223,10 @@ def build_labels(
     """
     row_labels: dict[int, str] = {}
     for row in range(1, max_row + 1):
-        for col in label_cols + [1, 2]:
-            value = display.get((row, col))
-            if is_text(value):
-                text = str(value).strip()
-                if len(text) <= 80 and "\n" not in text:
-                    row_labels[row] = text
-                break
+        values = (display.get((row, col)) for col in label_cols + [1, 2])
+        text = next(row_text_labels(values), "")
+        if text and len(text) <= 80 and "\n" not in text:
+            row_labels[row] = text
 
     col_labels: dict[int, str] = {}
     for col in range(1, max_col + 1):
@@ -253,16 +254,21 @@ PERIOD_HEADER = re.compile(rf"{PERIOD_LABEL}{BASIS_SUFFIX}", re.I)
 LOCAL_PERIOD_HEADER = re.compile(rf"{PERIOD_LABEL}(?:{BASIS_SUFFIX}|\s+(?:P/E|PE|NI|Revenue|EPS).*)", re.I)
 
 
+def period_band(row, values):
+    band = {}
+    for col, value in enumerate(values, 1):
+        raw = str(value).strip()
+        match = PERIOD_HEADER.fullmatch(raw)
+        if match:
+            band[col] = (row, match.group(1), raw)
+    return band
+
+
 def period_headers(display, max_row, max_col):
     """Use a band of neighboring date headers, keeping each original qualifier."""
     headers = {}
     for row in range(1, min(max_row, 9) + 1):
-        band = {}
-        for col in range(1, max_col + 1):
-            raw = str(display.get((row, col), "")).strip()
-            match = PERIOD_HEADER.fullmatch(raw)
-            if match:
-                band[col] = (row, match.group(1), raw)
+        band = period_band(row, (display.get((row, col)) for col in range(1, max_col + 1)))
         for col, value in band.items():
             if col - 1 in band or col + 1 in band:
                 headers[col] = value
@@ -445,6 +451,7 @@ def parse_sheet(
     values: dict[tuple[int, int], Any] = {}
     sheet_formulas: dict[tuple[int, int], str] = {}
     computed: dict[tuple[int, int], Any] = {}
+    number_formats: dict[str, str] = {}
 
     for row in ws.iter_rows(min_row=1, max_row=max_row, max_col=max_col):
         for cell in row:
@@ -454,6 +461,8 @@ def parse_sheet(
             if raw is None:
                 continue
             values[(cell.row, cell.column)] = raw
+            if "%" in str(cell.number_format):
+                number_formats[cell.coordinate] = str(cell.number_format)[:MAX_VALUE_CHARS]
             if isinstance(raw, str) and raw.startswith("="):
                 sheet_formulas[(cell.row, cell.column)] = raw
                 if values_ws is not None:
@@ -508,6 +517,7 @@ def parse_sheet(
 
     sheet = {
         "contextCells": context_cells,
+        "numberFormats": number_formats,
         "name": ws.title,
         "rows": max_row,
         "cols": max_col,

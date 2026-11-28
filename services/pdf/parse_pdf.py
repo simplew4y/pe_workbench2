@@ -295,7 +295,7 @@ def parse_with_pdfplumber(path):
     return pages, headings, scanned, "pdfplumber"
 
 
-def parse_with_pypdf(path):
+def open_pypdf(path):
     try:
         from pypdf import PdfReader
     except Exception as error:
@@ -306,6 +306,11 @@ def parse_with_pypdf(path):
         raise PdfError(f"无法打开 PDF：{error}")
     if reader.is_encrypted:
         raise PdfError("PDF 已加密，无法读取正文；请先解除密码后重新上传。")
+    return reader
+
+
+def parse_with_pypdf(path):
+    reader = open_pypdf(path)
     pages = []
     headings = []
     scanned = []
@@ -336,7 +341,7 @@ def parse_with_pypdf(path):
     return pages, headings, scanned, "pypdf"
 
 
-def extract_tables(path, page_numbers):
+def extract_tables(path, page_numbers, complete=False):
     pdf = open_pdfplumber(path)
     tables = []
     try:
@@ -348,11 +353,13 @@ def extract_tables(path, page_numbers):
             try:
                 found = pdf.pages[number - 1].extract_tables() or []
             except Exception:
+                if complete:
+                    raise
                 found = []
             for table_index, rows in enumerate(found, start=1):
                 cleaned = []
-                for row in rows[:MAX_TABLE_ROWS]:
-                    cleaned.append([norm_text(cell).strip() if cell is not None else "" for cell in row[:MAX_TABLE_COLS]])
+                for row in (rows if complete else rows[:MAX_TABLE_ROWS]):
+                    cleaned.append([norm_text(cell).strip() if cell is not None else "" for cell in (row if complete else row[:MAX_TABLE_COLS])])
                 if not any(any(cell for cell in row) for row in cleaned):
                     continue
                 tables.append(
@@ -364,7 +371,7 @@ def extract_tables(path, page_numbers):
                         "data": cleaned,
                     }
                 )
-            if len(tables) >= 40:
+            if not complete and len(tables) >= 40:
                 break
     finally:
         try:
@@ -420,9 +427,14 @@ def main(argv):
     parser.add_argument("path")
     parser.add_argument("--tables", action="store_true", help="also extract tables (slower)")
     parser.add_argument("--pages", default="", help="only these pages for --tables, e.g. 2-4")
+    parser.add_argument("--calculation-page", type=int, help="extract addressable numeric observations on one page")
     args = parser.parse_args(argv)
     try:
-        document = parse(args.path, tables=args.tables, page_spec=args.pages)
+        if args.calculation_page is not None:
+            from calculation_sources import calculation_sources
+            document = {"facts": calculation_sources(args.path, args.calculation_page)}
+        else:
+            document = parse(args.path, tables=args.tables, page_spec=args.pages)
         json.dump(document, sys.stdout, ensure_ascii=False, separators=(",", ":"))
         sys.stdout.write("\n")
         return 0

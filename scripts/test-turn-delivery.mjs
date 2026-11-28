@@ -595,6 +595,19 @@ sys.stdout.buffer.write(data.getvalue())
           const group = ui.page.locator("#liveTools .tool-group");
           await group.locator(".tool-row.done").nth(2).waitFor({ state: "attached" });
           await checkResults(group, calls, book);
+          const summary = group.locator(':scope > summary');
+          const refresh = () => ui.page.evaluate(async () => {
+            const { runtime } = await import('/ui/runtime.js');
+            await runtime.refreshSnapshot({ watch: false, throwOnError: true });
+          });
+          await summary.focus();
+          await refresh();
+          assert.ok(await group.evaluate(g => g.open && g.querySelector('summary') === document.activeElement));
+          await summary.press('Enter');
+          await refresh();
+          assert.equal(await group.evaluate(g => g.open), false);
+          await summary.press('Enter');
+          assert.ok(await group.evaluate(g => g.open));
         });
         await ui.context.setOffline(true);
         model.resume();
@@ -818,7 +831,9 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
         t.after(model.resume);
         await ui.send("请回答这个问题。");
         await bounded(model.paused, "browser send did not start verification");
-        await ui.page.locator("#liveTools .tool-group").waitFor();
+        const liveGroup = ui.page.locator("#liveTools .tool-group");
+        await liveGroup.locator("summary").click();
+        assert.equal(await liveGroup.evaluate(node => node.open), true);
         assert.equal(await answers(ui.page).count(), 0);
         assert.ok(!(await ui.page.locator("#thread").innerText()).includes(scenario.draft));
         assert.equal(await ui.page.evaluate(() => window.state.streaming), true);
@@ -840,6 +855,10 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
           assert.deepEqual(publicAnswer(row), publicAnswer(record));
         }
         await verifyAnswer();
+        const finishedGroup = answers(ui.page).locator("details.tool-group");
+        assert.equal(await finishedGroup.evaluate(node => node.open), false);
+        const timing = await finishedGroup.locator("summary").innerText();
+        assert.match(timing, /用时 .*秒/);
         if (transport === "legacy") {
           await ui.page.evaluate(record => {
             const stream = window.state.es;
@@ -851,6 +870,7 @@ async function browserDeliveryTests(t, browser, app, base, json, restart) {
         }
         await ui.reload(id);
         await verifyAnswer();
+        assert.equal(await finishedGroup.locator("summary").innerText(), timing);
         await ui.newSession();
         await ui.select(id);
         await verifyAnswer();
@@ -1348,11 +1368,13 @@ await test("Issue #10 regressions through uploads, Pi chat, delivery and refresh
   const config = await loadConfig({ root, env: {
     ASR: "0", WATCH_SCHEDULER: "0", TRACKING_SCHEDULER: "0", MONITOR_SCHEDULER: "0", SOURCE_SCHEDULER: "0",
   } });
-  // Each case starts a new session. Its index calls summarize newly registered workbook facts.
+  // New sessions must create source-linked topics without extra model requests on delivery.
   const topicIndex = registerFauxProvider();
   t.after(() => topicIndex.unregister());
   const topicSummary = "已核验的工作簿指标";
+  let topicProposalCalls = 0;
   const proposeSummary = () => {
+    topicProposalCalls++;
     topicIndex.appendResponses([proposeSummary]);
     return fauxAssistantMessage(JSON.stringify({ summary: topicSummary }));
   };
@@ -1447,7 +1469,9 @@ for filename, value in [('A.xlsx', 111), ('B.xlsx', 222)]:
         assert.equal(record.status, "completed");
         assert.equal(record.text, response);
         const ledger = await readLedger(entry.ctx.root, entry.id);
-        assert.ok(ledger.topics.some(topic => topic.summary === topicSummary && topic.factIds.length));
+        assert.ok(ledger.topics.some(topic => topic.summary && topic.factIds.length &&
+          topic.factIds.every(id => ledger.facts.some(fact => fact.id === id))));
+        assert.equal(topicProposalCalls, 0, 'navigation summaries must not make paid model calls during delivery');
       });
     }
   }
@@ -1643,6 +1667,16 @@ for filename, value in [('A.xlsx', 111), ('B.xlsx', 222)]:
       const { record } = await turn("请帮我列出收入和净利润", [
         ...reads.map(coord => query(a, "Model", coord)), { text: response },
       ], { attachments: [a.path] });
+      if (name === "swapped references before the claims") {
+        // Reconstruct from the two independent cell reads. Do not keep the
+        // draft's switched references or mark the original claims verified.
+        assert.equal(record.status, "partial");
+        assert.match(record.text, /净利润 33（\[A\.xlsx\]Model!B3）/);
+        assert.match(record.text, /收入 111（\[A\.xlsx\]Model!B2）/);
+        assert.ok(!record.text.includes(response));
+        assert.deepEqual(new Set(record.citations.map(c=>c.locator)),new Set(["Model!B2","Model!B3"]));
+        return;
+      }
       assert.equal(record.status, "failed", JSON.stringify(record));
       assert.equal(record.text, "");
       assert.deepEqual(record.citations, []);

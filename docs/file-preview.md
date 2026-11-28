@@ -42,6 +42,7 @@
 ## 运行要求
 
 - Node.js 24+（项目使用 `node:sqlite`）。
+- 估值模型写回还需 Python `lxml` 以保留原始工作簿部件，`pdftotext -layout` 提供中文公告表格的列位置，LibreOffice 负责公式重算。
 - Python 3 + `openpyxl`（与 `workbook_query` 共用）、`pdfplumber` + `pypdf`（PDF 文本；`reportlab` 仅测试 fixture 需要）。
 - 音频转写需要 `.env.local` 的 `ASR_API_KEY`；没有密钥时音频仍可播放，面板会提示配置。`npm run test:asr` 可离线验证完整流程。
 - 修改 `server.mjs` 后需要重启 `npm start`；只改 `app.js` / `styles.css` 刷新页面即可。

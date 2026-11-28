@@ -291,3 +291,40 @@ console.log("cell cite preserves version ambiguity and workbook-scoped ranges an
   assert.equal(buttonCount(html), 1);
   assert.match(html, /data-locator="R&amp;D!B2"[^>]+>\[R&amp;D\.xlsx\]R&amp;D!B2<\/button>/);
 }
+
+// Reading mode keeps source identity and accessibility without exposing long locators.
+{
+  const first=cite('Model!A1',{filename:'Book.xlsx'});
+  const second=cite('Model!B2',{filename:'Book.xlsx'});
+  const html=linkCitations('<p>判断 [Book.xlsx]Model!A1，第二项 Model!B2，再引 Model!A1。</p>',[first,second],{compact:true});
+  assert.equal(buttonCount(html),3);
+  assert.equal((html.match(/>\[1\]<\/button>/g)||[]).length,2);
+  assert.equal((html.match(/>\[2\]<\/button>/g)||[]).length,1);
+  assert.match(html,/aria-label="查看来源 1：Book.xlsx · Model!A1"/);
+  assert.match(html,/data-version="3"/);
+  assert.match(html,/data-locator="Model!A1"/);
+  assert.ok(!html.replace(/<[^>]*>/g,'').includes('Model!'));
+  assert.equal(linkCitations('Model!A1',[],{compact:true}),'Model!A1');
+  const unsafe=linkCitations('Model!Z99',[first],{compact:true});
+  assert.equal(buttonCount(unsafe),0);
+  assert.match(unsafe,/未核验/);
+  const other=cite('Model!A1',{materialId:'other',filename:'Other.xlsx'});
+  const separate=linkCitations('[Book.xlsx]Model!A1、[Other.xlsx]Model!A1',[first,other],{compact:true});
+  assert.match(separate,/>\[1\]<\/button>/);assert.match(separate,/>\[2\]<\/button>/);
+}
+console.log('PASS compact source numbers preserve identity, repeat numbering and unverified boundaries');
+
+{
+  const c=cite('Model!A1');
+  const compact=linkCitations('结论（Model!A1）。但限制（模型假设，Model!A1）。',[c],{compact:true});
+  assert.match(compact,/结论<span class="cell-cite-group">/);
+  assert.ok(compact.includes('（模型假设，'));
+}
+
+{
+  const cell=cite('Model!B2');
+  const formula='<code>=Model!B2*2</code>', block='<pre><code>Model!B2</code></pre>';
+  const html=linkCitations(formula+' '+block+' 取自 <code>Model!B2</code>。',[cell],{compact:true});
+  assert.ok(html.includes(formula) && html.includes(block));
+  assert.equal(buttonCount(html),1);
+}

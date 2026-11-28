@@ -23,7 +23,7 @@ const ui = {
   detection: null,
   typing: false,
   settings: false,
-  submitting: false,
+  pendingEnabled: null,
   markingRead: false,
   wired: false,
   initPromise: null,
@@ -31,6 +31,8 @@ const ui = {
   scrollTarget: null,
   logs: { open: false, loading: false, error: "", logs: [] },
 };
+
+let projectGeneration = 0;
 
 const SEVERITY_LABEL = { critical: "重大", warning: "关注", info: "提示" };
 const CONFIDENCE_LABEL = { high: "高", medium: "中", low: "低" };
@@ -111,16 +113,20 @@ export async function loadWatch() {
   ui.loading = true;
   ui.error = "";
   renderPanel();
+  const generation = projectGeneration;
   const run = (async () => {
     try {
       const data = await api("/api/watch");
+      if (generation !== projectGeneration) return;
       applyOverview(data);
       ui.loaded = true;
     } catch (error) {
-      ui.error = error.message || "加载盯盘失败";
+      if (generation === projectGeneration) ui.error = error.message || "加载盯盘失败";
     } finally {
-      ui.loading = false;
-      renderPanel();
+      if (generation === projectGeneration) {
+        ui.loading = false;
+        renderPanel();
+      }
     }
   })();
   ui.initPromise = run;
@@ -153,6 +159,9 @@ export function renderPanel() {
   const newTrack = $("#newTrackBtn");
   if (newTrack) newTrack.hidden = true;
 
+  const toggle = $("#watchAuto");
+  toggle.checked = ui.pendingEnabled ?? Boolean(ui.watch?.enabled);
+  toggle.disabled = ui.pendingEnabled !== null || ui.loading || (!ui.watch && (!ui.detection?.found || ui.detection.baseValue == null));
   renderStatus();
   renderThread();
   syncComposer();
@@ -207,7 +216,7 @@ function renderStatus() {
       <strong>${esc(main)}</strong>
       <span class="watch-status-actions">
         <button class="watch-icon-btn" data-watch-logs aria-label="检查日志" title="检查日志">${icon("history", 14)}</button>
-        <button class="watch-icon-btn" data-watch-check aria-label="立即检查" title="立即检查" ${watch.status === "checking" ? "disabled" : ""}>${icon("refresh", 14)}</button>
+        <button class="watch-icon-btn" data-watch-check aria-label="立即检查" title="立即检查" ${!watch.enabled || watch.status === "checking" ? "disabled" : ""}>${icon("refresh", 14)}</button>
         <button class="watch-icon-btn" data-watch-settings aria-label="盯盘设置" title="盯盘设置">${icon("more", 14)}</button>
       </span>
     </div>
@@ -228,9 +237,8 @@ function renderThread() {
   if (!ui.messages.length) {
     parts.push(`<div class="watch-empty">
       <span class="watch-empty-icon">${icon("search", 17)}</span>
-      <h3>已开始盯住</h3>
-      <p>我会在后台定期扫一遍公告、财报和新闻，只有重大发现才会出现在这里。</p>
-      <button class="btn small" data-watch-check>现在检查一次</button>
+      <h3>${ui.watch.enabled ? "已开始盯住" : "自动盯盘已关闭"}</h3>
+      ${ui.watch.enabled ? '<p>我会在后台定期扫一遍公告、财报和新闻，只有重大发现才会出现在这里。</p><button class="btn small" data-watch-check>现在检查一次</button>' : ''}
     </div>`);
   }
   for (const message of ui.messages) {
@@ -344,9 +352,7 @@ function renderSetup() {
       ${warnings.length ? `<p class="watch-setup-warn">${esc(warnings.join("；"))}</p>` : ""}
     </div>
     <p class="watch-setup-hint">只读：不会改报告、analysis-state.json 或模型。没有重大发现就不打扰你。</p>
-    <div class="watch-setup-actions">
-      <button class="btn primary small" data-watch-start ${ui.submitting || !canStart ? "disabled" : ""}>${ui.submitting ? "正在开始…" : canStart ? "开始盯住" : "缺少基准估值"}</button>
-    </div>
+    ${canStart ? "" : '<p class="watch-setup-warn">缺少基准估值，暂时无法开启自动盯盘。</p>'}
   </div>`;
 }
 
@@ -354,10 +360,6 @@ function renderSettings() {
   const watch = ui.watch;
   return `<div class="watch-setup-card watch-settings">
     <h4 style="margin-bottom:2px">盯盘设置</h4>
-    <label class="watch-toggle">
-      <span>启用盯盘</span>
-      <input type="checkbox" id="watchEnabledEdit" ${watch.enabled ? "checked" : ""}>
-    </label>
     <button type="button" class="watch-log-link" data-watch-logs>${icon("history", 12)} 查看检查日志</button>
     ${focusHTML({
       base: watch.brief?.valuation?.base,
@@ -365,7 +367,6 @@ function renderSettings() {
       falsifiers: watch.brief?.falsifiers,
     }, { id: "watchFocusSettings" })}
     <div class="watch-setup-actions">
-      <button class="btn small" data-watch-save>保存</button>
       <button class="btn small" data-watch-refresh>重建关注点</button>
     </div>
     <div class="watch-setup-actions">
@@ -684,24 +685,27 @@ function closeLogs() {
 
 /* ---------- actions ---------- */
 
-async function startWatch() {
-  if (ui.submitting) return;
-  ui.submitting = true;
-  renderThread();
+async function setAutoWatch(enabled) {
+  if (ui.pendingEnabled !== null) return;
+  const generation = projectGeneration;
+  const id = ui.watch?.id;
+  ui.pendingEnabled = enabled;
+  renderPanel();
   try {
-    const data = await api("/api/watch", { method: "POST", body: {} });
-    ui.watch = data.watch;
-    ui.messages = data.messages || [];
-    ui.checks = data.checks || [];
-    ui.detection = null;
-    toast("已开始盯住");
-    if (state.panelTab !== "watch") setPanelTab("watch");
-    renderPanel();
+    if (id) {
+      const data = await api(`/api/watch/${encodeURIComponent(id)}`, { method: "PATCH", body: { enabled } });
+      if (generation === projectGeneration) ui.watch = data.watch;
+    } else if (enabled) {
+      const data = await api("/api/watch", { method: "POST", body: { enabled: true } });
+      if (generation === projectGeneration) applyOverview(data);
+    }
   } catch (error) {
-    toast(error.message || "开始盯盘失败");
+    if (generation === projectGeneration) toast(error.message || "盯盘设置保存失败");
   } finally {
-    ui.submitting = false;
-    renderThread();
+    if (generation === projectGeneration) {
+      ui.pendingEnabled = null;
+      renderPanel();
+    }
   }
 }
 
@@ -717,22 +721,6 @@ async function runCheck(deep = false) {
     renderStatus();
   } catch (error) {
     toast(error.message || "启动检查失败");
-  }
-}
-
-async function saveSettings() {
-  if (!ui.watch) return;
-  try {
-    const body = {
-      enabled: $("#watchEnabledEdit") ? $("#watchEnabledEdit").checked : ui.watch.enabled,
-    };
-    const data = await api(`/api/watch/${encodeURIComponent(ui.watch.id)}`, { method: "PATCH", body });
-    ui.watch = data.watch;
-    ui.settings = false;
-    renderPanel();
-    toast("设置已保存");
-  } catch (error) {
-    toast(error.message || "保存失败");
   }
 }
 
@@ -826,6 +814,7 @@ function wire() {
     setPanelTab(tab.dataset.panel);
   });
 
+  $("#watchAuto")?.addEventListener("change", event => void setAutoWatch(event.target.checked));
   const root = watchRoot();
   root?.addEventListener("click", (event) => {
     if (event.target.closest("[data-watch-logs]")) {
@@ -839,10 +828,6 @@ function wire() {
         panel.hidden = !panel.hidden;
         focusToggle.setAttribute("aria-expanded", String(!panel.hidden));
       }
-      return;
-    }
-    if (event.target.closest("[data-watch-start]")) {
-      void startWatch();
       return;
     }
     if (event.target.closest("[data-watch-retry]")) {
@@ -863,10 +848,6 @@ function wire() {
     if (event.target.closest("[data-watch-close-settings]")) {
       ui.settings = false;
       renderThread();
-      return;
-    }
-    if (event.target.closest("[data-watch-save]")) {
-      void saveSettings();
       return;
     }
     if (event.target.closest("[data-watch-refresh]")) {
@@ -950,6 +931,9 @@ export function initWatch() {
 }
 
 export function resetWatch() {
+  projectGeneration++;
+  ui.loading = false;
+  ui.initPromise = null;
   ui.watch = null;
   ui.messages = [];
   ui.checks = [];
@@ -958,7 +942,7 @@ export function resetWatch() {
   ui.loaded = false;
   ui.typing = false;
   ui.settings = false;
-  ui.submitting = false;
+  ui.pendingEnabled = null;
   ui.markingRead = false;
   ui.scrollTarget = null;
   ui.scrollBottom = true;

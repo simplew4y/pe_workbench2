@@ -1,0 +1,180 @@
+import fs from 'node:fs';
+import {recordedFactContext} from './recorded-fact-context.mjs';
+import path from 'node:path';
+import os from 'node:os';
+import {lintLedgerAnswer} from '../lib/answer-lint.mjs';
+import {researchPortion} from '../server/agent/answer-delivery.mjs';
+import {isResearchQuestion} from '../lib/research-task.mjs';
+import {questionWithoutAttachments} from '../lib/answer-length.mjs';
+import {findingKey,reconcileEvidence} from '../lib/evidence-reconciliation.mjs';
+import {artifactDeliveryFindings,artifactDeliverySummary} from '../lib/artifact-delivery.mjs';
+import {createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+import {runWithPostAnswer} from '../server/agent/post-answer.mjs';
+import {publishFinalReport} from '../lib/report-publication.mjs';
+const args=process.argv.slice(2);
+const turnArg=args.find(arg=>arg.startsWith('--turn='));
+const [input,output,projectRoot]=args.filter(arg=>!arg.startsWith('--'));
+if(!input || !output)throw new Error('Usage: node scripts/replay-research-delivery.mjs session.jsonl output-dir [project-root] [--turn=N]');
+globalThis.fetch=()=>{throw new Error('Network disabled in recorded replay');};
+const allRows=fs.readFileSync(input,'utf8').trim().split('\n').map(JSON.parse);
+// A multi-round session is replayed one user turn at a time. Earlier turns are
+// restored as prior history; later turns are never fed into this turn.
+const turnStarts=allRows.flatMap((row,index)=>row.customType==='pe_turn_started'?[index]:[]);
+const turn=turnArg?Number(turnArg.slice('--turn='.length)):null;
+if(turn!==null && !(Number.isInteger(turn) && turn>=1 && turn<=turnStarts.length))throw new Error(`--turn must be 1..${turnStarts.length}`);
+const rows=turn===null?allRows:allRows.slice(turnStarts[turn-1],turnStarts[turn] ?? allRows.length);
+const priorRows=turn===null?[]:allRows.slice(0,turnStarts[turn-1]);
+const priorMessages=priorRows.filter(r=>r.message).map(r=>r.message);
+const visibleHistory=priorRows.filter(r=>r.customType==='pe_turn_delivery').map(r=>r.data?.text).filter(Boolean);
+const messages=rows.filter(r=>r.message).map(r=>r.message);
+const text=m=>typeof m?.content==='string'?m.content:(m?.content || []).filter(p=>p.type==='text').map(p=>p.text).join('\n');
+const persistedQuestion=text(messages.find(m=>m.role==='user'));
+const startedTurn=rows.find(r=>r.customType==='pe_turn_started')?.data;
+const question=startedTurn?.question ?? questionWithoutAttachments(persistedQuestion);
+const researchTurn=isResearchQuestion(question,priorMessages.filter(m=>m.role==='user').map(text).join('\n'));
+const attachments=startedTurn?.attachments || persistedQuestion.split('\n\n[已上传资料]\n')[1]?.split('\n').filter(s=>s.startsWith('- ')).map(s=>s.slice(2)) || [];
+const calls=[],pending=new Map(),files=new Map(),recordedReceipts=new Map();
+const hash=s=>createHash('sha256').update(s).digest('hex');
+const snapshotBodies=new Map();
+const fileReceipts=()=>[...new Map([...files].map(([filename,content])=>[filename,hash(content)]).concat([...recordedReceipts])).entries()].flatMap(([filename,digest])=>{
+ if(!filename.startsWith('exports/') || filename.split('/').includes('..'))return [];
+ // Replay successful writes as recorded, before the host's final publication
+ // replaced the active state. Current project files may be a later version.
+ if(files.has(filename) && hash(files.get(filename))===digest){snapshotBodies.set(filename,files.get(filename));return [{path:filename,saved:true,sha256:digest}];}
+ if(!projectRoot)return [];
+ const dest=path.resolve(projectRoot,filename),exportsRoot=path.resolve(projectRoot,'exports')+path.sep;
+ if(dest.startsWith(exportsRoot) && fs.existsSync(dest) && hash(fs.readFileSync(dest))===digest){snapshotBodies.set(filename,fs.readFileSync(dest));return [{path:filename,saved:true,sha256:digest}];}
+ return [];
+});
+fs.mkdirSync(output,{recursive:true});
+let draft='',draftMessage,index=0;const results=[],draftMessages=[],lintRecords=[];
+for(const row of rows) {
+ const message=row.message;
+ if(message?.role==='assistant')for(const c of Array.isArray(message.content)?message.content:[])if(c.type==='toolCall')pending.set(c.id,c);
+ if(message?.role==='toolResult' && pending.has(message.toolCallId)) {
+  const c=pending.get(message.toolCallId);
+  calls.push({id:c.id,name:c.name,args:c.arguments,success:!message.isError,result:message,details:message.details});
+  if(!message.isError)for(const match of text(message).matchAll(/\[research_write_verified\]\s+([^\n]+?)\s+sha256=([a-f0-9]{64})/g))recordedReceipts.set(match[1],match[2]);
+  if(!message.isError && typeof c.arguments?.path==='string') {
+   if(c.name==='write' && typeof c.arguments.content==='string')files.set(c.arguments.path,c.arguments.content);
+   if(c.name==='edit' && files.has(c.arguments.path)) {
+    let content=files.get(c.arguments.path);
+    for(const edit of c.arguments.edits || [c.arguments]) {
+     assert.equal(content.split(edit.oldText).length,2,'Replay requires an unambiguous recorded edit');
+     content=content.replace(edit.oldText,()=>edit.newText);
+    }
+    files.set(c.arguments.path,content);
+   }
+  }
+ }
+ if(row.message?.role==='assistant' && row.message.stopReason==='stop'){draft=text(row.message);draftMessage=row.message;}
+ if(row.customType!=='pe_answer_lint')continue;
+ draftMessages.push(draftMessage);lintRecords.push(row.data);
+ const scenarioBindings=[];
+ const citations=row.data.citations || [],context={question,citations,toolCalls:calls,onVerifiedQuantity:binding=>{
+   if(binding.sourceIds?.some(id=>calls.some(c=>c.id===id && c.name==='model_whatif')))scenarioBindings.push(binding);
+ }};
+ const started=performance.now();const findings=lintLedgerAnswer(draft,{facts:[]},{...context,locatorFindings:row.data.findings});
+ const summary=Object.fromEntries([...new Set(findings.map(f=>f.evidenceStatus))].map(key=>[key,findings.filter(f=>f.evidenceStatus===key && f.severity==='error').length]));
+ const receipts=new Map((row.data.findings || []).filter(f=>f.evidenceStatus==='semantic_supported').map(f=>[findingKey(f),f]));
+ const artifacts=fileReceipts();
+ const merged=[...findings.map(f=>({...f,...receipts.get(findingKey(f)),sourceText:f.sourceText})),...(row.data.findings || []).filter(f=>!['unsourced_number','evidence_identity_mismatch','orphaned_number'].includes(f.rule)),...artifactDeliveryFindings(draft,artifacts)];
+ // This is a research-span diagnostic, not an alternate task router. Lookup
+ // turns are validated only by the actual finalizer below.
+ let retained=researchTurn?researchPortion(draft,()=>{throw new Error('Isolated paragraph must not be revalidated');},merged,citations,{visibleHistory,question}):'';
+ const normalize=s=>s.replace(/[*`#]/g,'').replace(/\s+/g,' ').trim();
+ const leaked=merged.filter(f=>f.severity==='error' && (f.sourceText || f.excerpt) && normalize(retained).includes(normalize(f.sourceText || f.excerpt)));
+ assert.equal(leaked.length,0,JSON.stringify(leaked.map(f=>({rule:f.rule,excerpt:f.excerpt})),null,2));
+ const delivery=artifactDeliverySummary(artifacts);
+ if(delivery)retained+='\n\n'+delivery;
+ const result={index:++index,diagnosticRoute:researchTurn?'research':'skipped_lookup',draftChars:draft.length,retainedChars:retained.length,scenarioBindings,elapsedMs:performance.now()-started,toolCalls:calls.length,files:artifacts,blockedSpanLeaks:leaked.length,summary,findings:merged,recordedFindings:row.data.findings};
+ fs.writeFileSync(path.join(output,`draft-${index}.md`),draft);
+ fs.writeFileSync(path.join(output,`retained-${index}.md`),retained);
+ fs.writeFileSync(path.join(output,`draft-${index}.json`),JSON.stringify(result,null,2));
+ results.push({...result,findings:undefined,recordedFindings:undefined});console.log(results.at(-1));
+}
+fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({input,network:false,question,attachments,researchTurn,toolCalls:calls.length,drafts:results},null,2));
+
+// Replay the actual final-delivery state machine too. The model is a tape of
+// recorded drafts, tools are already-recorded results, and fetch is disabled.
+// This cannot predict how a live model will rewrite after a changed audit.
+const correctionArg=args.find(arg=>arg.startsWith('--review-corrections='));
+const queuedCorrections=correctionArg?JSON.parse(fs.readFileSync(correctionArg.slice('--review-corrections='.length),'utf8')):{};
+const bindingRequests=[];
+const records=[],requests=[],sessionMessages=structuredClone(priorMessages);let generations=0;
+const branch=structuredClone(priorRows);
+let recordedMemory;
+const appendMessage=message=>{recordedMemory?.observe(message);sessionMessages.push(message);branch.push({type:'message',message});};
+let replayCursor=0;
+const session={messages:sessionMessages,sessionManager:{getBranch:()=>branch,appendCustomEntry(type,data){records.push({type,data});branch.push({type:'custom',customType:type,data});}},
+ async prompt(){
+  assert(generations<8,'Unexpected replay loop; do not call a paid provider');
+  const next=draftMessages[Math.min(generations++,draftMessages.length-1)];
+  const at=messages.indexOf(next);
+  // Retries can read or recalculate between drafts. Replay those receipts at
+  // their original point, never discard them or leak them into earlier drafts.
+  for(const message of structuredClone(messages.slice(replayCursor,at).filter(m=>m.role==='toolResult' ||
+    m.role==='assistant' && Array.isArray(m.content) && m.content.some(p=>p.type==='toolCall'))))appendMessage(message);
+  replayCursor=Math.max(replayCursor,at+1);
+  appendMessage(structuredClone(next));
+  if(queuedCorrections[generations-1])assert.ok(entry.activeTurn.queueReviewCorrection(queuedCorrections[generations-1]));
+ },
+ async sendCustomMessage(message,options){requests.push(message);if(options.triggerTurn)await this.prompt();}
+};
+const replayRoot=fs.mkdtempSync(path.join(os.tmpdir(),'research-delivery-replay-'));
+if (process.argv.includes('--recorded-facts')) {
+ recordedMemory=recordedFactContext(replayRoot,allRows.find(r=>r.type==='session')?.id);
+ priorMessages.forEach(recordedMemory.observe);
+}
+// A supplied contemporaneous project query restores pre-existing facts used
+// by the live finalizer. Only the exact unfiltered lookup can use this window.
+const factWindowArg=args.find(arg=>arg.startsWith('--fact-window='));
+if(factWindowArg) {
+ const window=JSON.parse(fs.readFileSync(factWindowArg.slice('--fact-window='.length),'utf8'));
+ assert.ok(recordedMemory && window.facts.length===100 && window.facts.every(f=>f.created_at<window.asOf));
+ assert.ok(Date.parse(window.asOf)<=Date.parse(rows.find(r=>r.customType==='pe_turn_started').timestamp));
+ const query=recordedMemory.query.bind(recordedMemory);
+ const recordedRoot=allRows.find(row=>row.type==='session')?.cwd;
+ assert.equal(path.basename(recordedRoot),window.projectId);
+ recordedMemory.query=(filters={})=>Object.keys(filters).length===1 && filters.limit===100 ?
+   {status:'ambiguous',facts:window.facts,coverage:'project_registered_only'} : query(filters);
+}
+const published=[];
+const finalReceipts=()=>[...new Map([...fileReceipts(),...published].map(r=>[r.path,r])).values()];
+for(const receipt of fileReceipts()) {
+ const destination=path.join(replayRoot,receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
+ fs.writeFileSync(destination,snapshotBodies.get(receipt.path));
+}
+const lastReport=calls.findLast(c=>(c.name==='review_research' && c.args?.save || c.name==='write') && c.args?.path?.startsWith('exports/') && c.args.path.endsWith('.md'));
+const reportDraft=lastReport ? {path:lastReport.args.path,content:lastReport.args.content,saveRequested:true,saved:false,baseline:
+ fs.existsSync(path.join(replayRoot,lastReport.args.path)) ? hash(fs.readFileSync(path.join(replayRoot,lastReport.args.path))) : null,
+ issues:lastReport.success?[]:['录制的报告审校未通过']} : null;
+let deliveryRecord;
+const entry={session,ctx:{root:replayRoot,factMemory:recordedMemory},artifactSnapshot:finalReceipts,
+ publishReportDelivery:(outcome,question)=>publishFinalReport({root:replayRoot,draft:reportDraft,outcome,question,receipts:finalReceipts(),record:receipt=>{
+  published.push(receipt);
+  const destination=path.join(output,'published',receipt.path);fs.mkdirSync(path.dirname(destination),{recursive:true});
+  fs.copyFileSync(path.join(replayRoot,receipt.path),destination);
+ }}),
+ reconcileEvidence:async(answer,findings,context)=>{
+  // The finalizer expands workbook filenames before calling reconciliation.
+  // Select the corresponding generation, then require the same finding,
+  // source text and currently eligible original source before reusing a decision.
+  const recorded=lintRecords[Math.min(generations,draftMessages.length)-1];
+  const accepted=(recorded?.findings || []).filter(f=>f.evidenceStatus==='semantic_supported');
+  return reconcileEvidence(findings,context,pending=>{bindingRequests.push({generation:generations,candidates:pending.length});return {decisions:pending.flatMap(p=>{
+   const match=accepted.find(f=>findingKey(f)===findingKey(p.finding) && f.sourceText===p.finding.sourceText &&
+    p.sources.some(s=>f.evidenceIds?.includes(s.id)));
+   return match?[{index:p.index,status:'supported',sourceId:p.sources.find(s=>match.evidenceIds.includes(s.id)).id,
+    reason:match.reviewReason || match.message}]:[];
+  })};});
+ }};
+try {deliveryRecord=await runWithPostAnswer(entry,question,{attachments});
+ if(published.length)fs.cpSync(path.join(replayRoot,'exports'),path.join(output,'published','exports'),{recursive:true});
+} finally {recordedMemory?.close();fs.rmSync(replayRoot,{recursive:true,force:true});}
+assert(['partial','completed'].includes(deliveryRecord.status),JSON.stringify(deliveryRecord));
+assert.deepEqual(artifactDeliveryFindings(deliveryRecord.text,finalReceipts()),[],'Final persisted delivery must agree with file readback receipts');
+fs.writeFileSync(path.join(output,'delivery.json'),JSON.stringify({network:false,generations,bindingRequests,delivery:deliveryRecord,requests,records},null,2));
+fs.writeFileSync(path.join(output,'delivered.md'),deliveryRecord.text);
+console.log({actualPostprocessor:deliveryRecord.status,deliveredChars:deliveryRecord.text.length,generations,network:false});

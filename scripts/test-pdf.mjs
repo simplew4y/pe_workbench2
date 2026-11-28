@@ -19,6 +19,10 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Store } from "../store.mjs";
 import { PdfStore } from "../lib/pdf-store.mjs";
+import { createCalcTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
+import { createPdfBindingResolver } from "../lib/calc-source.mjs";
+import { collectCitationsFromToolCalls, derivedEvidenceIssue } from "../lib/citations.mjs";
+import { mentionedPdfCalculations, deliverPdfCalculationLinks } from "../ui/chat/pdf-calculation-links.js";
 import { createPdfTool } from "../lib/pdf-tool.mjs";
 import { parsePageSpec } from "../lib/pdf-query.mjs";
 
@@ -180,6 +184,44 @@ async function main() {
       const wrong = await tool.execute("t5", { path: "uploads/note.txt" });
       assert.equal(wrong.isError, true);
       assert.match(wrong.content[0].text, /只能读取 \.pdf/);
+    });
+
+    await test("versioned PDF numbers preserve row, column, period and result links", async () => {
+      const resolvePdfBinding = createPdfBindingResolver(pdfs);
+      const pdf = createPdfTool({store,pdfs,workspace});
+      const read = await pdf.execute("read-numbers",{mode:"numbers",page:"2",path:"uploads/test-report.pdf"});
+      assert.ok(!read.isError, read.details.error);
+      const facts = read.details.citations;
+      const current = facts.find(c=>c.metric==="设备支出" && c.period==="2024");
+      const prior = facts.find(c=>c.metric==="设备支出" && c.period==="2023");
+      assert.ok(current && prior);
+      assert.match(current.excerpt,/人民币百万元/);
+      assert.match(current.excerpt,/1,750.*2,500/);
+      const repeated = facts.filter(c=>c.value==="900");
+      assert.equal(repeated.length,2);
+      assert.notEqual(repeated[0].id,repeated[1].id);
+      assert.notEqual(repeated[0].period,repeated[1].period);
+      const calc = createCalcTool({resolvePdfBinding,projectId:store.projectId});
+      const difference = await calc.execute("difference",{expression:"cur-prev",outputUnit:"百万元",bindings:{cur:current,prev:prior}});
+      assert.equal(difference.details.results[0].value,"750");
+      assert.deepEqual(difference.details.results[0].citations[0].derivedFrom,[current.id,prior.id]);
+      const convert = createUnitConvertTool({resolveBinding:resolvePdfBinding,projectId:store.projectId});
+      const params = {citations:[current],value:2500,from_unit:"百万元",to_unit:"亿元"};
+      const out = await convert.execute("convert",params);
+      assert.equal(out.details.value,"25");
+      const call = {name:"unit_convert",id:"convert",args:params,details:out.details};
+      const citations = collectCitationsFromToolCalls([call]);
+      const result = citations.find(c=>c.derivedFrom);
+      assert.equal(derivedEvidenceIssue(result,new Map(citations.map(c=>[c.id,c])),[call]),null);
+      const text = "2024年设备支出25亿元（p.2）。";
+      const linked = deliverPdfCalculationLinks(text,mentionedPdfCalculations(text,citations),store.projectId);
+      assert.match(linked,/设备支出\[25 亿元\]\(\/api\/materials\/[^/]+\/versions\/1\/file\?.*#page=2\)/);
+      for (const change of [{period:prior.period},{excerpt:"其他数值"},{version:2},{value:1750}]) {
+        assert.ok((await convert.execute("wrong",{...params,citations:[{...current,...change}]})).isError);
+      }
+      for (const change of [{value:1750},{from_unit:"万元"},{currency:"USD"}]) {
+        assert.ok((await convert.execute("wrong",{...params,...change})).isError);
+      }
     });
 
     if (REAL_FILE) {

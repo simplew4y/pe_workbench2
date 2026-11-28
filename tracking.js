@@ -668,7 +668,7 @@
     detailOverlay.hidden = false;
     $('#trackDialog')?.focus();
     if (t.running) watchRun(id);
-    if (t.template === 'framework') void loadModelInfo(id);
+    if (['framework', 'model'].includes(t.template)) void loadModelInfo(id);
   }
 
   function closeDetail(restoreFocus = true) {
@@ -707,9 +707,10 @@
         </header>
         <div class="track-body">
           ${notificationsHTML(t)}
-          ${t.template === 'framework' ? modelHTML(t) : ''}
+          ${['framework', 'model'].includes(t.template) ? modelHTML(t) : ''}
           ${monitorsHTML(t)}
           ${t.running ? runningHTML(t) : resultHTML(t, result)}
+          ${!t.running && t.approvals?.some(a => ['pending_approval', 'approved', 'applying'].includes(a.status)) ? '<div data-track-approval>审批详情加载中…</div>' : ''}
         </div>
         <footer class="track-foot">
           <div class="track-foot-left">
@@ -722,6 +723,22 @@
           </div>
         </footer>
       </div>`;
+    const pending = t.approvals?.find(a => ["pending_approval", "approved", "applying"].includes(a.status));
+    if (pending && !t.running) void renderModelApproval(pending.id);
+  }
+
+  async function renderModelApproval(id) {
+    const container = $('[data-track-approval]', detailOverlay);
+    if (!container) return;
+    try {
+      const [approval, { approvalCardHTML }] = await Promise.all([
+        api(`/api/approvals/${encodeURIComponent(id)}`),
+        import('./ui/tool-renderers/registry.js'),
+      ]);
+      if (container.isConnected) container.innerHTML = approvalCardHTML(approval.payload, { approval });
+    } catch (error) {
+      container.textContent = error.message || '审批详情加载失败';
+    }
   }
 
   const MONITOR_STATUS_LABEL = {
@@ -773,14 +790,40 @@
         <div class="model-box">
           <div class="model-row"><span>工作模型</span><strong>${esc(working || '尚未准备')}</strong></div>
           <div class="model-row"><span>单元格映射</span><strong>${verified} / ${bindings.length} 已确认</strong></div>
-          <div class="model-row"><span>校验输出</span><strong>${outputs.map(output => output.label || `${output.sheet}!${output.cell}`).join('、') || '—'}</strong></div>
+          <div class="model-row"><span>校验输出</span><strong>${esc(outputs.map(output => output.label || `${output.sheet}!${output.cell}`).join('、') || '—')}</strong></div>
           ${model.last_applied ? `<div class="model-row"><span>最近写回</span><strong>${esc(String(model.last_applied.at || '').slice(0, 16))}</strong></div>` : ''}
           <div class="monitor-actions">
             ${working ? '' : `<button class="btn" data-track-prepare-model>准备工作模型</button>`}
-            <span class="model-hint">${model.write_enabled === true ? 'Agent 可在监测触发时改写工作模型并重算' : '需要确认绑定并启用写回后，Agent 才会改模型'}</span>
+            <span class="model-hint">${model.write_enabled === true ? '变更经审批后写入工作模型并重算' : '需要确认绑定并启用写回后，Agent 才会改模型'}</span>
           </div>
+          ${working ? `<details class="model-mapping">
+            <summary>设置单元格映射</summary>
+            <form data-track-model-form>
+              <div class="model-mapping-list" data-model-rows="input">${bindings.map(item => modelMappingRow('input', item)).join('')}</div>
+              <button type="button" class="btn" data-model-add="input">添加输入映射</button>
+              <div class="model-mapping-list" data-model-rows="output">${outputs.map(item => modelMappingRow('output', item)).join('')}</div>
+              <button type="button" class="btn" data-model-add="output">添加校验输出</button>
+              <div class="monitor-actions">
+                <label><input type="checkbox" name="writeEnabled" ${model.write_enabled === true ? 'checked' : ''}> 启用审批写回</label>
+                <button class="btn primary" type="submit">保存映射</button>
+              </div>
+              <p data-model-error role="alert" hidden></p>
+            </form>
+          </details>` : ''}
         </div>
       </section>`;
+  }
+
+  function modelMappingRow(kind, entry = {}) {
+    const input = kind === 'input';
+    return `<div class="model-mapping-row" data-model-row="${kind}">
+      <label>${input ? '输入指标' : '输出名称'}<input name="label" value="${esc(entry.metric || entry.label || '')}" required></label>
+      <label>工作表<input name="sheet" value="${esc(entry.sheet || '')}" required></label>
+      <label>单元格<input name="cell" value="${esc(entry.cell || '')}" placeholder="A1" required></label>
+      ${input ? `<label>口径备注<input name="note" value="${esc(entry.note || '')}"></label>
+      <label class="model-mapping-check"><input name="verified" type="checkbox" ${entry.verified === true ? 'checked' : ''}> 确认输入格</label>` : ''}
+      <button type="button" class="btn" data-model-remove>移除</button>
+    </div>`;
   }
 
   function notificationsHTML(t) {
@@ -956,6 +999,19 @@
           </div>
         </details>`
       : '';
+    const model = wb?.model;
+    const analysis = model?.analysis;
+    const number = value => value == null ? '缺少基准' : String(value);
+    const comparison = analysis?.comparisons.map(row => {
+      const kind = {actual: '本期原值与实际', forecast: '后续预测修订', output: '估值 / 指定输出'}[row.kind];
+      const trend = row.sameDirection == null ? '' : row.sameDirection ? '，趋势一致' : '，趋势不同';
+      const change = row.relative == null ? '' : `（${(row.relative * 100).toFixed(1)}%）`;
+      return `<li>${esc(kind)} · ${esc(row.metric)} ${esc(row.period || '')}（${esc(row.ref)}）：${esc(number(row.before))} → ${esc(number(row.after))} ${esc(row.unit || '')} ${esc(change + trend)}</li>`;
+    }).join('');
+    const checkRows = analysis?.checks.map(row =>
+      `<li>${esc(row.ref)}：${esc(number(row.before))} → ${esc(number(row.after))}（容差 ${esc(row.tolerance)}，${row.status === 'pass' ? '通过' : '原有问题'}）</li>`).join('');
+    const fileUrl = model?.materialId && model.version
+      ? `/api/materials/${encodeURIComponent(model.materialId)}/versions/${model.version}/file?download=1&project=${encodeURIComponent(t.projectId)}` : '';
     const writeback = wb
       ? `<section class="track-sec">
           <div class="track-sec-head"><h4>写回了什么</h4><span>${esc(wb.stats)}</span></div>
@@ -965,6 +1021,9 @@
               <strong>${esc(wb.mode)}</strong>
             </div>
             <p>${esc(wb.note)}</p>
+            ${fileUrl ? `<a href="${esc(fileUrl)}">下载工作模型 v${esc(model.version)}</a>` : ''}
+            ${comparison ? `<h4>本次财报对模型的影响</h4><ul>${comparison}</ul>` : ''}
+            ${analysis ? `<details><summary>模型勾稽（${analysis.checks.length}）</summary>${checkRows ? `<ul>${checkRows}</ul>` : '未识别原生 Check 行'}</details>` : ''}
             ${wbChanges}
           </div>
         </section>`
@@ -973,7 +1032,7 @@
       ? `<section class="track-sec">
           <div class="track-sec-head"><h4>数据与来源</h4><span>截止 ${esc((result.asOf || '').slice(0, 10))}</span></div>
           <div class="sources-row">
-            ${result.sources.map(s => `<span class="source-chip">${ic('database', 12)}<span>${esc(s.label)}</span><em>${esc(s.date)}</em></span>`).join('')}
+            ${result.sources.map(s => `<span class="source-chip">${ic('database', 12)}<span>${s.label === result.writeback?.coverage?.source && /^https:\/\//i.test(result.writeback.coverage.sourceUrl || "") ? `<a href="${esc(result.writeback.coverage.sourceUrl)}" target="_blank" rel="noopener noreferrer">公告原文</a>` : esc(s.label)}</span><em>${esc(s.date)}</em></span>`).join('')}
           </div>
           ${result.notUsed && result.notUsed.length ? `<p class="not-used">未使用：${result.notUsed.map(esc).join('、')}</p>` : ''}
         </section>`
@@ -988,7 +1047,11 @@
           <em>下面保留最近一次有调整的结论（${esc(String(result.asOf).slice(0, 10))}）</em>
         </div>`
       : '';
-    const eyebrow = hasNewerCheck ? '最近一次调整' : isReview ? '等待确认' : isNoChange ? '本期检查' : '本期结论';
+    const modelStatus = t.template === 'model' && (result.writeback?.model ? '已更新工作模型'
+      : ({ pending_approval: '待审批写回', approved: '已批准', applying: '正在写回', rejected: '审批已拒绝', conflict: '审批冲突', failed: '写回失败' })[result.writeback?.approval?.status]
+        || (result.writeback?.plan_files?.length ? '已生成变更计划'
+          : result.writeback?.coverage ? '公告核对 · 未写回' : '跟踪完成 · 未写回'));
+    const eyebrow = modelStatus || (hasNewerCheck ? '最近一次调整' : isReview ? '等待确认' : isNoChange ? '本期检查' : '本期结论');
     return `
       ${checkStrip}
       <section class="result-hero">
@@ -996,8 +1059,11 @@
           <span class="rh-eyebrow"><span class="dot ${isReview ? 'warn' : 'ok'}"></span>${eyebrow}</span>
           <span class="rh-meta">${esc(result.asOf || '')} · ${esc(result.duration || '')}${result.confidence ? ` · 置信度 ${esc(result.confidence)}` : ''}</span>
         </div>
-        <h3>${esc(result.headline || result.conclusion)}</h3>
-        <p class="rh-summary">${esc(result.summary)}</p>
+        ${modelStatus ? `<details><summary>查看本轮核对分析</summary>
+          <h3>${esc(result.headline || result.conclusion)}</h3>
+          <p class="rh-summary">${esc(result.summary)}</p>
+        </details>` : `<h3>${esc(result.headline || result.conclusion)}</h3>
+          <p class="rh-summary">${esc(result.summary)}</p>`}
         ${deltas}
       </section>
       ${theses}
@@ -1114,6 +1180,38 @@
         button.disabled = false;
         button.textContent = '准备工作模型';
       }
+    }
+  }
+
+  async function saveModelMappings(form) {
+    const t = getById(ui.openId);
+    if (!t) return;
+    const errorBox = $('[data-model-error]', form);
+    const button = $('button[type="submit"]', form);
+    const field = (row, name) => $(`[name="${name}"]`, row).value.trim();
+    const coordinates = row => ({ sheet: field(row, 'sheet'), cell: field(row, 'cell') });
+    button.disabled = true;
+    errorBox.hidden = true;
+    try {
+      const bindings = $$('[data-model-row="input"]', form).map(row => ({
+        ...coordinates(row), metric: field(row, 'label'), note: field(row, 'note'),
+        verified: $('[name="verified"]', row).checked,
+      }));
+      const outputs = $$('[data-model-row="output"]', form).map(row => ({
+        ...coordinates(row), label: field(row, 'label'),
+      }));
+      const info = await api(`/api/trackings/${t.id}/model/bindings`, {
+        method: 'POST', body: { bindings, outputs, writeEnabled: form.elements.writeEnabled.checked },
+      });
+      const current = getById(t.id);
+      if (current) current.modelInfo = { ...current.modelInfo, ...info };
+      if (ui.openId === t.id) renderDetail();
+      toast('单元格映射已保存');
+    } catch (error) {
+      errorBox.textContent = error.message || '保存映射失败';
+      errorBox.hidden = false;
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -1431,11 +1529,35 @@
       if (e.target.closest('[data-track-schedule]')) { openSchedule(); return; }
       if (e.target.closest('[data-track-sync-monitors]')) { syncMonitors(); return; }
       if (e.target.closest('[data-track-prepare-model]')) { prepareModel(); return; }
+      const addMapping = e.target.closest('[data-model-add]');
+      if (addMapping) {
+        const kind = addMapping.dataset.modelAdd;
+        const list = $(`[data-model-rows="${kind}"]`, detailOverlay);
+        list.insertAdjacentHTML('beforeend', modelMappingRow(kind));
+        $('input', list.lastElementChild)?.focus();
+        return;
+      }
+      const removeMapping = e.target.closest('[data-model-remove]');
+      if (removeMapping) { removeMapping.closest('[data-model-row]').remove(); return; }
+      const approvalAction = e.target.closest('[data-approval-action]');
+      if (approvalAction) {
+        const card = approvalAction.closest('.approval-card');
+        const reason = $('[data-approval-reason]', card)?.value || '';
+        void import('./ui/approvals/approvals.js').then(({ decideApproval }) =>
+          decideApproval(approvalAction.dataset.approvalId, approvalAction.dataset.approvalAction, reason));
+        return;
+      }
       const undo = e.target.closest('[data-notify-undo]');
       if (undo) { e.stopPropagation(); undoRun(undo.dataset.notifyUndo); return; }
       if (e.target.closest('[data-track-check-monitors]')) { checkMonitors(); return; }
       if (e.target.closest('[data-track-refresh-events]')) { refreshEvents(); return; }
       if (e.target.closest('[data-track-run]')) { startRun(ui.openId); return; }
+    });
+
+    detailOverlay.addEventListener('submit', e => {
+      if (!e.target.matches('[data-track-model-form]')) return;
+      e.preventDefault();
+      void saveModelMappings(e.target);
     });
 
     scheduleOverlay.addEventListener('click', e => {

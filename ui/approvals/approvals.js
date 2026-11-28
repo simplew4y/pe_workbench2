@@ -30,7 +30,7 @@ export function approvalsShelfHTML() {
   // Recently rejected/conflicted rows stay visible after a refresh so the
   // outcome is auditable. Applied rows are intentionally dropped.
   const decided = (state.approvals || [])
-    .filter((item) => ["rejected", "conflict", "failed"].includes(item.status))
+    .filter((item) => (["rejected", "conflict", "failed"].includes(item.status) || (item.status === "applied" && item.decision?.analysis)))
     .slice(0, 5);
   const items = [...pending, ...decided];
   if (!items.length) return "";
@@ -88,9 +88,22 @@ export async function decideApproval(id, action, reason = "") {
   }
 }
 
+const loadingLabels = new Set();
 export function upsertApproval(approval) {
   if (!approval) return;
-  const index = state.approvals.findIndex((item) => item.id === approval.id);
-  if (index >= 0) state.approvals[index] = approval;
-  else state.approvals.unshift(approval);
+  const index = state.approvals.findIndex(item => item.id === approval.id);
+  const current = index >= 0 ? { ...state.approvals[index], ...approval } : approval;
+  if (index >= 0) state.approvals[index] = current;
+  else state.approvals.unshift(current);
+  if (current.rowLabels || loadingLabels.has(current.id) || !current.payload?.edits?.some(e => e.value.startsWith("="))) return;
+  const project = getState().project?.id;
+  loadingLabels.add(current.id);
+  void api("/api/approvals/" + encodeURIComponent(current.id)).then(detail => {
+    if (getState().project?.id !== project) return;
+    const item = state.approvals.find(item => item.id === current.id);
+    if (!item) return;
+    item.rowLabels = detail.rowLabels || {};
+    item.percentRefs = detail.percentRefs || [];
+    runtime.renderThread?.(false);
+  }).catch(() => {}).finally(() => loadingLabels.delete(current.id));
 }

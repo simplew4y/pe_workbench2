@@ -14,6 +14,7 @@ import { openStore } from "../store.mjs";
 import { WorkbookStore } from "../lib/workbook-store.mjs";
 import { ExcelPreviewStore } from "../lib/excel-preview.mjs";
 import { createModelWhatifTool } from "../lib/model-whatif-tool.mjs";
+import { createWorkbookBindingResolver, createPdfBindingResolver } from '../lib/calc-source.mjs';
 import { createCalcTool, createRatioTool, createUnitConvertTool } from "../lib/calc-tool.mjs";
 import { createWorkbookTool } from "../lib/workbook-tool.mjs";
 import { createWorkbookTraceTool } from "../lib/workbook-trace-tool.mjs";
@@ -39,7 +40,7 @@ export async function ensureProjectDirs(root) {
 }
 
 export function systemHint(ctx, config) {
-  return `你是 Workbench，一个产品团队的研究与写作助手。
+  return `你是 Workbench，一个金融投研助手。你的任务是帮助用户形成有证据、可解释、可检验的研究判断；读取模型和核对数字是完成判断的手段。
 
 ${RESEARCH_POLICY}
 
@@ -49,11 +50,12 @@ ${RESEARCH_POLICY}
 - \`inputs/\` 是只读资料
 
 规则：
+- 明确要求按财报更新 Excel 估值模型时，加载 investment-model-updater Skill；缺少公告 PDF 时先搜索正式披露原文，将其链接传给 update_model。
 - 用中文回答。问题明确时使用 model-qa，开头直接给出用户问的具体结果，紧接着给改变结论的必要依据。明确提出多项时逐项回答，不扩展无关方向。
 - 已明确要求完整投资框架或框架报告时，使用 investment-framework，聊天先给核心判断，完整分析按报告交付。明确要求的普通文档按用户范围写，只保存该文档。整体模型解读的深度由任务决定；用户只要求聊天时在聊天完整解释。
 - 若当前问题和上下文仍无法确定主要目标，且不同理解会改变分析方向，使用 clarify-research-question。给一个聚焦的澄清问题；有多个可行方向时，用「你想先弄清哪件事？」开头，按 Skill 格式给 2–3 个基于当前项目、可直接执行的完整问题，让用户选择。选择后沿所选问题直接作答。问题明确但缺证据时，先交付可确认的部分，并点明缺口。
 - 交付正文时直接回答本轮问题，保留结论、关键推导和对应出处。补查资料后，把核实结果并入原有解释，保证正文能独立读懂。用户要求复核已交付的回答时，说明改了什么及其依据。
-- 回答用文件名指代材料，并说明是本轮生成的报告，还是用户上传的文件。用户没有索要路径时，不写目录或本机路径。资料引用可用文件名、页码或单元格，公开来源保留网页链接。
+- 回答用文件名指代材料，并说明是本轮生成的报告，还是用户上传的文件。用户没有索要路径时，不写目录或本机路径。出处标记用于按需查证，正文遵循回答呈现规范，不重复罗列工作簿坐标；公开来源保留网页链接。
 - 需要数据时先用工具读取文件，不要臆测。
 - 写文件优先放 \`exports/\`，不要修改 \`inputs/\`。
 ${DOCUMENT_OUTPUT_POLICY}
@@ -81,6 +83,7 @@ export function createProjectManager({
   bus,
   broadcastMaterial,
   broadcastTracking,
+  updateModel,
   defaultProjectRoot = config.defaultProjectRoot,
 }) {
   const contexts = new Map();
@@ -177,6 +180,8 @@ export function createProjectManager({
           onMaterial: (material) => broadcastMaterial(material, row.id),
         })
       : null;
+    const resolvePdfBinding = config.pdfRead ? createPdfBindingResolver(pdfs) : undefined;
+    const resolveBinding = config.workbookQuery ? createWorkbookBindingResolver({store,workbooks}) : undefined;
     const ctx = {
       id: row.id,
       name: row.name,
@@ -192,8 +197,9 @@ export function createProjectManager({
       previews,
       pdfs,
       asr,
-      tools: [createCalcTool(), createRatioTool(), createUnitConvertTool(), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
+      tools: [createCalcTool({resolveBinding,resolvePdfBinding,projectId:row.id}), createRatioTool(), createUnitConvertTool({resolveBinding:resolvePdfBinding,projectId:row.id}), ...(config.workbookQuery ? [createModelWhatifTool({ workspace: projectRoot, calcInfo: config.calcInfo })] : []), workbookTool, workbookTraceTool, validateStateTool, pdfTool, westockTool, anySearchTool, deepSeekSearchTool, deepSeekFetchTool, webFetchTool, asrTool, trackingTool].filter(Boolean),
     };
+    if (config.workbookQuery && config.pdfRead && updateModel) ctx.updateModel = (args, threadId) => updateModel(ctx, args, threadId);
     ctx.trace = createTraceService({
       store,
       projectId: row.id,

@@ -1,7 +1,11 @@
 import { isWorkbookMetricName } from '../../lib/workbook-query.mjs';
 import { Lexer } from 'marked';
-import { adoptedCitations, citationLookup } from '../../lib/citations.mjs';
+import { adoptedCitations, citationLookup, currentCitation, toolEvidenceState } from '../../lib/citations.mjs';
 import { citationFilenames, citationIdentity, extractLocatorMatches, LOCATOR_SOURCE, locatorKey, maskCitationIds, resolveLocatorToken } from '../../lib/citation-locator.mjs';
+import { answerCharCount } from '../../lib/answer-length.mjs';
+import { answerDependencies } from '../../lib/answer-dependencies.mjs';
+import {closeResearchDocument} from '../../lib/research-document-closure.mjs';
+import {researchStatementSpans} from '../../lib/research-text-boundaries.mjs';
 export { adoptedCitations };
 
 // A search hit vouches for what an earlier answer cited. It supplies a
@@ -412,8 +416,10 @@ function requestedItems(question) {
 
 // Keep the original Markdown for delivery. A table row is a single claim
 // unit, just as a sentence is in prose. Its header belongs to the retained rows.
+const sentenceParts = raw => raw.split(/(?<=[。！？])|(?<=[.!?])(?=\s|$)|\n+/).map(s => s.trim()).filter(Boolean);
+
 export function answerBlocks(text) {
-  const prose = raw => ({ raw, parts: raw.split(/(?<=[。！？])|(?<=[.!?])(?=\s|$)|\n+/).map(s => s.trim()).filter(Boolean) });
+  const prose = raw => ({ raw, parts: sentenceParts(raw) });
   if (!text.includes('|')) return [prose(text)];
   return Lexer.lex(text).map(token => {
     if (token.type !== 'table') return prose(token.raw);
@@ -421,6 +427,155 @@ export function answerBlocks(text) {
     return { header: header + '\n' + separator, parts: rows,
       labels: token.header.map(cell => cell.text.replace(/[*`]/g, '').trim()), cells: token.rows };
   });
+}
+
+const summaryItems = [
+  ['置信度', /置信度/u, /置信度|判断信心/u],
+  ['最强证据', /最强证据/u, /^(?:最强|核心|主要)?证据$|^主要依据$/u],
+  ['反证', /反证/u, /反证|反向证据|最强挑战/u],
+  ['已修订的结论', /结论[^。]{0,14}(?:被修订|修订了)|修订了?哪些结论/u, /修订|下调与保留|调整的判断/u],
+  ['三项待核', /(?:三|3)项待核/u, /待核|待验证|还需核对/u],
+  ['下次行动', /下次行动|下一步行动/u, /下次行动|下一步|后续行动|复核计划/u],
+];
+const confidenceRating = /(?:置信度|判断信心)[\s*：:]*(?:为|是)?\s*(?:较?低|中等(?:偏[低高])?|中[低高]?|较?高)/u;
+
+export function requestedSummaryItems(question) {
+  if (!/摘要|纪要/u.test(question)) return [];
+  return summaryItems.filter(([, requested]) => requested.test(question)).map(([label]) => label);
+}
+
+function summaryHeading(label, requested) {
+  const clean = label.replace(/[#*：:\s]/gu, '');
+  return summaryItems.find(([item, , title]) => requested.includes(item) && title.test(clean))?.[0];
+}
+
+function answerHeading(text, required) {
+  const markdown = text.match(/^(#{1,6}[ \t]+[^\n]+)(?:\n([\s\S]*))?$/u) ||
+    text.match(/^(\*\*[^*\n]+\*\*[ \t]*[：:]?)[ \t]*([\s\S]*)$/u);
+  if (markdown) return markdown;
+  const plain = text.match(/^([^：:\n]{1,22}[：:])[ \t]*([\s\S]*)$/u);
+  return plain && summaryHeading(plain[1], required) ? plain : null;
+}
+
+function deliverySections(blocks, required = []) {
+  const sections = [];
+  for (const {header, parts} of blocks) {
+    let section = {header, table: Boolean(header), parts: []};
+    sections.push(section);
+    for (const part of parts) {
+      const heading = !header && answerHeading(part, required);
+      if (!heading) {
+        section.parts.push(part);
+        continue;
+      }
+      const body = heading[2]?.trim();
+      section = {header:heading[1], parts:body ? [body] : []};
+      sections.push(section);
+    }
+  }
+  return sections;
+}
+
+function reviewList(section) {
+  // Sentence splitting may separate a numeric marker ("1.") from its text.
+  const text = section.parts.join('\n').replace(/(^|[；;]\s*)([1-9][.．])\n(?=\S)/gmu, '$1$2 ');
+  const marker = /(?:^|[。；;：:\n])\s*(?:[1-9一二三四五六七八九][、．.)）]|[-*]\s+)\s*/u;
+  const marked = text.split(marker);
+  const items = marked.length > 1 ? marked.slice(1) : text.split(/[、；;\n]/u);
+  const substantive = items.map(part => part.trim().replace(/[。；;]+$/u, '')).filter(part => /[\p{L}]/u.test(part));
+  return { text, complete:substantive.length === 3 && new Set(substantive).size === 3 };
+}
+
+export function missingSummaryItems(answer, required) {
+  if (!required.length) return [];
+  const included = new Set();
+  for (const section of deliverySections(answerBlocks(answer), required)) {
+    const label = section.header && summaryHeading(section.header, required);
+    if (label === '三项待核' ? reviewList(section).complete : label && section.parts.some(part => /[\p{L}\p{N}]/u.test(part))) {
+      included.add(label);
+    }
+  }
+  if (confidenceRating.test(answer)) included.add('置信度');
+  return required.filter(label => !included.has(label));
+}
+
+function budgetBlocks(blocks, required) {
+  const listItem = /^(?:[-+*][ \t]+|(?:\d{1,2}[.．、)）]|[一二三四五六七八九十][、．)）])(?!\d))/u;
+  return blocks.map(block => {
+    if (block.header) return block;
+    const parts = [];
+    let paragraph = [];
+    for (const raw of block.raw.split('\n')) {
+      const line = raw.trim();
+      if (paragraph.length && (!line || listItem.test(line) || answerHeading(line, required))) {
+        parts.push(paragraph.join('\n'));
+        paragraph = [];
+      }
+      if (line) paragraph.push(line);
+    }
+    if (paragraph.length) parts.push(paragraph.join('\n'));
+    return { parts };
+  });
+}
+
+// Preserve a prose paragraph or list item as a unit, like a table row.
+// A sentence can explain the judgment just before it without restating it.
+export function reviewBodyWithinBudget(answer, blocks, budget, omit, required = [], wholeSections = []) {
+  if (!omit && answerCharCount(answer) <= budget) return answer;
+  const content = deliverySections(budgetBlocks(blocks, required), required).map(section => {
+    const label = section.header && summaryHeading(section.header, required);
+    const list = label === '三项待核' ? reviewList(section) : null;
+    const whole = wholeSections.includes(label);
+    const units = list ? (list.complete ? [list.text] : []) :
+      whole ? [section.parts.join('\n')] : section.parts;
+    const allowed = part => !omit?.(section.header ? `${section.header}\n${part}` : part);
+    const parts = units
+      // Corrections can still remove a conflicting claim without discarding
+      // independent sentences in the same paragraph. Budget selection uses
+      // the remaining paragraph as one unit.
+      .map(part => {
+        if (allowed(part)) return part;
+        return section.table || list || whole ? '' : sentenceParts(part).filter(allowed).join('\n');
+      })
+      .filter(Boolean)
+      .map(text => ({text, size:answerCharCount(text)}));
+    const rating = required.includes('置信度') && !label ? parts.find(part => confidenceRating.test(part.text)) : null;
+    return {
+      ...section, priority:list ? 2 : label || rating ? 1 : 0, parts, rating,
+      needsLead: Boolean(section.header && !section.table),
+    };
+  }).filter(section => section.parts.length);
+  const share = budget / content.length;
+  let used = 0;
+  const kept = new Set();
+  function add(section, part) {
+    if (kept.has(part)) return;
+    const size = part.size + (section.keptHeader ? 0 : answerCharCount(section.header || ''));
+    if (used + size > budget) return;
+    used += size;
+    kept.add(part);
+    section.keptHeader = true;
+  }
+  const ordered = content.toSorted((a, b) => Number(b.priority) - Number(a.priority));
+  for (const section of ordered) {
+    const allowance = share - answerCharCount(section.header || '');
+    const lead = section.parts[0];
+    const first = section.rating || (section.needsLead
+      ? ((section.priority || lead.size <= allowance) ? lead : null)
+      : section.parts.find(part => part.size <= allowance));
+    if (first) add(section, first);
+  }
+  for (const section of content) {
+    for (const part of section.parts) {
+      add(section, part);
+      // A shorter footnote cannot stand in for an omitted judgment.
+      if (section.needsLead && !section.keptHeader) break;
+    }
+  }
+  return content.flatMap(section => {
+    const body = section.parts.filter(part => kept.has(part)).map(part => part.text);
+    return body.length ? [[section.header, ...body].filter(Boolean).join('\n')] : [];
+  }).join('\n\n');
 }
 
 // Expand ordered values into named claims for verification. Delivery always
@@ -513,9 +668,37 @@ function verifiedSourceNote(part, source, requireId = false) {
   return fields.hasFields && (!requireId || fields.hasId) && !fields.conflict && !fields.idConflict && sourceFieldsOnly(fields.checked, fields.hasId);
 }
 
+export function hasOcrPageSource(part, calls, versions) {
+  const locators = /\bp\.\s*(\d+)\b|第\s*(\d+)\s*页/giu;
+  const pages = [...part.matchAll(locators)].map(match => Number(match[1] || match[2]));
+  if (!pages.length || /^\s*(?:[-*]\s*)?(?:未核验|待核实)/u.test(part)) return false;
+  // OCR can support a text summary. Amounts and percentages still need
+  // the numeric verification path, even if the OCR happens to contain them.
+  const content = part.replace(locators, '');
+  const quantities = content.replace(/^\s*\d+[.、]\s*/u, '')
+    .replace(/\b20\d{2}(?:\s*年(?:\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?)?)?/gu, '');
+  if (/\d/.test(quantities)) return false;
+  const claims = [...content.matchAll(/\b20\d{2}\b/g)].map(match => match[0]);
+  const materialPages = new Map();
+  for (const call of calls) {
+    const d = call.result?.details || call.details;
+    if (call.name !== 'pdf_read' || !call.success || toolEvidenceState(call) !== 'success' ||
+        !d?.materialId || !currentCitation(d, versions)) continue;
+    if (/\.pdf\b/iu.test(part) && !part.includes(d.filename)) continue;
+    const source = materialPages.get(d.materialId) || new Map();
+    for (const page of d.evidence || []) {
+      if (page.ocr && page.text.trim()) source.set(page.page, page.text);
+    }
+    if (source.size) materialPages.set(d.materialId, source);
+  }
+  if (materialPages.size !== 1) return false;
+  const source = materialPages.values().next().value;
+  return pages.every(page => source.has(page)) && claims.every(year => pages.some(page => source.get(page).includes(year)));
+}
+
 // On exhaustion or interruption only release complete, separately sourced
 // sentences or table rows and their verified source fields.
-export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage) {
+export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage, ocrSource = () => false) {
   const verified = [];
   const anchors = [];
   let retainedAll = true;
@@ -526,7 +709,8 @@ export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage
       if (!eligible(part)) return false;
       const report = reportFor(part);
       const sourced = coverage.verifiedEndings.has(part) ||
-        (/[。！？.!?]$/.test(part) || report.endsWithIdField) && adoptedCitations(part, report.citations).length;
+        (/[。！？.!?]$/.test(part) || report.endsWithIdField) &&
+          (adoptedCitations(part, report.citations).length || ocrSource(part));
       if (!sourced || findingsFor(part).some(blockingFinding)) return false;
       if (report.historical?.length === 1) sources.set(index, report.historical[0].citation);
       return true;
@@ -575,4 +759,146 @@ export function verifiedPortion(answer, blocks, reportFor, findingsFor, coverage
   // Combining notes with different anchors may introduce ambiguity.
   const core = anchors.join('\n\n');
   return core && core !== body && !findingsFor(core).some(blockingFinding) ? core : '';
+}
+
+
+// Research delivery retains complete, independently supported paragraphs and
+// conditional reasoning. Historical-source queries still use verifiedPortion.
+// Never promote a dependent conclusion after removing its disputed premise.
+export function researchPortion(answer, findingsFor, findings, citations = [], {maxChars=Infinity,visibleHistory,question='', preserveAnswerUnits=false}={}) {
+  // Findings are bound to the complete current draft. Re-linting isolated
+  // paragraphs loses issuer, period, heading and reconciled source context.
+  // A missing locator in a short paragraph is not new contradictory evidence.
+  const kept=[],blocking=findings.filter(blockingFinding);
+  const span=f=>f.sourceText || f.excerpt;
+  const plain=s=>String(s || '').replace(/[*`#]/g,'').replace(/\s+/g,' ').trim().replace(/^(?:[-+•]|\d+[.)])\s+/, '');
+  const overlaps=(a,b)=>!!plain(a) && !!plain(b) && (plain(a).includes(plain(b)) || plain(b).includes(plain(a)));
+  // Identify conclusions, then resolve their scope against the full draft.
+  const dependent=s=>{
+    const value=plain(s).replace(/^(?:更正说明|更正|订正|修正|勘误)[：:]\s*/, '');
+    if(/^这是一(?:份|个|种|套|张)(?:[^。！？]{0,30})(?:模型|报告|年报|报表|工作簿|估值方法)/.test(value))return false;
+    return /^(?:因此|所以|由此|据此|综上|总之|综合上述|总体(?:上|而言)|整体(?:上|而言)|结论[：:]|判断[：:]|这个|这些|上述|它(?:来自|代表|意味着|取决于)|这(?:是|说明|表明|意味着)|该项|该数值|该结果|该空间)/.test(value) ||
+      /判断(?:成立|不成立|正确|错误)|结论(?:成立|不成立)|被[^。！？\n]{0,40}(?:推翻|证伪|证实|否定)|(?:推翻|证伪|否定)了|已被证伪|明显低估|明显高估|已经兑现/.test(value);
+  };
+  // A public correction is content. Only suppress an internal edit label when
+  // the host knows no prior answer was delivered and correction wasn't asked
+  // for. Even then keep its independently checked factual body.
+  const correctionText=s=>Array.isArray(visibleHistory) && !visibleHistory.length && !/更正|纠正|订正|修正|勘误|校对/.test(question)
+    ? s.replace(/^(\s*(?:\*\*)?)(?:更正说明|更正|订正|修正|勘误)(?:\*\*)?[：:]\s*(?:\*\*)?/, '') : s;
+  const presentation=s=>((s.match(/\*\*/g) || []).length%2?s.replace(/\*\*/g,''):s).trim();
+  const citationOnly=s=>{
+    let value=s;
+    if(/^(?:计算|复算|模型测算|模型(?:分产品收入|资本开支)测算)[。.]?$/.test(plain(value)))return true;
+    // Older recorded drafts can already contain a stranded closing source
+    // fragment from an upstream split inside a citation's semicolon.
+    if(/^(?:公告|来源|出处)\s*(?:19|20)\d{2}[-年]/.test(plain(value)) && /[\]】][。.]?$/.test(value.trim()))return true;
+    for(const r of extractLocatorMatches(value).reverse())value=value.slice(0,r.index)+value.slice(r.index+r.raw.length);
+    return !value.replace(/\[[^\]]+\]|[A-Z]{1,3}\d+|模型全模型重算|模型重算|全模型重算|[\s、，；;。.*`]/g,'');
+  };
+  const tokens=Lexer.lex(answer), rejectedDependency=answerDependencies(tokens,blocking,dependent);
+  let notice=false,contentCount=0,missingAntecedent=false;
+  const omit=()=>{if(!notice){kept.push('> 本节部分内容尚未完成核验，相关数值及依赖结论暂不采用。');notice=true;}};
+  const deliveredCorrections=new Set();
+  const repair=issues=>{
+    for(const finding of issues) {
+      if(finding.rule!=='research_reasoning' || !finding.correction || deliveredCorrections.has(finding.correction))continue;
+      kept.push(finding.correction);
+      deliveredCorrections.add(finding.correction);
+      contentCount++;
+    }
+  };
+  const retain=(raw,token)=>{
+    if(!raw.trim())return;
+    const issues=blocking.filter(f=>span(f) && overlaps(raw,span(f)));
+    const sentences=researchStatementSpans(raw);
+    // The host appends actual per-file receipts. A false save-status sentence
+    // is not a missing financial premise for the rest of this section.
+    if(issues.length && issues.every(f=>f.rule==='artifact_status'))return;
+    // A verdict paragraph carries one argument across its sentences. Do not
+    // keep its unmarked continuation after removing only the opening verdict.
+    if(!issues.length && rejectedDependency(raw,token)){missingAntecedent=true;omit();return;}
+    const pointer=/^(?:注意[，,]?\s*)?(?:前者|后者|二者|两者|这两项|它们|但它|而它)/;
+    if(!issues.length && !(missingAntecedent && pointer.test(plain(raw))) && !sentences.some(sentence=>rejectedDependency(sentence,token))) {
+      if(citationOnly(raw))return;
+      kept.push(presentation(correctionText(raw)));missingAntecedent=false;contentCount++;return;
+    }
+    // Preserve independent complete sentences. If an issue spans multiple
+    // sentences, keep the whole span blocked; never guess its numeric target.
+    const multi=sentences.length>1 && issues.every(f=>sentences.some(s=>plain(s).includes(plain(span(f)))));
+    if(!multi && issues.length){missingAntecedent=true;omit();repair(issues);return;}
+    let group=[],topic='';
+    const flush=()=>{
+      if(group.length){
+        const joined=group.map((s,i)=>i && group[i-1].endsWith('**')?' '+s:s).join('');
+        kept.push(joined);contentCount++;group=[];
+      }
+    };
+    for(const sentence of sentences) {
+      const local=issues.filter(f=>overlaps(sentence,span(f)));
+      if(local.length || rejectedDependency(sentence,token)) {
+        flush();omit();repair(local);missingAntecedent=true;
+        // Carry only a user-requested dimension, never a rejected verdict.
+        const heading=plain(sentence).match(/^([\p{L}]{2,8})[：:]/u)?.[1];
+        topic=heading && question.includes(heading) ? heading+'：' : '';
+      } else if(!citationOnly(sentence)) {
+        let value=presentation(correctionText(sentence));
+        if(missingAntecedent && pointer.test(plain(value))) {
+          // A scope qualification can stand on its own when it names the method.
+          // Its following pronoun still cannot inherit the rejected comparison.
+          const method=value.match(/^(?:注意[，,]?\s*)?(?:前者|后者)((?:用|采用|使用|按).+?(?:不能|无法|仅能|只适用).+)/);
+          if(method)group.push(method[1].replace(/[；;]$/,'。'));
+          continue;
+        }
+        missingAntecedent=false;
+        group.push((/^(若|如|需|看|跟踪)/.test(value)?topic:'')+value);
+        topic='';
+      }
+    }
+    flush();
+  };
+  for(const token of tokens) {
+    if(token.type==='space')continue;
+    if(token.type==='heading') {
+      missingAntecedent=false;
+      // Numeric assertions in headings need the same check as body claims.
+      if(blocking.some(f=>span(f) && overlaps(token.raw,span(f)))){omit();continue;}
+      // A verdict heading is itself dependent on possibly removed premises.
+      if(rejectedDependency(token.raw,token)){omit();continue;}
+      kept.push(token.raw.trim());notice=false;continue;
+    }
+    if(token.type==='list')for(const item of token.items)retain(item.raw,token);
+    else if(token.type==='table') {
+      const lines=token.raw.trimEnd().split(/\r?\n/),rows=lines.slice(2);
+      const rejected=rows.map(row=>blocking.some(f=>span(f) && overlaps(row,span(f))));
+      const hasTotals = rows.some(row => /合计|总计/.test(row));
+      // A reconciliation table answers one question as a whole. Its surviving
+      // rows cannot imply the original total was reconciled after a row fails.
+      const keptRows = preserveAnswerUnits && hasTotals && rejected.some(Boolean) ? [] :
+        rows.filter((row,i)=>!rejected[i] && !(rejected.some(Boolean) && /合计|总计|因此|据此|结论/.test(row)));
+      if(keptRows.length){kept.push([...lines.slice(0,2),...keptRows].join('\n'));contentCount++;}
+      if(keptRows.length!==rows.length)omit();
+    }
+    else if(token.type==='code' && blocking.some(f=>span(f) && overlaps(token.raw,span(f))))omit();
+    else retain(token.raw,token);
+  }
+  if(!contentCount)return '';
+  if (!kept.length) return '';
+  // Lead with the supported answer. The partial delivery state and its reason
+  // belong to the host's disclosure; specific limits still stay with the text.
+  const joined=kept.join('\n\n');
+  // Keep a proposed directional test distinct from an observed deterioration.
+  const needsCustomerTest=/可验证|证伪|推翻/.test(question) &&
+    blocking.some(f=>f.rule==='delivery_gap' && /客户/.test(f.message) && /方向|推翻/.test(f.message));
+  const readable=needsCustomerTest ? joined.replace(/(?:看|跟踪|观察)(?:同批客户的)?续约(?:单)?价(?:格)?[、与及和]应收(?:账款)?周转(?:天数)?/g,
+    '比较同批客户的续约价与应收周转天数。若续约降价或回款变慢，应下调对客户质量的判断') : joined;
+  const labels={value:'数值',unit:'单位',currency:'币种',period:'期间',metric:'指标口径',basis_type:'实际与预测口径',dependency:'计算依据',source:'来源'};
+  const gaps=[...new Set(findings.filter(blockingFinding).map(f=>
+    f.claim ? `${f.claim.metric || '部分数据'}的${labels[f.field] || '证据'}` :
+    f.rule==='delivery_gap' ? (readable!==joined && /客户/.test(f.message) && /续约价/.test(f.message) && /应收周转/.test(f.message) ? '客户续约与回款的实际结果' : f.excerpt?f.message.replaceAll(f.excerpt,'该项结论'):f.message) : f.rule==='incomplete' ? '答复完整性' : '部分结论的证据'
+  ))].slice(0,6);
+  const body=closeResearchDocument(answer,readable,{strictSections:!preserveAnswerUnits}).text+
+    '\n\n**仍待核实**：'+(gaps.join('；') || '部分补充核验未完成')+'。';
+  // Let the existing sentence-aware bounded fallback handle strict budgets.
+  // Never truncate a number, source, table or JSON object by character slicing.
+  return answerCharCount(body)<=maxChars ? body : '';
 }

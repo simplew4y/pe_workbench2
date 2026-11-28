@@ -11,6 +11,10 @@ import {
   scheduleShort as trackingScheduleShort,
 } from "./lib/tracking.mjs";
 
+export function visibleMaterial(material) {
+  return Boolean(material && material.versions?.[0]?.reason !== "model update baseline");
+}
+
 export const DEFAULT_PROJECT_ID = "product-eng";
 const WORKSPACE_ID = DEFAULT_PROJECT_ID;
 const PROJECT_ACCENTS = ["amber", "blue", "green", "violet", "rose", "slate"];
@@ -382,8 +386,8 @@ export class Store {
         brief_json text not null default '{}',
         interval_minutes integer not null default 15,
         deep_check_time text not null default '18:30',
-        enabled integer not null default 1,
-        status text not null default 'idle',
+        enabled integer not null default 0,
+        status text not null default 'paused',
         last_scan_at text,
         last_check_at text,
         last_deep_check_at text,
@@ -1464,7 +1468,7 @@ export class Store {
     const rows = this.db.prepare(
       `select id from materials where workspace_id = ? and deleted_at is null order by updated_at desc`,
     ).all(this.projectId);
-    return rows.map((row) => this.getMaterial(row.id)).filter(Boolean);
+    return rows.map(row => this.getMaterial(row.id)).filter(visibleMaterial);
   }
 
   restoreVersion(id, v) {
@@ -1725,7 +1729,7 @@ export class Store {
     };
   }
 
-  createTracking({ targetId, templateId, freq, weekday, day, time, name }) {
+  createTracking({ targetId, templateId, freq, weekday, day, time, name, enabled = true }) {
     const target = this.getMaterial(targetId);
     if (!target) throw Object.assign(new Error("target material not found"), { status: 404 });
     const schedule = {
@@ -1741,12 +1745,12 @@ export class Store {
       `insert into trackings (
         id, workspace_id, name, target_id, template_id, schedule_label,
         freq, at_time, weekday, day, timezone, enabled, next_run_at, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Asia/Shanghai', 1, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Asia/Shanghai', ?, ?, ?)`,
     ).run(
       id, this.projectId, name || target.name, targetId, templateId,
       trackingScheduleLabel(schedule),
       schedule.freq, schedule.time, schedule.weekday, schedule.day,
-      next.toISOString(), now,
+      enabled ? 1 : 0, enabled ? next.toISOString() : null, now,
     );
     return this.getTracking(id);
   }
@@ -2398,6 +2402,7 @@ export class Store {
   }
 
   createWatch({
+    enabled = false,
     name = "",
     reportPath = "",
     statePath = "",
@@ -2415,12 +2420,12 @@ export class Store {
         id, workspace_id, name, report_path, state_path, model_path, brief_json,
         interval_minutes, deep_check_time, enabled, status, next_scan_at, next_deep_at,
         created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', ?, ?, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, this.projectId, name, reportPath, statePath, modelPath,
       JSON.stringify(brief || {}),
       Math.max(5, Math.min(240, Number(intervalMinutes) || 15)),
-      deepCheckTime,
+      deepCheckTime, enabled ? 1 : 0, enabled ? "watching" : "paused",
       nextScanAt, nextDeepAt, now, now,
     );
     return this.getWatch(id);

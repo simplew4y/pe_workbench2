@@ -18,7 +18,7 @@ export async function handleWatch({ req, res, url, app, ctx }) {
       try {
         const body = await readJson(req);
         const result = await service.createWatch(ctx, body || {});
-        if (result.created) {
+        if (result.created && result.watch.enabled) {
           // Kick the first scan off the request path so the tab can render now.
           void service.scan(ctx, result.watch.id).catch(() => {});
         }
@@ -98,6 +98,7 @@ export async function handleWatch({ req, res, url, app, ctx }) {
   }
 
   if (action === "check" && req.method === "POST") {
+    if (!watch.enabled) return json(res, 409, { error: "请先开启自动盯盘" });
     const body = await readJson(req).catch(() => ({}));
     const trigger = body?.deep ? "deep" : "manual";
     void service.runCheck(ctx, watchId, { trigger, force: true })

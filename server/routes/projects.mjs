@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { defaultThinkingLevel, modelThinkingLevels } from "../agent/session-model-settings.mjs";
 
 export async function handleProjects({ req, res, url, app, ctx }) {
   const { json, readJson } = app.http;
@@ -11,6 +12,11 @@ export async function handleProjects({ req, res, url, app, ctx }) {
     return json(res, 200, {
       ok: true,
       model: MODEL_ID,
+      defaultThinkingLevel: defaultThinkingLevel(app.config.model),
+      models: [...app.config.allowedModels].flatMap(id=>{
+        const model=app.config.resolveModel(id);
+        return model ? [{id,name:model.name,thinkingLevels:modelThinkingLevels(model)}] : [];
+      }),
       projects: defaultStore.listProjects(),
       defaultProject: DEFAULT_PROJECT_ID,
       trackingScheduler: process.env.TRACKING_SCHEDULER !== "0",

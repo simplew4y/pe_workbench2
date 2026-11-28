@@ -7,6 +7,7 @@
  * throwing into the message renderer.
  */
 
+import { modelChangesHTML } from "../approvals/model-change.js";
 import { citationButton } from "../chat/cell-citations.js";
 import { normalizeLocator } from "../chat/citation-locator.js";
 import { esc, safeText } from "../shared/escape.js";
@@ -204,20 +205,11 @@ export function approvalCardHTML(payload, { approval = null } = {}) {
   const workingModel = payload.workingModel;
   const status = approval?.status || payload.status || "pending_approval";
   const pending = status === "pending_approval";
-  const allChanges = Array.isArray(payload.changes) ? payload.changes : [];
-  const changes = allChanges.slice(0, 8).map((change) => `<li>
-    <span class="ap-metric">${esc(change.metric || change.ref)}</span>
-    <span class="ap-ref">${esc(change.ref)}</span>
-    <span class="ap-from">${esc(change.from ?? "—")}</span>
-    <span class="ap-arrow">→</span>
-    <span class="ap-to">${esc(change.to ?? "—")}</span>
-    <span class="ap-badge ${change.bindingVerified ? "ok" : "warn"}">${change.bindingVerified ? "映射已验证" : "映射未验证"}</span>
-    ${change.formulaCell ? '<span class="ap-badge warn">公式单元格</span>' : ""}
-  </li>`).join("");
+  const changes = modelChangesHTML(payload, approval);
   const allOutputs = Array.isArray(payload.outputsToVerify) ? payload.outputsToVerify : [];
   const outputs = allOutputs.slice(0, 8).map((output) =>
     `<span class="ap-output">${esc(output.label || output.ref)} · ${esc(output.ref)}</span>`).join("");
-  const overflow = `${allChanges.length > 8 ? `<div class="tc-note">还有 ${allChanges.length - 8} 项变更未展开</div>` : ""}
+  const overflow = `
     ${allOutputs.length > 8 ? `<div class="tc-note">还有 ${allOutputs.length - 8} 个输出未展开</div>` : ""}`;
   const validation = payload.validation || {};
   const checks = [
@@ -230,6 +222,16 @@ export function approvalCardHTML(payload, { approval = null } = {}) {
     ? `<div class="ap-decision">${approval.decision.reason ? `原因：${esc(safeText(approval.decision.reason, 300))}` : ""}
         ${approval.decidedAt ? `<span>${esc(approval.decidedAt.slice(0, 16).replace("T", " "))}</span>` : ""}</div>`
     : "";
+  const published = approval?.decision;
+  const fileLink = status === "applied" && published?.materialId && published.version
+    ? `<a href="/api/materials/${encodeURIComponent(published.materialId)}/versions/${Number(published.version)}/file?download=1&amp;project=${encodeURIComponent(payload.projectId)}">下载本次工作模型 v${Number(published.version)}</a>` : "";
+  const findings = published?.analysis?.comparisons || [];
+  const guidance = findings.length ? `<details open><summary>本次更新对预测和估值的影响</summary><ul>${findings.map(row => {
+    const basis = { actual: "本期原值与披露", forecast: "后续预测", output: "指定输出" }[row.kind];
+    const trend = row.sameDirection == null ? "" : row.sameDirection ? "，趋势一致" : "，趋势不同，复核增长假设";
+    const variance = row.delta == null ? "" : `，差额 ${Number(row.delta.toPrecision(5))}${["%", "％"].includes(row.unit) ? " 个百分点" : " " + (row.unit || "")}`;
+    return `<li>${esc(basis)} · ${esc(row.metric)} ${esc(row.period || "")}：${esc(row.before ?? "基准缺失")} → ${esc(row.after)} ${esc(row.unit || "")}（${esc(row.ref)}${esc(variance + trend)}）</li>`;
+  }).join("")}</ul></details>` : "";
   const actions = pending
     ? `<div class="ap-actions">
         <input class="ap-reason" data-approval-reason="${esc(approval?.id || "")}" placeholder="拒绝原因（可选）" maxlength="200">
@@ -245,7 +247,7 @@ export function approvalCardHTML(payload, { approval = null } = {}) {
     <div class="ap-outputs">${outputs}</div>
     ${overflow}
     <div class="ap-checks">${checks}</div>
-    ${decision}
+    ${decision}${fileLink}${guidance}
     ${actions}
   </div>`;
 }

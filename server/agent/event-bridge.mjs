@@ -7,7 +7,7 @@
  */
 
 import path from "node:path";
-import { toolDisplayOutput } from "../../lib/tool-display-output.mjs";
+import { toolDisplayOutput,toolValidation } from "../../lib/tool-display-output.mjs";
 
 import { newRunId } from "../../lib/agent-protocol/ids.mjs";
 import { extractPresentation } from "../../lib/contracts/index.mjs";
@@ -89,11 +89,7 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
           } catch (error) {
             presentationError = `工具结果持久化失败：${error.message}`;
           }
-        } else if (
-          event.result?.details?.presentation
-          || event.result?.details?.structuredContent
-          || event.result?.structuredContent
-        ) {
+        } else if (!extracted.absent) {
           presentationError = extracted.error || "工具结果展示数据不可用";
           // Persist the failure too: after a refresh the card must still show
           // an error placeholder rather than silently degrading to a plain row.
@@ -133,6 +129,7 @@ export function attachSessionEvents(entry, { bus, onMaterialSaved = () => {}, on
           status: failed ? "error" : "done",
           detail: toolDetail(entry.ctx, event.toolName, args),
           output: toolDisplayOutput(event.toolName, event.result, resultText(event.result)),
+          ...(toolValidation(event.toolName,event.result)?{validation:toolValidation(event.toolName,event.result)}:{}),
           ...(citations.length ? { citations } : {}),
           ...(presentation ? { presentation } : {}),
           ...(presentationError ? { presentationError } : {}),

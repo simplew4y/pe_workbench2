@@ -12,6 +12,9 @@ import {WorkbookStore} from '../lib/workbook-store.mjs';
 import {PdfStore} from '../lib/pdf-store.mjs';
 import {createWorkbookTool} from '../lib/workbook-tool.mjs';
 import {createPdfTool} from '../lib/pdf-tool.mjs';
+import {createCalcTool} from '../lib/calc-tool.mjs';
+import {createWorkbookBindingResolver} from '../lib/calc-source.mjs';
+import {derivedEvidenceIssue} from '../lib/citations.mjs';
 import {FactMemory} from '../lib/fact-memory/store.mjs';
 import {withFactCapture,createFactMemoryTools} from '../lib/fact-memory/tools.mjs';
 import {buildTurnContext} from '../lib/turn-context.mjs';
@@ -31,7 +34,7 @@ for entity in ['ACME','Beta']:
  s.append(['company: '+entity]);s.append(['consolidated RMB mn'])
  s.append(['Metric','2023 actual','2024 actual','2025 forecast; scenario: base'])
  s.append(['revenue',90,100,110]);s.append(['ebitda',18,20,22]);s.append(['assets',100,100,120]);s.append(['net_debt',30,30,30])
- s.append(['ratio %',20,20,20]);s.append(['cached formula',None,'=C5/C4'])
+ s.append(['ratio %',20,0.2,20]);s['C8'].number_format='0.0%';s.append(['cached formula',None,'=C5/C4'])
 w.save(os.path.join(root,'model.xlsx'))
 doc=fitz.open()
 for text in ['ACME annual results 2024. Revenue 100 RMB million. Consolidated actuals.', 'ACME 2024 EBITDA 20 RMB million. Footnote: exclude discontinued operations.', 'Beta 2024 Revenue 100 RMB million. Forecast 2025: 110 RMB million.']:
@@ -42,6 +45,20 @@ pdf=os.path.join(root,'report.pdf');doc.save(pdf)
  const tool=withFactCapture(createWorkbookTool({store,workbooks,workspace}),memory,()=>({session_id:'initial',turn:1}));
  const read=await tool.execute('excel-1',{path:'uploads/model.xlsx',query:'ACME!C4:C7',maxCells:30});assert.notEqual(read.isError,true,JSON.stringify(read));
  assert.equal(read.details.factMemory.status,'persisted');
+ const percentageRead=await tool.execute('percentage',{path:'uploads/model.xlsx',query:'ACME!C8',maxCells:1});
+ assert.equal(percentageRead.details.citations[0].raw_unit,'decimal');assert.equal(percentageRead.details.citations[0].value,.2);
+ assert.ok(percentageRead.content[0].text.includes('20%'));
+
+ const sourcedCalc=createCalcTool({resolveBinding:createWorkbookBindingResolver({store,workbooks})});
+ const materialId=read.details.citations[0].materialId;
+ const precise=await sourcedCalc.execute('precise',{expression:'revenue*2',bindings:{revenue:{materialId,locator:'ACME!C4',value:999}},fromUnit:'百万元',toUnit:'亿元',currency:'RMB'});
+ assert.equal(precise.isError,undefined);assert.equal(precise.details.results[0].value,'2');
+ assert.equal(precise.details.results[0].bindings.revenue.value,100,'source value must override copied or forged input');
+ const parents=new Map(precise.details.citations.map(c=>[c.id,c]));
+ assert.equal(derivedEvidenceIssue(precise.details.results[0].citations[0],parents,[{id:'precise',name:'calc',success:true,result:precise}]),null);
+ assert.equal((await sourcedCalc.execute('foreign',{expression:'revenue',bindings:{revenue:{materialId:'another-project',locator:'ACME!C4'}}})).isError,true);
+ assert.equal((await sourcedCalc.execute('stale',{expression:'revenue',bindings:{revenue:{materialId,version:99,locator:'ACME!C4'}}})).isError,true);
+
  let result=memory.query({entity:'ACME',metric:'revenue',period:'2024',scope:'consolidated',basis_type:'actual'});
  assert.equal(result.status,'found',JSON.stringify(result));assert.equal(result.facts[0].raw_value,100);assert.equal(result.facts[0].quality,'source_checked',JSON.stringify(result.facts[0]));
  const revenue=result.facts[0];
@@ -64,3 +81,15 @@ pdf=os.path.join(root,'report.pdf');doc.save(pdf)
  assert.equal(memory.query({fact_id:'pdf-uninvented'}).status,'not_found');
  console.log('PASS real XLSX/PDF tool adapters, project persistence, new-session recall, multi-entity/basis separation, scan abstention');
 } finally {workbooks.close?.();pdfs.close?.();db.close();fs.rmSync(root,{recursive:true,force:true});}
+
+// Persist every receipt, but do not flood the model with repeated storage metadata.
+const manyFacts=Array.from({length:100},(_,i)=>({fact_id:'fact-'+i,fact_version:1,quality:'needs_review',review_reasons:['period','scope'],evidence_ids:['evidence-'+i]}));
+const compact=withFactCapture({name:'workbook_query',execute:async()=>({content:[{type:'text',text:'original evidence'}],details:{citations:[]}})},
+ {beginTool(){},capture(){return manyFacts;}},()=>({session_id:'compact'}));
+const captured=await compact.execute('receipt',{});
+assert.equal(captured.details.factMemory.facts.length,100);
+assert.equal(captured.content[0].text,'original evidence');
+assert.ok(captured.content.at(-1).text.length<2000);
+assert.ok(!captured.content.at(-1).text.includes('fact-99'));
+assert.ok(captured.content.at(-1).text.includes('"omittedFacts":95'));
+console.log('PASS bounded model-visible storage receipts preserve full persisted details and original evidence');

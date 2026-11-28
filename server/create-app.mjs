@@ -176,6 +176,8 @@ async function maybeMaterialSaved(entry, toolName, args) {
   try {
     const rel = path.relative(ctx.root, target).split(path.sep).join("/");
     if (rel.startsWith(".tracking/") || rel.includes("/backups/")) return;
+    if(args?.publication==='final_delivery' && args.sha256!==crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'))
+      throw new Error('Published material changed before indexing');
     const isState = path.posix.basename(rel) === "analysis-state.json";
     const run = entry.trackingRun || null;
     const material = ctx.store.indexFile(rel, {
@@ -199,7 +201,8 @@ async function maybeMaterialSaved(entry, toolName, args) {
       broadcastMaterial(next, ctx.id);
       broadcast(entry, { type: "material.updated", material: next });
     });
-  } catch {
+  } catch(error) {
+    if(args?.publication==='final_delivery')throw error;
     /* file may not exist (dry run or error) */
   }
 }
@@ -301,6 +304,7 @@ async function runPlan(ctx, planId) {
   let defaultStore = null;
   await (async () => {
     const manager = createProjectManager({
+      updateModel: (ctx, args, threadId) => tracking.updateModel(ctx, args, threadId),
       config,
       bus,
       broadcastMaterial,

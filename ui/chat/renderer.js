@@ -1,3 +1,4 @@
+import {mentionedPdfCalculations,deliverPdfCalculationLinks} from './pdf-calculation-links.js';
 /** Chat transcript, live run, composer and attachments/upload. */
 
 import {
@@ -11,6 +12,7 @@ import { approvalsShelfHTML } from "../approvals/approvals.js";
 import { renderToolPresentation } from "../tool-renderers/registry.js";
 import { sanitizeMarkdown } from "../previews/previews.js";
 import { renderFrameworkPresentation } from "./presentation.js";
+import { visibleAnswerText, linkDeclaredPages } from "./answer-presentation.js";
 import { linkCitations } from "./cell-citations.js";
 import { runtime } from "../runtime.js";
 import { getThreadScroll } from "./thread-scroll.js";
@@ -37,7 +39,7 @@ function mdInline(text) {
   return text
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    .replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/api\/materials\/)[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
 function mdToHtml(md = '') {
@@ -160,10 +162,11 @@ function renderMarkdownHTML(text, relPath = '', highlightBudget = { remaining: 4
 }
 
 function toolRowHTML(tool) {
-  const status = tool.status === 'running' ? '运行中' : tool.status === 'error' ? '失败' : '完成';
-  const glyph = tool.status === 'running' ? 'refresh' : tool.status === 'error' ? 'x' : 'check';
+  const needsReview=tool.status==='done' && tool.validation?.passed===false;
+  const status = tool.status === 'running' ? '运行中' : tool.status === 'error' ? '失败' : needsReview ? (tool.name==='write'?'已保存 · 校验未通过':'校验未通过') : '完成';
+  const glyph = tool.status === 'running' ? 'refresh' : tool.status === 'error' || needsReview ? 'x' : 'check';
   const card = renderToolPresentation(tool);
-  return `<div class="tool-row ${tool.status || 'done'}">
+  return `<div class="tool-row ${tool.status || 'done'}${needsReview?' validation-pending':''}">
       ${icon(glyph, 12)}
       <span class="tool-name">${esc(toolLabel(tool.name))}</span>
       ${tool.detail ? `<span class="tool-detail">${esc(tool.detail)}</span>` : ''}
@@ -171,11 +174,13 @@ function toolRowHTML(tool) {
     </div>${card ? `<div class="tool-card-slot">${card}</div>` : ''}`;
 }
 
-function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, open = false } = {}) {
-  if (!tools.length && !processText) return '';
+function toolGroupHTML(tools = [], { live = false, processText = '', highlightBudget = { remaining: 4 }, incomplete = false, settled = false, open = false, duration = '' } = {}) {
+  if (!tools.length && !processText) {
+    return duration ? `<div class="process-duration">${esc(duration)}</div>` : '';
+  }
   const errors = tools.filter(tool => tool.status === 'error').length;
-  const label = live ? liveStatusText() : (tools.length ? `过程 · ${tools.length} 个工具调用` : '过程');
-  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : '已完成'));
+  const label = live ? liveStatusText() : [duration, tools.length ? `${tools.length} 个工具调用` : '处理过程'].filter(Boolean).join(' · ');
+  const meta = live ? (tools.length ? `第 ${tools.length} 步` : '') : settled ? '已结束' : (incomplete ? '未完成' : (errors ? `${errors} 个失败` : tools.some(t=>t.validation?.passed===false) ? '已结束' : '已完成'));
   const status = live ? ' id="liveStatus" aria-live="polite"' : '';
   return `<details class="tool-group"${open ? ' open' : ''}>
       <summary class="tool-summary">
@@ -273,15 +278,25 @@ function messageHTML(m, { openGroups } = {}) {
   const isUser = m.role === 'user';
   const delivered = !isUser && Boolean(m.turnId);
   const cancelled = !isUser && m.status === 'cancelled';
+  const question = delivered && state.messages?.findLast(q => q.role === 'user' && q.turnId === m.turnId)?.text;
+  let answerText = visibleAnswerText(m, question);
+  if (delivered && m.citations?.some(c=>c.role==='pdf_number')) {
+    answerText = deliverPdfCalculationLinks(answerText,mentionedPdfCalculations(answerText,m.citations),state.project?.id);
+  }
   let body = isUser
     ? esc(m.text).split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`).join('')
-    : renderMarkdownHTML(m.text || '', '', highlightBudget);
+    : renderMarkdownHTML(answerText, '', highlightBudget);
   const citations = m.citations ?? (m.tools || []).flatMap(tool => Array.isArray(tool.citations) ? tool.citations : []);
+  if (!isUser && (m.status === 'partial' || m.status === 'completed')) body = linkDeclaredPages(body);
   // The vm-based renderer test intentionally omits the module binding.
-  if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations);
+  if (typeof linkCitations === 'function' && citations.length && (delivered || !m.failure)) body = linkCitations(body, citations, { compact: !isUser });
   if (!isUser && m.status && m.status !== 'completed') {
-    const label = { partial: '部分完成', failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
-    if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
+    if(m.status==='partial') {
+      if (!answerText.trim()) body += '<p class="answer-note" role="status">本次分析尚未形成可交付答复。</p>';
+    } else {
+      const label = { failed: '回答失败', cancelled: '已取消', pending: '正在处理' }[m.status];
+      if (label) body += `<p class="msg-failure" role="status">${label}${m.reason ? ' · ' + esc(m.reason) : ''}</p>`;
+    }
   } else if (!isUser && m.failure?.detail) body = `<p class="msg-failure">${esc(m.failure.detail)}</p>`;
   const showFramework = !isUser && !cancelled && (!delivered || m.status === 'completed' || m.status === 'partial');
   const framework = showFramework ? renderFrameworkPresentation(m.analysisState, {
@@ -289,21 +304,36 @@ function messageHTML(m, { openGroups } = {}) {
     pendingMerge: delivered ? m.analysisStatePendingMerge === true
       : typeof state !== 'undefined' && (state.pendingMerges || []).some(item => item.path === m.analysisStatePath),
   }) : '';
-  const callId = m.tools?.find(tool => tool.id)?.id;
-  const groupKey = m.turnId ? 'turn:' + m.turnId : callId ? 'call:' + callId : '';
+  const groupKey = processGroupKey(m);
   const group = isUser ? '' : toolGroupHTML(m.tools || [], { processText: m.processText || '',
-    open: openGroups?.has(groupKey), highlightBudget, incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
+    open: openGroups?.has(groupKey), duration: turnDuration(m), highlightBudget, settled: delivered && m.status==='partial',
+    incomplete: Boolean(m.failure || cancelled || (delivered && m.status !== 'completed')) });
   const reports = isUser ? '' : reportPathsFor(m).map(path => reportCardHTML(path, highlightBudget)).join('');
   return `<article class="msg ${isUser ? 'user' : 'assistant'}"${group && groupKey ? ` data-process-key="${esc(groupKey)}"` : ''}>
       <span class="msg-avatar">${isUser ? '林' : icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">${isUser ? '林默' : 'Workbench'}</span><span class="msg-time">${esc(m.time || '')}</span></div>
+        ${group}
         <div class="msg-body${isUser ? '' : ' md-preview'}">${body}</div>
         ${framework}
-        ${group}
         ${reports}
       </div>
     </article>`;
+}
+
+function turnDuration(message) {
+  if (!message.turnStartedAt || !message.finishedAt) return '';
+  const ms = new Date(message.finishedAt).getTime() - new Date(message.turnStartedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `用时 ${minutes ? minutes + ' 分 ' : ''}${seconds % 60} 秒`;
+}
+
+function processGroupKey(message) {
+  if (message.turnId) return 'turn:' + message.turnId;
+  const id = message.tools?.find(tool => tool.id)?.id;
+  return id ? 'call:' + id : '';
 }
 
 // Keep matching nodes (including text nodes) alive while Markdown grows.
@@ -357,6 +387,7 @@ function citationsFromTools(tools = []) {
 function liveMessageHTML() {
   const live = state.live;
   const hasContent = Boolean(live.text || live.tools.length);
+  const groupKey = processGroupKey(live);
   const status = esc(liveStatusText());
   const citations = citationsFromTools(live.tools);
   const shownLive = live.text || '';
@@ -364,11 +395,11 @@ function liveMessageHTML() {
   const inlineStatus = live.tools.length
     ? ''
     : `<div class="live-status" id="liveStatusHost"><span class="live-dot"></span><span id="liveStatus" aria-live="polite">${status}</span>${hasContent ? '' : '<span class="typing"><i></i><i></i><i></i></span>'}</div>`;
-  return `<article class="msg assistant" id="liveMsg">
+  return `<article class="msg assistant" id="liveMsg" data-process-key="${esc(groupKey)}">
       <span class="msg-avatar">${icon('spark', 15)}</span>
       <div>
         <div class="msg-head"><span class="msg-name">Workbench</span><span class="msg-time">正在输出</span></div>
-        <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations) : liveBody) : ''}</div>
+        <div class="msg-body md-preview" id="liveBody">${shownLive ? (citations.length ? linkCitations(liveBody, citations, { compact: true }) : liveBody) : ''}</div>
         ${inlineStatus}
         <div id="liveTools">${live.tools.length ? toolGroupHTML(live.tools, { live: true }) : ''}</div>
       </div>
@@ -378,6 +409,7 @@ function liveMessageHTML() {
 function updateLiveMessage() {
   if (!liveArticle) return;
   const live = state.live;
+  liveArticle.dataset.processKey = processGroupKey(live);
   const hasContent = Boolean(live.text || live.tools.length);
 
   const body = liveArticle.querySelector('#liveBody');
@@ -386,7 +418,7 @@ function updateLiveMessage() {
     if (shownLive) {
       const markdown = renderMarkdownHTML(shownLive, '');
       const citations = citationsFromTools(live.tools);
-      const html = citations.length ? linkCitations(markdown, citations) : markdown;
+      const html = citations.length ? linkCitations(markdown, citations, { compact: true }) : markdown;
       if (body.innerHTML !== html) {
         const template = document.createElement('template');
         template.innerHTML = html;
@@ -422,10 +454,10 @@ function updateLiveMessage() {
     const signature = live.tools.map(tool => `${tool.id}:${tool.status}:${String(tool.output || '').length}`).join('|');
     if (toolsHost.dataset.signature !== signature) {
       const wasOpen = Boolean(toolsHost.querySelector('details')?.open);
-      toolsHost.innerHTML = live.tools.length ? toolGroupHTML(live.tools, { live: true }) : '';
+      const template = document.createElement('template');
+      template.innerHTML = toolGroupHTML(live.tools, { live: true, open: wasOpen });
+      patchLiveChildren(toolsHost, template.content);
       toolsHost.dataset.signature = signature;
-      const details = toolsHost.querySelector('details');
-      if (wasOpen && details) details.open = true;
     } else {
       const label = toolsHost.querySelector('#liveStatus');
       const text = liveStatusText();
@@ -439,15 +471,15 @@ function pendingMergesBadgeHTML() {
 }
 
 let renderedSession;
-function historyHTML(messages) {
+function currentOpenGroups() {
   const openGroups = new Set();
   if (renderedSession === state.activeSession) {
-    for (const group of threadEl.querySelectorAll('[data-process-key] .tool-group[open]')) {
+    for (const group of threadEl.querySelectorAll('[data-process-key]:not(#liveMsg) .tool-group[open]')) {
       openGroups.add(group.closest('[data-process-key]').dataset.processKey);
     }
   }
   renderedSession = state.activeSession;
-  return messages.map(message => messageHTML(message, { openGroups })).join('');
+  return openGroups;
 }
 
 function renderThread(scroll = false) {
@@ -470,8 +502,24 @@ function renderThread(scroll = false) {
   }
   if (showLive) {
     if (!liveArticle || !threadEl.contains(liveArticle)) {
-      threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${historyHTML(messages)}${liveMessageHTML()}</div>`;
-      liveArticle = threadEl.querySelector('#liveMsg');
+      const sameSession = renderedSession === state.activeSession;
+      const openGroups = currentOpenGroups();
+      const history = pendingMergesBadgeHTML() + approvalsShelfHTML() +
+        messages.map(message => messageHTML(message, { openGroups })).join('');
+      const previous = threadEl.querySelector('#liveMsg');
+      const key = processGroupKey(state.live);
+      if (sameSession && key && previous?.dataset.processKey === key) {
+        // A snapshot refreshes history too. Keep the live disclosure and its
+        // focused summary attached while replacing the preceding history.
+        while (previous.previousSibling) previous.previousSibling.remove();
+        previous.insertAdjacentHTML('beforebegin', history);
+        liveArticle = previous;
+        delete liveArticle.querySelector('#liveTools').dataset.signature;
+        updateLiveMessage();
+      } else {
+        threadEl.innerHTML = `<div class="thread-inner">${history}${liveMessageHTML()}</div>`;
+        liveArticle = threadEl.querySelector('#liveMsg');
+      }
       renderTraceHitl();
       void hydrateReports(threadEl);
     } else {
@@ -481,7 +529,9 @@ function renderThread(scroll = false) {
     restoreScroll();
     return;
   }
-  threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${historyHTML(messages)}</div>`;
+  const openGroups = currentOpenGroups();
+  const history = messages.map(message => messageHTML(message, { openGroups })).join('');
+  threadEl.innerHTML = `<div class="thread-inner">${pendingMergesBadgeHTML()}${approvalsShelfHTML()}${history}</div>`;
   liveArticle = null;
   renderTraceHitl();
   void hydrateReports(threadEl);

@@ -4,7 +4,243 @@ import { createReadTool, createWriteTool } from '@earendil-works/pi-coding-agent
 import { createFrameworkEditTool } from '../server/agent/framework-edit.mjs';
 import { appendCorrection, markArtifact } from '../lib/ledger.mjs';
 import { validateState } from '../lib/validate-state.mjs';
+import { answerCharCount, missingCompactItems, requestedAnswerLength, requestedCompactItems } from '../lib/answer-length.mjs';
+import { answerBlocks, hasOcrPageSource, missingSummaryItems, requestedSummaryItems, reviewBodyWithinBudget, verifiedPortion } from '../server/agent/answer-delivery.mjs';
 const { runWithPostAnswer } = await import('../server/agent/post-answer.mjs');
+const { prepareDisclosureAnswer } = await import('../server/agent/pdf-disclosures.mjs');
+
+test('margin disclosure corrects a denial without claiming that attribution was disclosed', () => {
+  const output = prepareDisclosureAnswer([
+    '**最强证据**：该页未列分部毛利率明细。',
+    '**已修订的结论**：分部上升未见于p.10，暂列为未核实。分部毛利率改善的归因未披露。',
+    '未核验：2025年后同口径数据、分部毛利率。',
+  ].join('\n'), {kind:'segment_margins', heading:'最强证据', facts:[{page:10, year:'2024',previous:'2023'}]});
+  assert.match(output.text, /分部毛利率改善的归因未披露/u);
+  assert.match(output.text, /未核验：2025年后同口径数据/u);
+  assert.doesNotMatch(output.text, /分部上升未见/u);
+  const section = {kind:'segment_margins', heading:'最强证据', facts:[{page:10,year:'2024',previous:'2023'}]};
+  const mixed = '未核验：2025年及以后同口径财务数据、2024年经营现金流。';
+  const scheduled = prepareDisclosureAnswer(mixed, section, ['三项待核','下次行动']).text;
+  assert.equal(scheduled, '未核验：2024年经营现金流。\n后续核对资料：2025年及以后同口径财务数据。');
+  assert.equal(prepareDisclosureAnswer(mixed, section).text, mixed);
+  const belowHeading = '**反证**\n盈利变化的归因需要更多数据。\n**三项待核**\n列出后续核对事项。';
+  assert.equal(prepareDisclosureAnswer(belowHeading, section).text, belowHeading);
+});
+
+test('margin summary separates the verified year and the outlook, but retains requested verification gaps', () => {
+  const section = {kind:'segment_margins', heading:'最强证据', observedYear:'2024', facts:[{page:10,year:'2024',previous:'2023'}]};
+  const required = ['已修订的结论','三项待核','下次行动'];
+  const input = [
+    '**已修订的结论**：1. 原“毛利率改善可确认”改为“待观察”，因只有单期证据，尚不能确定。',
+    '原“2022年毛利率改善可确认”改为“待观察”，因只有单期证据。',
+    '**下次行动**：以最新年报复核整体毛利率，据此决定是否推翻2024年单期结论。',
+    '未核验：2025年及以后同口径数据、以及AI资本开支对应的收入贡献、2024年经营现金流。',
+  ].join('\n');
+  const prepared = prepareDisclosureAnswer(input, section, required);
+  assert.match(prepared.text, /2024年毛利率同比改善已确认。后续能否延续仍待观察/u);
+  assert.match(prepared.text, /原“2022年毛利率改善可确认”改为“待观察”/u);
+  assert.match(prepared.text, /据此判断毛利率改善能否延续/u);
+  assert.match(prepared.text, /未核验：2024年经营现金流。\n后续核对资料：2025年及以后同口径数据、AI资本开支对应的收入贡献。/u);
+  assert.match(prepareDisclosureAnswer(input, section, required,'并核验2025年数据').text, /未核验：2025年及以后同口径数据/u);
+  assert.equal(prepared.removed.length, 2);
+});
+
+test('cash flow disclosure removes an undated gloss while preserving the follow-up and other sources', () => {
+  const section = {kind:'segment_margins', heading:'最强证据', headings:['最强证据','现金流'],
+    scenarioCashFlow:{horizon:'未来两季',userTurn:4}, facts:[{page:10,year:'2024',previous:'2023'},
+      {metric:'free_cash_flow', page:25, year:'2024', part:'Q4', value:'45', display_unit:'亿元'}]};
+  const draft = '**三项待核**\n3. 核对情景下经营现金流。当前值已被压低（p.25）。\n**下次行动**：对照下一季数据。';
+  const corrected = prepareDisclosureAnswer(draft, section);
+  assert.equal(corrected.text, draft.replace('当前值已被压低（p.25）。', ''));
+  assert.deepEqual(corrected.removed, ['当前值已被压低（p.25）。']);
+  const otherSource = draft.replace('p.25','p.26');
+  assert.equal(prepareDisclosureAnswer(otherSource, section).text, otherSource);
+  const correctlyDated = draft.replace('当前值已被压低', '2024年第四季度自由现金流为45亿元');
+  assert.equal(prepareDisclosureAnswer(correctlyDated, section).text, correctlyDated);
+});
+
+test('review delivery keeps the requested next action within the answer budget', () => {
+  const required = requestedSummaryItems('综合前四轮写投委会摘要：置信度、最强证据与反证、三项待核问题、下次行动。明确哪些结论被修订。限150字。');
+  assert.equal(required.length, 6);
+  const summary = [
+    '置信度中等。', '**最强证据**：经营盈利改善。', '**反证**：投入回报未见明细。', '**已修订的结论**：下调资本开支命题。',
+    '**三项待核**：现金流、分部收入、折旧。', '**背景**：' + '市场背景'.repeat(60) + '。', '**下次行动**：用下份季报复核广告收入。',
+  ].join('\n');
+  assert.deepEqual(missingSummaryItems(summary.replace('用下份季报复核广告收入。', ''), required), ['下次行动']);
+  const delivered = reviewBodyWithinBudget(summary, answerBlocks(summary), 125, undefined, required);
+  assert.deepEqual(missingSummaryItems(delivered, required), []);
+  assert.match(delivered, /下次行动[\s\S]*用下份季报复核广告收入/);
+  assert.doesNotMatch(delivered, /市场背景/);
+});
+
+test('all three numbered follow-ups survive summary compaction as one list', () => {
+  const required = ['置信度', '反证', '三项待核', '下次行动'];
+  const list = '**三项待核**：1. 分部毛利率；2）AI资本开支口径；3、经营现金流。';
+  const incomplete = list.replace('；2）AI资本开支口径；3、经营现金流', '');
+  const draft = [
+    '**核心判断**：基于现有资料，置信度中等。', '**反证**：投入回报缺量化证据。', list,
+    '**下次行动**：用下一期年报复算。', '**背景**：' + '市场背景'.repeat(60) + '。',
+  ].join('\n');
+  assert.deepEqual(missingSummaryItems(draft.replace(list, incomplete), required), ['三项待核']);
+  const delivered = reviewBodyWithinBudget(draft, answerBlocks(draft), 100, undefined, required);
+  assert.deepEqual(missingSummaryItems(delivered, required), []);
+  assert.match(delivered, /1\. 分部毛利率；\s*2）AI资本开支口径；\s*3、经营现金流/u);
+});
+
+test('a budgeted answer keeps each judgment with its reason', () => {
+  const first = '1. 渠道优势可能变强。同一形象能做成毛绒，再借海外门店卖出去。';
+  const second = '2. 爆款依赖也可能上升。其他角色增长慢，单一角色降温就会拖累收入。';
+  const draft = [first, second, '', '背景材料。'.repeat(30)].join('\n');
+  const budget = [...(first + second)].length;
+  const delivered = reviewBodyWithinBudget(draft, answerBlocks(draft), budget);
+  assert.equal(delivered, `${first}\n${second}`);
+  const partial = reviewBodyWithinBudget(draft, answerBlocks(draft), [...first].length);
+  assert.equal(partial, first);
+});
+
+test('budget compaction keeps the explanation below a judgment heading', () => {
+  const draft = '**护城河可能增强**\n同一形象可以走进不同市场。\n把它做成毛绒，再借海外门店卖出去，就能验证渠道是否能复制。\n\n**背景**\n' +
+    '背景材料。'.repeat(30);
+  const main = draft.split('\n\n')[0];
+  assert.equal(reviewBodyWithinBudget(draft, answerBlocks(draft), [...main.replace(/\s/g, '')].length), main);
+});
+
+test('a short footnote cannot make a judgment heading appear answered', () => {
+  const first = '**库存**\n周转变慢时，滞销的货留在仓库更久。';
+  const third = '**复购**\n' + '同一批会员第二次购买的比例要连续跟踪。'.repeat(7);
+  const note = '未核验：会员明细。';
+  const draft = [first, third, note].join('\n\n');
+  const budget = [...(first + '**复购**' + note).replace(/\s/g, '')].length;
+  assert.equal(reviewBodyWithinBudget(draft, answerBlocks(draft), budget), first);
+});
+
+test('a compression checklist uses the topics or count the user explicitly requested', () => {
+  const topics = requestedCompactItems('建立投资框架，重点是爆款依赖、复购、海外扩张、库存风险。限600字。');
+  assert.deepEqual(topics, { topics: ['爆款依赖', '复购', '海外扩张', '库存风险'], count: 4 });
+  const body = '**爆款依赖**：收入集中，需要观察后续新品表现。\n复购：会员是否回来买仍需要观察。\n海外扩张：新店推动收入，仍缺老店销售。\n还要关注库存风险。';
+  assert.deepEqual(missingCompactItems(body, topics), ['库存风险']);
+  assert.deepEqual(missingCompactItems(body + '\n库存风险：过季产品卖不动时需要折价。', topics), []);
+  assert.deepEqual(requestedCompactItems('写成３个可跟踪、可证伪命题。限400字。'), { count: 3, kind: '命题' });
+  assert.equal(requestedCompactItems('列最多五个问题。'), null);
+  assert.equal(requestedCompactItems('用表格列出5个问题。'), null);
+});
+
+test('ordinary word counts are targets and explicit maxima stay hard limits', () => {
+  for (const wording of ['约400字', '400字左右']) {
+    assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: false });
+  }
+  for (const wording of ['限４００字', '限制在400字', '控制在400字']) {
+    assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: false, cap: true });
+  }
+  for (const wording of ['严格限400字', '不超过400字', '请正文最多400字', '400字以内', '硬上限为400字']) {
+    assert.deepEqual(requestedAnswerLength('写出理由。' + wording + '。'), { chars: 400, strict: true });
+  }
+  assert.equal(requestedAnswerLength('解释这段内容为什么原有400字。'), null);
+});
+
+test('the verified dividend section survives the removal of a conflicting model section', async () => {
+  const originals = {
+    '公司甲_2024年报.pdf': {pages:[
+      {page:2, paragraphs:['公司拟以股本为基数，实施2024年年度利润分配，以此计算合计派发现金红利34,671,299,522.40元。']},
+      {page:34, paragraphs:['根据《2024年中期利润分配方案》，以125,619.78万股为基数，向全体股东每10股派发现金红利238.82元。该方案实施完毕。']},
+    ]},
+    '公司乙_2024年报.pdf': {pages:[{page:35, paragraphs:[
+      '2024年度公司现金分配方案为：拟向股东分红，共计分配现金12,300,815,767.85元。',
+      '《2024年中期利润分配方案》，公司以3,881,608,005股为基数，向股东每10股派现金25.76元。该方案实施完毕。',
+    ]}]},
+  };
+  const names = Object.keys(originals);
+  const ctx = {
+    store:{
+      findMaterialByPath(path) {return {id:path.slice('uploads/'.length)};},
+      getVersionRow(id) {return {version:{displayName:id, v:2, blob_sha256:'test-' + id}};},
+    },
+    pdfs:{async getForMaterial(id) {return {document:originals[id]};}},
+  };
+  const draft = '**品牌定价**：比较核心产品毛利和出厂价。\n**渠道**：跟踪直销和经销结构。\n**现金转化**：比较现金流与净利是否同步。\n**分红**：公司甲合计为646.87亿元。';
+  const session = {
+    messages:[],
+    async prompt() {this.messages.push({role:'assistant', stopReason:'stop', content:draft});},
+  };
+  const question = '基于公司甲、公司乙2024年报设计可比框架：品牌定价、渠道、现金转化、分红。限600字。';
+  const record = await runWithPostAnswer({session, ctx}, question, {attachments:names.map(name => 'uploads/' + name)});
+  assert.equal(record.status, 'completed');
+  assert.match(record.text, /646\.72亿元，年度预案为346\.71亿元（年报p\.2、p\.34）/u);
+  assert.match(record.text, /223\.00亿元/u);
+  assert.doesNotMatch(record.text, /646\.87/u);
+  assert.equal(record.pdfDisclosure.facts[0].version, 2);
+});
+
+test('OCR quality notes do not hide a sourced text answer', () => {
+  const calls = [{ name:'pdf_read', success:true, details:{
+    materialId:'scan', version:1, filename:'供需报告.pdf',
+    evidence:[{ page:1, ocr:true, text:'DRAM demand growth exceeds supply through 2028. Forecast growth is 12%.' }],
+  } }];
+  const sources = part => hasOcrPageSource(part, calls, { scan:1 });
+  const main = '报告预计 DRAM 需求增速将继续快于供给，紧张或持续到 2028 年（PDF p.1）。';
+  const draft = main + '\n\n未核验：页内数值需回到原图核对。';
+  const coverage = { unsupported:new Set(), supported:new Set(), verifiedEndings:new Set(), missing:[] };
+  assert.equal(verifiedPortion(draft, answerBlocks(draft), () => ({ citations:[] }), () => [], coverage, sources), main);
+  assert.equal(sources('材料预计增长 12%（PDF p.1）。'), false);
+  assert.equal(sources(main.replace('p.1', 'p.2')), false);
+  assert.equal(sources(main.replace('2028', '2035')), false);
+  assert.equal(hasOcrPageSource(main, calls, { scan:2 }), false);
+});
+
+test('a follow-up checks the cited PDF page before delivering a fiscal-period claim', async () => {
+  const filename = '腾讯控股_2024年年报_中文版.pdf';
+  const report = '於二零二四年第四季，本集團產生的自由現金流為人民幣45億元。二零二四年全年自由現金流為人民幣1600億元。';
+  const annual = '2024 年自由现金流为 45 亿元（p.25）。';
+  const quarterly = '2024 年第四季度自由现金流为 4500 百万元（第25页）。';
+  const separate = '经营现金流仍待观察。';
+
+  async function deliver(rewrite, source = report) {
+    const requests = [];
+    const metadata = [];
+    const reads = [];
+    const session = {
+      messages: [],
+      sessionManager: { appendCustomEntry(type, data) { metadata.push({ type, data }); } },
+      async prompt() { this.messages.push({ role: 'assistant', stopReason: 'stop', content: annual + separate }); },
+      async sendCustomMessage(message, options) {
+        if (!options.triggerTurn) return;
+        requests.push(message.content);
+        this.messages.push({ role: 'assistant', stopReason: 'stop', content: rewrite + separate });
+      },
+    };
+    const ctx = {
+      store: {
+        findMaterialByPath(path) { return path === 'uploads/' + filename ? {id: 'report'} : null; },
+        getVersionRow(id) { assert.equal(id, 'report'); return {version: {v: 2, displayName: filename}}; },
+      },
+      pdfs: {
+        async getForMaterial(id, version) {
+          reads.push([id, version]);
+          return {document: {pages: [{page: 25, paragraphs: [source], scanned: false}]}};
+        },
+      },
+    };
+    const record = await runWithPostAnswer({session, ctx}, '现金流结论是什么？限45字。', {attachments: ['uploads/' + filename]});
+    return {record, requests, reads, findings: metadata.filter(event => event.type === 'pe_answer_lint').flatMap(event => event.data.findings)};
+  }
+
+  const corrected = await deliver(quarterly);
+  assert.ok(corrected.reads.every(([id, version]) => id === 'report' && version === 2));
+  assert.equal(corrected.requests.length, 1);
+  assert.match(corrected.requests[0], /按原文应为 2024年第4季度/);
+  assert.ok(corrected.findings.some(finding => finding.rule === 'pdf_period_mismatch'));
+  assert.equal(corrected.record.status, 'completed');
+  assert.equal(corrected.record.text, quarterly + separate);
+
+  const stillWrong = await deliver(annual);
+  assert.equal(stillWrong.record.status, 'partial');
+  assert.match(stillWrong.record.text, /经营现金流仍待观察/);
+  assert.doesNotMatch(stillWrong.record.text, /45 亿元/);
+
+  const matchingYear = await deliver(annual, report.replace('1600億元', '45億元'));
+  assert.equal(matchingYear.record.status, 'completed');
+  assert.ok(!matchingYear.findings.some(finding => finding.rule === 'pdf_period_mismatch'));
+});
 const records = [], prompts = [], events = [];
 let release;
 const gate = new Promise(resolve => { release = resolve; });
@@ -204,7 +440,7 @@ const hidden = { id: 'hidden', ctx: {id:'p',root:'/tmp',store:{listToolPresentat
   subscribe(fn) { customListeners.add(fn); return () => customListeners.delete(fn); },
   async prompt(text) {
     this.messages.push({role:'user',content:text});
-    this.messages.push({role:'assistant',stopReason:'stop',content:'capex 不进入估值。'});
+    this.messages.push({role:'assistant',stopReason:'stop',content:'工作簿的 capex 不进入估值。'});
   },
   async sendCustomMessage(message, options) {
     customRequests.push({message,options});
@@ -219,7 +455,7 @@ const hidden = { id: 'hidden', ctx: {id:'p',root:'/tmp',store:{listToolPresentat
     for (const fn of customListeners) fn({type:'agent_settled',aborted:false});
   },
 } };
-await runWithPostAnswer(hidden, 'capex 不进入估值吗');
+await runWithPostAnswer(hidden, '工作簿的 capex 不进入估值吗');
 assert.equal(customTurns,1);
 assert.equal(hidden.session.messages.filter(m=>m.role==='user').length,1);
 assert.equal(customRequests[0].message.customType,'pe_turn_context');
@@ -1003,6 +1239,98 @@ console.log('target deviation post-answer correction passed');
     }
     const spaces = await runScript([{ text: 'The first ', stopReason: 'length' }, { text: 'half.' }]);
     assert.equal(spaces.record.text, 'The first half.');
+    // Exercise formatting only; host crop markers now correctly block a
+    // completed answer and are covered by test-delivery-bundle.
+    const unclosedBold = '1. **估值取决于盈利兑现。失效门槛需要结合历史波动与业务约束推导。';
+    const formattingOnly = await runScript([{ text: unclosedBold }]);
+    assert.equal(formattingOnly.record.status, 'completed');
+    assert.equal(formattingOnly.record.text, unclosedBold);
+    assert(!formattingOnly.requests.some(request => request.customType === 'pe_answer_continue'));
+    const rules = '**监控规则**：1) 跟踪滚动相关性；2) 更新波动率；3) 记录最大回撤。';
+    const listAnswer = await runScript([{ text: rules }]);
+    assert.deepEqual([listAnswer.record.status, listAnswer.record.text], ['completed', rules]);
+    assert(!listAnswer.requests.some(request => request.customType === 'pe_answer_continue'));
+    const shortened = await runScript([{ text: '解释'.repeat(30) + '。' }, { text: '先看安全边际。' }], '什么条件下更值得买？严格限40字。');
+    assert.equal(shortened.record.status, 'completed');
+    assert.equal(shortened.record.text, '先看安全边际。');
+    assert.match(shortened.requests.at(-1).content, /超过原题字数上限/);
+    const tooLong = '先看安全边际。\n\n' + '额外解释'.repeat(20) + '。';
+    const capped = await runScript([{ text: tooLong }, { text: tooLong }], '什么条件下更值得买？不超过40字。');
+    assert.equal(capped.record.status, 'partial');
+    assert.equal(capped.record.text, '> **待复核**\n\n先看安全边际。');
+    assert.equal(capped.requests.filter(request => /超过原题字数上限/.test(request.content)).length, 1);
+
+    const fiveQuestion = '列最想问公司的5个问题，逐个说明不同回答如何改变投资结论。严格不超过150字。';
+    const fiveItems = [
+      '1. 客户还会续约吗？会则收入更稳，否则下调预期。',
+      '2. 新品卖得动吗？会则看好增长，否则依赖旧品。',
+      '3. 老店销售在涨吗？会则可继续开店，否则放慢。',
+      '4. 过季库存多吗？多则担心折价，少则风险小。',
+      '5. 回款及时吗？及时则现金更稳，否则提高要求。',
+    ];
+    const completeFive = fiveItems.join('\n');
+    const longFive = fiveItems.map((item, index) => index < 3 ? item : item + '额外详细解释'.repeat(30) + '。').join('\n');
+    const completeList = await runScript([{ text: longFive }, { text: completeFive }], fiveQuestion);
+    assert.deepEqual([completeList.record.status, completeList.record.text], ['completed', completeFive]);
+    assert.match(completeList.requests.at(-1).content, /逐行写齐 5 项/);
+    assert.match(completeList.requests.at(-1).content, /每项最多约 28 字/);
+    assert.match(completeList.requests.at(-1).content, /两种回答各怎样改变判断/);
+    const incompleteList = await runScript([{ text: longFive }, { text: fiveItems.slice(0, 3).join('\n') }], fiveQuestion);
+    assert.equal(incompleteList.record.status, 'partial');
+    assert.match(incompleteList.record.reason, /缺少原题要求的内容：第 4 项、第 5 项/);
+    const trimmedList = await runScript([{ text: longFive }, { text: longFive }], fiveQuestion);
+    assert.equal(trimmedList.record.status, 'partial');
+    assert.ok(answerCharCount(trimmedList.record.text) <= 150);
+    assert.match(trimmedList.record.reason, /按字数交付后缺少：第 4 项、第 5 项/);
+
+    const softQuestion = fiveQuestion.replace('严格不超过150字', '限150字');
+    const nearTarget = softQuestion.replace('150字', `${answerCharCount(completeFive) - 10}字`);
+    const slightOver = await runScript([{ text: completeFive }], nearTarget);
+    assert.deepEqual([slightOver.record.status, slightOver.record.text], ['completed', completeFive]);
+    assert.match(slightOver.requests[0].content, /正文控制在 \d+ 字以内/);
+    const compactGood = await runScript([{ text: longFive }, { text: completeFive }], softQuestion);
+    assert.deepEqual([compactGood.record.status, compactGood.record.text], ['completed', completeFive]);
+    assert.match(compactGood.requests.at(-1).content, /可整理得更短，完整保留/);
+    const compactLostItem = await runScript([{ text: longFive }, { text: fiveItems.slice(0, 3).join('\n') }], softQuestion);
+    assert.deepEqual([compactLostItem.record.status, compactLostItem.record.text], ['partial', longFive]);
+    assert.match(compactLostItem.metadata('pe_answer_lint').at(-1).compaction.reason, /第 4 项、第 5 项/);
+    const compactUnavailable = await runScript([{ text: longFive }, { error: 'provider timeout' }], softQuestion);
+    assert.deepEqual([compactUnavailable.record.status, compactUnavailable.record.text], ['partial', longFive]);
+    assert.match(compactUnavailable.record.reason, /超过要求的 150 字/);
+    assert.equal(compactUnavailable.metadata('pe_answer_lint').at(-1).compaction.reason, 'provider timeout');
+    const longWithGap = longFive + '\n\n未核验：老店的独立销售记录。';
+    const flagged = await runScript([{ text: longWithGap }], softQuestion);
+    assert.deepEqual([flagged.record.status, flagged.record.text], ['partial', '> **待复核**\n\n' + longWithGap]);
+    assert.match(flagged.record.reason, /未核验：老店/);
+
+    const dcfQuestion = '假设公司基期FCFF100，未来1至3年每年增10%，第3年后永续增长3%，WACC10%，净债务200，股数200，现金流年末发生。DCF计算企业价值、每股价值和终值占比，列公式。';
+    const dcfAnswer = await runScript([{ text: '终值占比较高，估值会对折现率和永续增速比较敏感。' }], dcfQuestion);
+    assert.equal(dcfAnswer.record.status, 'completed');
+    assert.match(dcfAnswer.record.text, /每股价值 7\.86/);
+    assert.equal(dcfAnswer.record.calculation.outputs.perShare.value, '7.86');
+    const splitQuestion = '虚构情景：总收入增长50%，第一大IP占比20%升至40%。原总收入100，计算该IP与其他IP合计收入增长率。总收入增长能证明IP矩阵更健康吗？';
+    const growthConclusion = '不能。头部占比上升，其余仍然增长，整个组合更依赖头部。';
+    const splitReview = await runScript([{text:'总收入增长全靠第一大IP。'}, {text:growthConclusion}], splitQuestion);
+    assert.equal(splitReview.record.status, 'completed');
+    assert.ok(splitReview.metadata('pe_answer_lint')[0].findings.some(f=>f.rule === 'scenario_conclusion'));
+    assert.match(splitReview.record.text, /200\.00%[\s\S]*12\.50%[\s\S]*其余仍然增长/u);
+    assert.ok(!splitReview.record.text.includes('全靠'));
+    const payoutQuestion = '虚构对比：A归母净利100、经营现金流120、资本开支20、分红80；B对应100、90、10、100。算简化自由现金流和分红覆盖倍数；能否据此判A更值得投资？列缺口。';
+    const inverse = '分红覆盖倍数为分红除以自由现金流。';
+    const unresolved = await runScript([{text:inverse},{text:inverse}],payoutQuestion);
+    assert.equal(unresolved.record.status,'partial');
+    assert.match(unresolved.record.text,/1\.25倍[\s\S]*0\.80倍/u);
+    assert.ok(!unresolved.record.text.includes(inverse));
+    const gap = '未核验：虚构公司对应的实际企业。';
+    const fresh = '不能据此判断。现金能否持续、分红缺口怎么筹资、买入价格是否合算，都影响回报。';
+    const gapReview = await runScript([{text:fresh+'\n'+gap},{text:fresh}],payoutQuestion);
+    assert.equal(gapReview.record.status,'completed');
+    assert.ok(gapReview.record.text.includes(fresh));
+    const unreliable = '每股价值为 90 元。';
+    const dcfPartial = await runScript([{ text: unreliable }, { text: unreliable }], dcfQuestion);
+    assert.equal(dcfPartial.record.status, 'partial');
+    assert.match(dcfPartial.record.text, /每股价值 7\.86/);
+    assert.doesNotMatch(dcfPartial.record.text, /90 元/);
     const echoed = await runScript([{ text: '前文，', stopReason: 'length' }, { text: '前文，结论。' }]);
     assert.equal(echoed.record.text, '前文，结论。');
     // The incorrect conversion exists only across the boundary; checking just the tail misses it.
@@ -1016,6 +1344,14 @@ console.log('target deviation post-answer correction passed');
 
     const good = '收入为35亿元，见 Model!B2。';
     const bad = '第二项为909亿元，见 Fake!C9。';
+    const bookingQuestion = '新增客户数增60%，平均合同额降20%。能用这两项直接解释收入增30%吗？指出存量客户、口径、确认与时间滞后缺口。限350字。';
+    const explanation = '老客户加购、降配和流失也会影响总收入。合同按签约日期统计，收入要等履约后确认。';
+    const withBadSource = bad + '\n\n' + explanation;
+    const scenarioReview = await runScript([{ text: withBadSource }, { text: withBadSource }], bookingQuestion);
+    assert.equal(scenarioReview.record.status, 'partial');
+    assert.match(scenarioReview.record.text, /28\.00%/);
+    assert.ok(scenarioReview.record.text.includes(explanation));
+    assert.doesNotMatch(scenarioReview.record.text, /909|Fake!C9/);
     const mixed = await runScript([{ text: good + '\n\n' + bad, citations: [newCite] }, { text: good + '\n\n' + bad }]);
     assert.equal(mixed.record.status, 'partial');
     assert.ok(mixed.record.text.includes(good));
@@ -1030,8 +1366,19 @@ console.log('target deviation post-answer correction passed');
     assert.equal(recoveredLookup.record.status, 'completed');
     assert.deepEqual(recoveredLookup.record.citations.map(c => c.id), ['new']);
 
+    const draft = '组合预期年收益 8%，组合年化波动率为 13.23%。\n\n未核验：真实资产的样本区间。';
+    const review = await runScript([{ text: draft }, { text: draft }], '按题设计算组合预期收益和波动率。');
+    assert.deepEqual([review.record.status, review.record.text, review.record.citations],
+      ['partial', '> **待复核**\n\n未核验：真实资产的样本区间。', []]);
+    assert.doesNotMatch(review.record.text,/13\.23%|8%/); // No supplied inputs or valid review receipt.
+    assert.match(review.record.reason, /出处|未核验/);
+    assert.equal(review.metadata('pe_answer_lint').at(-1).correctionCount, 1);
+    const unsupported = await runScript([{ text: bad }, { text: bad }]);
+    assert.notEqual(unsupported.record.status, 'completed');
+    assert.doesNotMatch(unsupported.record.text, /909|Fake!C9/);
+    assert.deepEqual(unsupported.record.citations, []);
+
     const failures = [
-      [{ text: bad }, { text: bad }],
       [{ text: '未核验的模型片段', stopReason: 'error', errorMessage: 'provider disconnected' }],
       [{ error: 'provider unavailable' }],
       [{ toolError: 'workbook not found' }],
@@ -1225,11 +1572,8 @@ const workbookSession = { messages: [],
 };
 const workbookEntry = {session:workbookSession};
 const optionsTurn = await runWithPostAnswer(workbookEntry, '这个模型怎么看？', {attachments:['uploads/model.xlsx']});
-assert.equal(initialPrompts.length, 0);
-assert.equal(optionsTurn.status, 'completed');
-assert.match(optionsTurn.text, /^你想先弄清哪件事？/);
-assert.equal((await runWithPostAnswer(workbookEntry, 'A')).status, 'completed');
-assert.match(initialPrompts[0], /^复现原表估值/);
+assert.equal(initialPrompts.length, 1);
+assert.doesNotMatch(optionsTurn.text, /^你想先弄清哪件事？/);
 assert.match(initialPrompts[0], /uploads\/model\.xlsx/);
 const scopePromises = [];
 const clearSession = {messages:[], async prompt(text) {
@@ -1238,3 +1582,72 @@ const clearSession = {messages:[], async prompt(text) {
 }};
 await runWithPostAnswer({session:clearSession}, '完整解释这个模型', {attachments:['uploads/model.xlsx']});
 assert.equal(scopePromises.length, 1);
+
+test('clarification, correction, continuation and a new topic share the delivered research intent', async () => {
+  const { normalizeResearchIntent } = await import('../server/agent/research-intent.mjs');
+  const contexts = [];
+  const requests = [];
+  const goals = ['解释收入增长来源', '解释收入增长来源', '解释收入增长来源', '复现目标价'];
+  const answers = ['刚才的分析覆盖的是预测期。', '历史要用已发生的数据，预测要看模型输入。', '预测收入还包括产品换代。', '用远期每股盈利乘市盈率，再折现。'];
+  const questions = ['B', '你跟我说目标价干嘛？分清过去和未来。', '预测段还有吗？', '模型的目标价怎么算？'];
+  let run = 0;
+  const entry = {
+    session: {
+      messages: [],
+      async sendCustomMessage(message) { contexts.push(message.content); },
+      async prompt(text) {
+        this.messages.push({role:'user', content:text}, {role:'assistant', stopReason:'stop', content:answers[run++]});
+      },
+    },
+    async resolveResearchIntent(input) {
+      requests.push(input);
+      if (requests.length === 1) return normalizeResearchIntent({
+        mode:'clarify', action:'start', goal:'理解工作簿', request:'理解工作簿',
+        choices:['复现目标价。', '解释收入增长来源。'],
+      });
+      const target = run === 3;
+      return normalizeResearchIntent({
+        mode:'direct', action:target ? 'switch' : run === 1 ? 'correct' : 'continue',
+        goal:goals[run], request:goals[run], deliverables:[goals[run]],
+        exclusions:run === 1 || run === 2 ? ['不要谈目标价'] : [],
+        open:run === 1 ? ['历史量价归因仍需数据'] : [],
+        routes:target ? ['target'] : ['evidence'],
+      });
+    },
+  };
+  const first = await runWithPostAnswer(entry,'这个模型怎么看？', {attachments:['model.xlsx']});
+  assert.match(first.text,/B\. 解释收入增长来源/);
+  for (const question of questions) await runWithPostAnswer(entry,question);
+  assert.equal(requests[1].choiceSelected,true);
+  assert.equal(requests[1].question,'解释收入增长来源。');
+  assert.equal(requests[1].hasWorkbook,true);
+  assert.ok(requests[2].history.some(({role,text}) => role === 'assistant' && text === answers[0]));
+  assert.deepEqual(requests[3].previous.exclusions,['不要谈目标价']);
+  assert.deepEqual(requests[3].previous.open,['历史量价归因仍需数据']);
+  assert.doesNotMatch(contexts[1],/复现原模型估值/);
+  assert.match(contexts[2],/不要谈目标价/);
+  assert.match(contexts[3],/复现原模型估值/);
+  assert.doesNotMatch(contexts[3],/不要谈目标价/);
+});
+
+test('scoped partial delivery keeps the answer about the previous turn and treats a reconciliation as a unit', async () => {
+  const { researchPortion } = await import('../server/agent/answer-delivery.mjs');
+  const opening = '刚才主要讲的是高盛预测。';
+  const bad = '历史涨价已得到完全证实。';
+  const contribution = '| 交叉项 | 124.09 个百分点 |';
+  const draft = [opening, bad, '| 驱动 | 贡献 |\n| --- | --- |\n| 出货量 | 38.40 个百分点 |\n'+contribution+'\n| 合计 | 485.63 个百分点 |'].join('\n\n');
+  const findings = [bad,contribution].map(excerpt => ({rule:'unsourced_number', severity:'error',excerpt}));
+  const result = researchPortion(draft, () => findings, findings, [], {preserveAnswerUnits:true});
+  assert.match(result,/^刚才主要讲的是高盛预测。/);
+  assert.doesNotMatch(result,/已得到完全证实|38\.40|124\.09|485\.63/);
+});
+
+test('contribution receipts use percentage points without treating rates and points interchangeably', async () => {
+  const {createCalcTool} = await import('../lib/calc-tool.mjs');
+  const bridgeTool = createCalcTool();
+  const pointItem = {expression:'(4.8563-0.384-3.2314)*100', outputUnit:'个百分点', ratioEncoding:'percentage_points', name:'量价交叉项'};
+  const bridgeReceipt = await bridgeTool.execute('growth-bridge', pointItem);
+  assert.equal(bridgeReceipt.details.results[0].unit, '个百分点');
+  assert.equal(bridgeReceipt.details.results[0].value, '124.09');
+  assert.equal((await bridgeTool.execute('wrong-unit', {...pointItem,ratioEncoding:'fraction'})).isError,true);
+});

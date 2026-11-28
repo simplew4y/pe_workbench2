@@ -275,12 +275,14 @@ async function loadPdfPage(number, { query = '' } = {}) {
     pane.innerHTML = `<div class="prev-state">这一页没有内容。</div>`;
     return;
   }
+  const needsOcr = block.scanned && !block.ocr;
+  const scanLabel = block.ocr ? 'OCR 文字，请核对原图' : needsOcr ? '图片或扫描页，需要 OCR' : '';
   const head = `<div class="pdf-page-head">
       <span class="pdf-page-no">p.${block.page}</span>
-      <span class="pdf-page-meta">${block.scanned ? '无文字页' : `${formatInt(block.chars)} 字`}</span>
-      ${block.scanned ? `<span class="pdf-page-warn">${icon('info', 11)} 图片/扫描页，需要 OCR</span>` : ''}
+      <span class="pdf-page-meta">${needsOcr ? '无文字页' : `${formatInt(block.chars)} 字`}</span>
+      ${scanLabel ? `<span class="pdf-page-warn">${icon('info', 11)} ${scanLabel}</span>` : ''}
     </div>`;
-  if (block.scanned) {
+  if (needsOcr) {
     pane.innerHTML = `${head}<div class="pdf-scan-note">这一页没有可提取的文字${block.images ? `（含 ${block.images} 张图片）` : ''}。原文视图仍可查看，但 Agent 读不到正文；如需分析需先做 OCR。</div>`;
     return;
   }
@@ -1001,6 +1003,7 @@ function excelShell(manifest, f, v) {
         <button type="button" class="pv-btn pv-icon" data-xlsx-zoom="in" title="放大">${icon('zoom-in', 14)}</button>
         <span class="pv-spacer"></span>
         <span class="pv-stat">${formatInt(sheetCount)} 个工作表 · ${formatInt(stats.cellCount)} 个单元格</span>
+        ${f.kind === 'input' && /\.xlsx$/i.test(f.relPath) && v.v === latest(f)?.v ? `<button class="pv-btn" data-update-model="${esc(f.id)}">更新估值模型</button>` : ''}
         <a class="pv-btn pv-icon" href="${esc(versionFileUrl(f, v, true))}" title="下载原文件">${icon('download', 14)}</a>
         <button type="button" class="pv-btn pv-icon" data-preview-expand title="放大预览">${icon('maximize', 14)}</button>
       </div>
@@ -1700,6 +1703,15 @@ function togglePreviewExpanded(button) {
 function onPreviewClick(event) {
   const target = event.target;
 
+  const update = target.closest('[data-update-model]');
+  if (update) {
+    const model = fileById(update.dataset.updateModel);
+    if (model) {
+      closeFile(false);
+      window.NextActions?.updateModel(model);
+    }
+    return;
+  }
   const asrStart = target.closest('[data-asr-start]');
   if (asrStart) {
     void startAudioAsr(asrStart.dataset.asrStart === 'force');

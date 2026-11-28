@@ -1,3 +1,6 @@
+import { guardToolProtocol } from '../../lib/tool-call-protocol.mjs';
+import { reconcileEvidence, reviewEvidenceBindings } from '../../lib/evidence-reconciliation.mjs';
+import { createUpdateModelTool } from "../../lib/tracking-tool.mjs";
 import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/tools.mjs';
 /**
  * Session lifecycle and persistence.
@@ -7,17 +10,21 @@ import { createFactMemoryTools, withFactCapture } from '../../lib/fact-memory/to
  * handlers only parse HTTP input and call these methods.
  */
 
-import {auditResearch} from "../../lib/research-audit.mjs";
+import {createResearchAuditor} from "../../lib/research-audit.mjs";
 import { guardResearchDelivery } from "../../lib/research-delivery.mjs";
+import {publishReportWithMaterials} from './report-materials.mjs';
 import {createResearchReview} from "../../lib/research-review.mjs";
+import {createResearchWriteTool} from '../../lib/research-write-tool.mjs';
 import fs from "node:fs";
 import {readLedger} from "../../lib/ledger.mjs";
 import {createLedgerTool} from "../../lib/ledger-tool.mjs";
 import {createTranscriptSearchTool} from "../../lib/transcript-search-tool.mjs";
+import {createTraceReplayTool} from "../../lib/trace-replay.mjs";
 import path from "node:path";
 import { normalizeContext } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  createWriteToolDefinition,
   DefaultResourceLoader,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -36,6 +43,7 @@ import {
 } from "./snapshot.mjs";
 import { assessContextBudget, contextBudgetFailureStream, fitContextMessages } from "../../lib/context-budget.mjs";
 import { systemHint } from "../project-context.mjs";
+import { defaultThinkingLevel, modelThinkingLevels, sessionModelSettings } from "./session-model-settings.mjs";
 
 export function createSessionService({
   config,
@@ -103,7 +111,9 @@ export function createSessionService({
       // backup, recalculation and human review.
       if (
         ["write", "edit"].includes(toolName)
-        && /(?:^|\/)model\/[^/]+\.(?:xlsx|xlsm)$/i.test(rel)
+        && (/(?:^|\/)model\/[^/]+\.(?:xlsx|xlsm)$/i.test(rel)
+          || /^(?:uploads|inputs)\/.+\.(?:xlsx|xlsm)$/i.test(rel)
+          || /^exports\/model-updates\/[^/]+\/model\/analysis-state\.json$/.test(rel))
       ) {
         return { block: true, reason: "工作模型只能通过人工审批写入" };
       }
@@ -144,6 +154,12 @@ export function createSessionService({
 
     // Restore the persisted background boundary even through generic session routes.
     const restoredManager = !config.fakeAgent && file ? SessionManager.open(file, ctx.sessionsDir) : null;
+    const branch = restoredManager?.getBranch();
+    const savedSelection = branch?.findLast(item => item.type === "model_change");
+    const savedModel = savedSelection && config.resolveModel(savedSelection.modelId);
+    const selectedModel = savedModel?.provider === savedSelection?.provider && savedModel ? savedModel : config.model;
+    const savedLevel = branch?.findLast(item => item.type === "thinking_level_change")?.thinkingLevel;
+    const selectedLevel = modelThinkingLevels(selectedModel).includes(savedLevel) ? savedLevel : defaultThinkingLevel(selectedModel);
     const restoredName = restoredManager?.getSessionName?.() || "";
     if (/^\[(计划|跟踪|盯)\]/.test(restoredName)) automated = true;
     if (/^\[盯\]/.test(restoredName) && !writeRoots) writeRoots = [".watch/"];
@@ -154,8 +170,17 @@ export function createSessionService({
     let entry;
     const metadata=()=>({session_id:session?.sessionId || id || '',run_id:entry?.localRunId || '',turn:session?.messages?.filter(m=>m.role==='user'&&!m.peInternal&&!m.customType).length || 0,actor:automated||writeRoots?'automation':'agent'});
     const memoryTools=ctx.factMemory ? createFactMemoryTools({memory:ctx.factMemory,getMetadata:metadata}) : [];
-    const sessionTools = automated || writeRoots ? memoryTools.filter(t=>t.name==='fact_query') : [
+    const deliveredPdfReads = new Set((restoredManager?.getBranch() || [])
+      .filter(e => e.type === "custom" && e.customType === "pe_disclosure_read").flatMap(e => e.data.ids));
+    const traceReplay = config.workbookQuery ? [createTraceReplayTool({ getMessages: () => session.sessionManager.getBranch()
+      .filter(entry => entry.type === "message").map(entry => entry.message) })] : [];
+    const sessionTools = automated || writeRoots ? [...memoryTools.filter(t=>t.name==='fact_query'), ...traceReplay] : [
+      ...(ctx.updateModel ? [createUpdateModelTool(args => ctx.updateModel(args, metadata().session_id),
+        { store: ctx.store, pdfs: ctx.pdfs, workbooks:ctx.workbooks, messages: () => session.sessionManager?.getBranch?.()
+          .filter(e => e.type === "message" && (e.message.toolName !== "pdf_read" || deliveredPdfReads.has(e.message.toolCallId)))
+          .map(e => e.message) ?? session.messages })] : []),
       ...memoryTools,
+      ...traceReplay,
       createLedgerTool({ctx, getSessionId: () => session.sessionId,
         getTurn: () => session.messages.filter(m => m.role === "user" && !m.peInternal && !m.customType).length,
         broadcast: event => bus.broadcastGlobal(event, ctx.id),
@@ -165,6 +190,8 @@ export function createSessionService({
     ];
     if (config.fakeAgent) {
       session = await createFakeSession({ id: id || undefined, ctx, config });
+      await session.setModel(selectedModel);
+      session.setThinkingLevel(selectedLevel);
     } else {
       const sessionManager = file
         ? restoredManager
@@ -174,60 +201,117 @@ export function createSessionService({
       const created = await createAgentSession({
         cwd: ctx.root,
         agentDir: config.agentDir,
-        model: config.model,
-        thinkingLevel: "off",
+        model: selectedModel,
+        thinkingLevel: selectedLevel,
         sessionManager,
         resourceLoader: loader,
         tools: [...config.toolNames, "review_research", ...sessionTools.map(t => t.name)],
         customTools: ctx.tools
           .map(tool => withFactCapture(tool, ctx.factMemory, metadata))
-          .concat(researchReview.tool, sessionTools, createFrameworkEditTool(ctx.root, () => entry?.activeTurn)),
+          .concat(researchReview.tool, sessionTools, createFrameworkEditTool(ctx.root, () => entry?.activeTurn),
+            createResearchWriteTool({rawWrite:createWriteToolDefinition(ctx.root),review:researchReview,
+              authorizeWrite:args=>blockOutsideProject(ctx,'write',args) ?? blockOutsideWriteRoots(ctx,'write',args,writeRoots)})),
       });
       session = created.session;
       const stream = session.agent.streamFunction;
-      session.agent.streamFunction = (model, context, options) => {
+      session.agent.streamFunction = async (model, context, options) => {
         const transcript = normalizeContext(context);
-        const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens);
+        const messages = fitContextMessages(transcript.messages, model, undefined, options?.maxTokens, { traceReplay: traceReplay.length > 0 });
         if (!assessContextBudget(messages, model, options?.maxTokens).ok) return contextBudgetFailureStream(model);
         const request = { messages };
-        if (!config.modelPayload) return stream(model, request, options);
-        return stream(model, request, {
+        let sentIds = [];
+        const response = await stream(model, request, {
           ...options,
           onPayload: async (payload, requestModel) => {
             const transformed = await options?.onPayload?.(payload, requestModel);
-            return config.modelPayload(transformed ?? payload, requestModel);
+            const outgoing = config.modelPayload ? await config.modelPayload(transformed ?? payload, requestModel) : transformed ?? payload;
+            // Only count a page batch when the provider request actually includes its full text.
+            // Persist call IDs on this branch so compaction does not force a second reading.
+            const pdfReads = transcript.messages.filter(m => m.role === "toolResult" && m.toolName === "pdf_read" &&
+              m.details?.fullPageBatch && !deliveredPdfReads.has(m.toolCallId));
+            sentIds = pdfReads.filter(m => outgoing?.messages?.some(w => w.role === "tool" &&
+              w.tool_call_id === m.toolCallId && m.content.filter(b => b.type === "text").every(b =>
+                typeof w.content === "string" ? w.content.includes(b.text) : w.content?.some(c => c.text?.includes(b.text)))))
+              .map(m => m.toolCallId);
+            // Record only non-secret execution settings, never request content or keys.
+            if (entry?.activeTurn && !entry.activeTurn.modelRequestRecorded) {
+              entry.activeTurn.modelRequestRecorded = true;
+              session.sessionManager?.appendCustomEntry('pe_model_request', {
+                turnId:entry.activeTurn.turnId,model:requestModel?.id || model.id,
+                thinkingType:outgoing?.thinking?.type || null,
+                reasoningEffort:outgoing?.reasoning_effort || outgoing?.reasoning?.effort || null,
+                toolNames:(outgoing?.tools || []).map(tool=>tool.function?.name || tool.name).filter(Boolean),
+              });
+            }
+            return outgoing;
           },
         });
+        void response.result().then(answer => {
+          const confirmed = sentIds.filter(id => !deliveredPdfReads.has(id));
+          if (!confirmed.length || !["stop","length","toolUse"].includes(answer.stopReason)) return;
+          session.sessionManager.appendCustomEntry("pe_disclosure_read", {ids:confirmed});
+          for (const id of confirmed) deliveredPdfReads.add(id);
+        }).catch(() => { /* A failed request or persistence error leaves the batch pending. */ });
+        return response;
       };
       researchReview.restoreEvidence(session.messages);
       // Use the configured provider for review and repair requests as well as chat.
-      const provider = session.agent.streamFunction;
+      const provider = guardToolProtocol(session.agent.streamFunction);
+      const auditResearch = createResearchAuditor();
       const recordAudit = record => {
         fs.appendFileSync(path.join(ctx.root, ".pi", "research-audit.jsonl"), JSON.stringify(record) + "\n");
       };
-      session.agent.streamFunction = guardResearchDelivery(provider, {
+      const researchStream = guardResearchDelivery(provider, {
         recordAudit,
         getSessionMessages: () => session.messages,
+        getReportDraft: () => researchReview.draftSnapshot(),
+        getArtifacts: () => researchReview.artifactSnapshot(),
         getContinuation: () => entry?.activeTurn?.continueResearchAnswer,
-        audit: (source, model, context, options, draft) =>
-          auditResearch(source, model, context, options, draft, { workbookEvidence: researchReview.evidenceSnapshot() }),
+        getRecovery: () => entry?.activeTurn?.researchRecovery,
+        queueReviewCorrection: request => entry?.activeTurn?.queueReviewCorrection?.(request),
+        getAnswerLengthHint: () => entry?.activeTurn?.answerLengthHint,
+        getCalculation: () => entry?.activeTurn?.calculation,
+        getCompactAnswer: () => entry?.activeTurn?.compactAnswer,
+        getPriorAnswers: () => entry?.activeTurn?.priorAnswers,
+        getResearchIntent: () => entry?.activeTurn?.intent,
+        getPriorPublicDialogue: () => entry?.activeTurn?.priorPublicDialogue,
+        getPdfDisclosure: () => entry?.activeTurn?.pdfDisclosure,
+        audit: (source, model, context, options, draft, extra) =>
+          auditResearch(source, model, context, options, draft, { ...extra, workbookEvidence: researchReview.evidenceSnapshot() }),
         onContext: (model, context, options) => {
           researchReview.restoreEvidence(context.messages);
+          if (entry) entry.reconcileEvidence = async (answer, findings, lintContext) => {
+            const result=await reconcileEvidence(findings,lintContext,pending=>
+              reviewEvidenceBindings(provider,model,options,entry.activeTurn?.question || '',answer,pending));
+            recordAudit({kind:'answer_binding',at:new Date().toISOString(),status:result.status,accepted:result.accepted,usage:result.usage});
+            return result;
+          };
           researchReview.setAuditor(async (content, extra) => {
             const verdict = await auditResearch(provider, model, context, options, content, {
-              ...extra, workbookEvidence: researchReview.evidenceSnapshot(),
+              question:entry?.activeTurn?.question || '',
+              researchIntent:entry?.activeTurn?.intent,
+              priorPublicDialogue:entry?.activeTurn?.priorPublicDialogue,
+              ...extra, workbookEvidence: researchReview.evidenceSnapshot(),deliveredFiles:researchReview.artifactSnapshot(),
             });
             recordAudit({ ...verdict, kind: "report", at: new Date().toISOString() });
             return verdict;
-          });
+          },JSON.stringify([model.provider,model.id,options?.reasoning,options?.maxTokens]));
         },
       });
+      // Pi omits reasoning when thinking is off. Keep the explicit choice on
+      // review/repair requests, which otherwise have their own reasoning default.
+      session.agent.streamFunction = (model, context, options) => {
+        const mode = entry?.activeTurn?.thinkingMode;
+        const level = mode === "normal" ? "off" : mode === "deep" ? defaultThinkingLevel(model) : session.thinkingLevel;
+        return researchStream(model, context, model.reasoning && level ? { ...options, reasoning:level } : options);
+      };
     }
 
     session.agent.beforeToolCall = async ({ toolCall, args }) => {
       const outside = blockOutsideProject(ctx, toolCall.name, args);
       if (outside) return outside;
-      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ?? researchReview.before(toolCall.name, args) ?? undefined;
+      return blockOutsideWriteRoots(ctx, toolCall.name, args, writeRoots) ??
+        (toolCall.name==='write' && !config.fakeAgent ? undefined : researchReview.before(toolCall.name, args)) ?? undefined;
     };
 
     const afterToolCall = session.agent.afterToolCall;
@@ -236,7 +320,7 @@ export function createSessionService({
       // do not establish project evidence or an editable file baseline.
       const externalRead = context.toolCall.name === "read" && typeof context.args?.path === "string"
         && !path.resolve(ctx.root, context.args.path).startsWith(path.resolve(ctx.root) + path.sep);
-      const review = externalRead ? undefined : researchReview.record(context);
+      const review = externalRead || context.result?.details?.researchWriteHandled ? undefined : researchReview.record(context);
       if (!review) return afterToolCall?.(context, signal);
       const result = { ...context.result, ...review };
       const normalized = await afterToolCall?.({ ...context, result, isError: review.isError ?? context.isError }, signal);
@@ -251,6 +335,9 @@ export function createSessionService({
     }
 
     entry = {
+      reportDraftSnapshot:researchReview.draftSnapshot,
+      artifactSnapshot:researchReview.artifactSnapshot,
+      publishReportDelivery:(outcome,question)=>publishReportWithMaterials(researchReview.publishDelivery,onMaterialSaved,entry,outcome,question),
       id: session.sessionId,
       sessionTools,
       automated: Boolean(automated || writeRoots),
@@ -275,7 +362,7 @@ export function createSessionService({
       threadId: entry.id,
       workspaceId: ctx.id,
       log: ctx.agentEvents,
-      isBusy: () => Boolean(entry.postAnswerPending),
+      isBusy: () => Boolean(entry.postAnswerPending || entry.modelSettingsPending),
       ...(entry.automated ? {} : {
         promptRunner: (text, options) => runWithPostAnswer(entry, text, options, event => bus.broadcast(entry, event)),
         cancelTurn: () => cancelActiveTurn(entry),
@@ -319,7 +406,7 @@ export function createSessionService({
       .filter((info) => !/^\[(计划|跟踪|盯)\]/.test(String(info.name || "")))
       .map((info) => ({
         id: info.id,
-        title: info.name || makeTitle(info.firstMessage) || "未命名会话",
+        title: info.name || (info.messageCount ? makeTitle(info.firstMessage) : "新会话") || "未命名会话",
         messageCount: info.messageCount,
         updatedAt: info.modified.toISOString(),
       }));
@@ -332,6 +419,7 @@ export function createSessionService({
         title: entry.session.sessionName || entry.title || "新会话",
         messageCount: entry.session.messages.length,
         updatedAt: entry.updatedAt,
+        ...sessionModelSettings(entry),
       };
       const index = items.findIndex((candidate) => candidate.id === entry.id);
       if (index >= 0) items[index] = item;

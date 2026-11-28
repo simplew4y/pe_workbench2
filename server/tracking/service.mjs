@@ -1,3 +1,4 @@
+import { modelUpdateState, trackingStatePath } from "../../lib/model-location.mjs";
 /**
  * Tracking / monitoring / source-polling domain service.
  *
@@ -6,9 +7,11 @@
  * runTracking/tick; tests can call them directly.
  */
 
+import { visibleMaterial } from "../../store.mjs";
 import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import {deliveryBundleIssue} from '../../lib/delivery-bundle.mjs';
 
 import {
   buildTrackingPrompt,
@@ -20,6 +23,11 @@ import { computeNextCheck, decideAction } from "../../lib/monitoring.mjs";
 import { notifyDesktop } from "../../lib/desktop-notify.mjs";
 import { lastAssistantText } from "../agent/snapshot.mjs";
 import { TRACKING_RESULT } from "../../lib/contracts/tracking-result.mjs";
+import { fetchDisclosurePdf } from "../../lib/web-fetch-tool.mjs";
+import { archivedDisclosurePath, importDisclosure, disclosureInventory, mapDisclosure, auditDisclosure, disclosureVersionIssue, disclosureProposalIssues, sha256File } from "../../lib/model-disclosure.mjs";
+import { prepareWorkingModel } from "../../lib/model-writer.mjs";
+import { readCells } from "../../lib/calc-engine.mjs";
+import { normalizeActuals } from "../../lib/model-actuals.mjs";
 
 export function createTrackingService({
   config,
@@ -91,6 +99,8 @@ async function settleTrackingRun({
   stateRel = "",
   stateMaterialId = null,
   stateBaseVersion = null,
+  disclosure = null,
+  threadId = entry?.id || "",
 }) {
   const store = ctx.store;
   let pendingApproval = null;
@@ -184,6 +194,15 @@ async function settleTrackingRun({
     result.status = status;
     result.target.result_version = versionIncreased ? latestVersion : null;
     result.writeback.version = versionIncreased ? `v${latestVersion}` : "未产生新版本";
+    if (template.id === "model") {
+      result.writeback.plan_files = [];
+      for (const name of ["update-plan.json", "change-log.md"]) {
+        const relative = `.tracking/${trackingId}/${runId}/${name}`;
+        if ((await fsp.stat(path.join(ctx.root, relative)).catch(() => null))?.isFile()) {
+          result.writeback.plan_files.push(relative);
+        }
+      }
+    }
     if (backupRel) {
       result.writeback.backup = backupRel;
       const note = String(result.writeback.note || "");
@@ -208,6 +227,49 @@ async function settleTrackingRun({
       }));
     }
 
+    let blockDisclosureProposal = false;
+    if (template.id === "model" && !monitorMode) {
+      const { state } = await readTrackingState(ctx, store.getTracking(trackingId));
+      const book = state?.model?.working_file || state?.subject?.model_file || target?.relPath;
+      const inventory = disclosure?.inventory || { source: "", sha256: "", facts: [], issues: ["本次运行没有独立公告清单"] };
+      const mapping = disclosure?.mapping || { actuals: [], gaps: [] };
+      const confirmed = state?.model?.actuals || [];
+      const checks = !inventory.facts.length && confirmed.length ? { ...mapping, actuals: normalizeActuals(confirmed) } : mapping;
+      const audit = await auditDisclosure(ctx, inventory, checks, book, !result.modelChanges.length);
+      const evidenceIssue = await disclosureVersionIssue(ctx, inventory.sha256 ? {
+        disclosure_file: inventory.source, disclosure_sha256: inventory.sha256,
+      } : state?.model);
+      if (evidenceIssue) audit.issues.push(evidenceIssue);
+      if (inventory.facts.length && (book !== disclosure.book || (state?.model?.disclosure_sha256 && state.model.disclosure_sha256 !== inventory.sha256))) {
+        audit.issues.push("工作模型或确认的公告已变化");
+      }
+      if (result.modelChanges.length && inventory.facts.length && (!state?.model?.disclosure_sha256 ||
+          JSON.stringify(confirmed) !== JSON.stringify(mapping.actuals))) {
+        audit.issues.push("公告及其映射尚未确认，无法核验提案");
+      }
+      if (result.modelChanges.length && inventory.facts.length) {
+        audit.issues.push(...disclosureProposalIssues(result.modelChanges, mapping.actuals, mapping.edits));
+      }
+      if (!result.modelChanges.length) {
+        result.deltas = Object.entries(audit.outputValues).map(([label, value]) => ({ label, from: String(value), to: String(value), note: "重算后读数", tone: "flat" }));
+      }
+      blockDisclosureProposal = Boolean((inventory.source || inventory.candidates?.length || state?.model?.disclosure_file) &&
+        (audit.issues.length || !mapping.actuals.length));
+      const complete = audit.complete && !audit.issues.length;
+      const gaps = audit.gaps.map(({ period, metric, page, reason }) => ({ period, metric, page, reason }));
+      result.writeback.coverage = { source: inventory.source, sourceUrl: inventory.sourceUrl, sha256: inventory.sha256,
+        inventoryPath: disclosure?.inventoryPath || "", total: audit.total, mapped: audit.mapped,
+        matched: audit.matched, derivedRefs: audit.derivedRefs, derivedMatched: audit.derivedMatched, complete,
+        gaps, sourceGaps: inventory.sourceGaps || [], issues: audit.issues };
+      result.writeback.reconciliation = audit.rows;
+      const detail = `公告 ${audit.total} 项，已定位 ${audit.mapped} 项，对上 ${audit.matched} 项，待映射 ${gaps.length} 项。另核对模型折算项 ${audit.derivedMatched}/${audit.derivedRefs.length}。`;
+      status = complete && !result.modelChanges.length && rawResult && !versionIncreased ? "no_change" : "needs_review";
+      result.status = status;
+      result.headline = result.conclusion = status === "no_change" ? "所选公告范围内已逐项对上" : "公告对账待复核";
+      result.summary = [detail, ...audit.issues].join(" ");
+      result.writeback.note = result.modelChanges.length ? "已核对写回前的工作簿。" : "本次只读核对，未写入工作簿。";
+      if (blockDisclosureProposal) result.writeback.note += audit.issues.join(" ");
+    }
     const triggeredCheck = (result.monitorChecks || []).some((check) => check.status === "triggered");
     const warningCheck = (result.monitorChecks || []).some((check) => check.status === "warning");
     const invalidatedThesis = (result.theses || []).some((thesis) => thesis.status === "invalidated");
@@ -216,7 +278,7 @@ async function settleTrackingRun({
       ? "C3"
       : (triggeredCheck || invalidatedThesis)
         ? "C2"
-        : warningCheck || status === "updated"
+        : warningCheck || status === "updated" || result.writeback.coverage?.complete === false
           ? "C1"
           : "C0";
     const confidenceLabel = { "高": "high", "中": "medium", "低": "low" }[result.confidence] || "medium";
@@ -249,7 +311,7 @@ async function settleTrackingRun({
     // Hard rule: a tracking result with model changes is never written back
     // automatically, regardless of autonomy or confidence. It becomes a
     // durable proposal that a human must approve.
-    if (result.modelChanges.length) {
+    if (result.modelChanges.length && !blockDisclosureProposal) {
       status = "needs_review";
       result.decision = {
         ...result.decision,
@@ -265,7 +327,7 @@ async function settleTrackingRun({
           ctx,
           tracking,
           trackingRunId: runId,
-          threadId: entry?.id || "",
+          threadId,
           result,
           state,
           stateRel,
@@ -339,7 +401,7 @@ async function settleTrackingRun({
       confidence: result.decision?.confidence || null,
     });
     broadcastTracking(dto, ctx.id);
-    if (target) broadcastMaterial(target, ctx.id);
+    if (visibleMaterial(target)) broadcastMaterial(target, ctx.id);
 
     try {
       if (versionIncreased) {
@@ -723,6 +785,11 @@ async function ingestUploadEvent(ctx, material, name) {
 }
 
 async function pollSourceBinding(ctx, binding) {
+  const currentTracking=ctx.store.getTracking(binding.trackingId);
+  if(currentTracking) {
+    const info=await readTrackingState(ctx,currentTracking);
+    if(info.deliveryBlocked)return {events:0,skipped:true,reason:info.error};
+  }
   if (binding.adapter === "westock") return pollWestockBinding(ctx, binding);
   if (binding.adapter !== "anysearch") return { events: 0, skipped: true };
   const tool = ctx.tools.find((item) => item.name === "anysearch_search");
@@ -789,16 +856,18 @@ function trackingWorkspaceFiles(ctx, target) {  const targetPath = target?.relPa
 async function readTrackingState(ctx, tracking) {
   const targetPath = tracking?.relPath || tracking?.targetPath || "";
   if (!targetPath) return { relPath: "", state: null, error: "目标文件路径为空" };
-  const dir = path.posix.dirname(targetPath);
-  const relPath = path.posix.join(dir, "analysis-state.json");
+  const relPath = trackingStatePath(ctx.root, tracking);
   const absolute = path.join(ctx.root, relPath);
   try {
     const raw = await fsp.readFile(absolute, "utf8");
-    return { relPath, state: JSON.parse(raw), error: null };
+    const state=JSON.parse(raw),error=deliveryBundleIssue(ctx.root,relPath,state);
+    return {relPath,state:error?null:state,error,deliveryBlocked:!!error};
   } catch (error) {
     return {
       relPath,
       state: null,
+      missing: error.code === "ENOENT",
+      deliveryBlocked:!!deliveryBundleIssue(ctx.root,relPath,null),
       error: error.code === "ENOENT" ? `同目录没有 analysis-state.json（${relPath}）` : `无法读取状态文件：${error.message}`,
     };
   }
@@ -817,6 +886,120 @@ async function writeTrackingState(ctx, relPath, state, { note = "模型绑定", 
     visibility: "internal",
     reason,
   });
+}
+
+// A one-off update uses the same settlement, approval and file-version records
+// as a scheduled run. Preview is read-only; approval is always a separate UI action.
+const preparingUpdates = new Set();
+async function updateModel(ctx, { modelPath, disclosureFile, period, previewId, outputs = [], tolerances }, threadId = "") {
+  const source = ctx.store.findMaterialByPath(modelPath);
+  if (source?.kind !== "input" || !/\.xlsx$/i.test(source.relPath)) throw new Error("请选择项目输入中的 xlsx 模型");
+  if (!disclosureFile || !/^(FY20\d{2}|[1-4]Q\d{2}|[12]H\d{2})$/.test(period)) throw new Error("请提供项目公告或检索所得的正式公告 PDF 链接及披露期间，例如 3Q26");
+  const folder = path.posix.join("exports/model-updates", source.id);
+  const workingFile = path.posix.join(folder, "model/工作模型.xlsx");
+  const stateRel = modelUpdateState(source.id);
+  const lock = ctx.id + "/" + source.id;
+  if (preparingUpdates.has(lock)) throw new Error("该工作模型正在准备提案");
+  preparingUpdates.add(lock);
+  try {
+    const working = ctx.store.findMaterialByPath(workingFile);
+    const book = working ? workingFile : source.relPath;
+    const state = working ? JSON.parse(await fsp.readFile(path.join(ctx.root, stateRel), "utf8"))
+      : { subject: { model_file: source.relPath }, model: {} };
+    const sourceSha = await sha256File(path.join(ctx.root, source.relPath));
+    if (state.model?.source_sha256 && state.model.source_sha256 !== sourceSha) throw new Error("原始模型版本已改变，请重新绑定工作副本");
+    if (state.subject?.model_file !== source.relPath) throw new Error("工作模型绑定的输入已变化");
+    tolerances ??= state.model?.check_tolerances || {};
+    const absolute = path.join(ctx.root, book);
+    const baseline = await sha256File(absolute);
+    const remoteUrl = /^https?:\/\//i.test(disclosureFile) ? new URL(disclosureFile).href : "";
+    const requestHash = remoteUrl ? crypto.createHash("sha256").update(remoteUrl).digest("hex") : "";
+    if (remoteUrl && previewId) {
+      const [sha, urlHash] = previewId.split(".");
+      if (urlHash !== requestHash) throw new Error("公告链接已变化，请重新预览");
+      disclosureFile = archivedDisclosurePath(sha);
+    } else if (remoteUrl) {
+      if (!config.webFetch) throw new Error("当前工作台未启用联网读取公告");
+      const material = await importDisclosure(ctx, await fetchDisclosurePdf(disclosureFile));
+      broadcastMaterial(material, ctx.id);
+      disclosureFile = material.relPath;
+    }
+    const inventory = await disclosureInventory(ctx, disclosureFile);
+    inventory.facts = inventory.facts.filter(row => row.period === period);
+    inventory.sourceGaps = (inventory.sourceGaps || []).filter(row => row.period === period || inventory.issues.length);
+    const mapping = await mapDisclosure(ctx, inventory, book, [], source.relPath, state.model?.reported_cells);
+    const edits = mapping.edits || [];
+    const previousFormulas = await readCells(absolute, mapping.actuals.map(row => row.sheet + "!" + row.cell), { formulas: true });
+    if (!outputs.length) outputs = mapping.outputs || [];
+    mapping.outputs = outputs;
+    mapping.tolerances = tolerances;
+    const audit = await auditDisclosure(ctx, inventory, mapping, book, true);
+    const issues = [...inventory.issues];
+    if (baseline !== await sha256File(absolute)) throw new Error("预览期间模型版本已变化");
+    const urlHash = requestHash || previewId?.split(".")[1] || "";
+    const prefix = inventory.sourceUrl ? [inventory.sha256, urlHash, ""].join(".") : "";
+    const id = prefix + crypto.createHash("sha256").update(JSON.stringify([ctx.id, source.id, sourceSha, baseline,
+      inventory.sha256, period, mapping.actuals, edits, mapping.gaps, outputs, tolerances, prefix, inventory.sourceUrl])).digest("hex");
+    const preview = { issuer:inventory.facts[0]?.issuer, audit:inventory.facts[0]?.audit, previewId: id, source: inventory.source, sourceUrl: inventory.sourceUrl, sha256: inventory.sha256, period, modelPath: book, edits, rows: audit.rows.map(row => ({ ...row,
+        disclosedValue: row.disclosed ?? row.expected / (row.storageScale || 1) })),
+      outputs: audit.outputValues, gaps: [...inventory.sourceGaps, ...mapping.gaps], issues: audit.issues, checks: audit.modelChecks };
+    if (!previewId) return preview;
+    if (previewId !== id) throw new Error("模型、公告或输出设置已变化，请重新预览");
+    if (issues.length || !audit.rows.length || audit.rows.length !== mapping.actuals.length) {
+      throw new Error(audit.issues.join("；") || "没有可核验的公告映射");
+    }
+    for (const [ref, tolerance] of Object.entries(tolerances)) {
+      if (!audit.modelChecks.some(check => check.ref === ref) || !Number.isFinite(tolerance) || tolerance < 0) {
+        throw new Error("无效的勾稽容差：" + ref);
+      }
+    }
+    const changesRequired = edits.length || audit.rows.some(row => row.mode !== "check" && (!row.matched ||
+      (row.mode === "actual" && String(previousFormulas[row.ref]).startsWith("="))));
+    if (changesRequired && audit.issues.some(issue => issue.includes("是静态值") || issue.includes("估值输出缺失"))) {
+      throw new Error(audit.issues.join("；"));
+    }
+    const previous = (working && ctx.store.findTrackingByTarget(working.id)) || ctx.store.findTrackingByTarget(source.id);
+    if (previous && (ctx.store.getTracking(previous.id).running ||
+        ctx.store.listApprovalRequests({ trackingId: previous.id }).some(a => ["applying","pending_approval","approved"].includes(a.status)))) {
+      throw new Error("已有运行或提案待处理，请先查看该模型的审批");
+    }
+    const actuals = mapping.actuals;
+    state.model = { ...state.model, working_file: workingFile, source_sha256: sourceSha, write_enabled: true,
+      disclosure_file: inventory.source, disclosure_sha256: inventory.sha256,
+      actuals, edits, outputs, period, check_tolerances: tolerances,
+      bindings: [...actuals.filter(item => item.mode !== "check"), ...edits].map(({ metric, sheet, cell }) => ({ metric, sheet, cell, verified: true })) };
+    let material = working;
+    if (!material) {
+      await fsp.mkdir(path.dirname(path.join(ctx.root, stateRel)), { recursive: true });
+      const prepared = await prepareWorkingModel({ ctx, state, stateRel, privateBaseline: true, targetPath: path.posix.join(folder, "model.xlsx") });
+      material = prepared.material;
+    } else await writeTrackingState(ctx, stateRel, state);
+    if (await sha256File(path.join(ctx.root, workingFile)) !== baseline) throw new Error("工作模型基线不符，请重新预览");
+    const tracking = previous || ctx.store.createTracking({ targetId: material.id, templateId: "model", freq: "weekly", enabled: false });
+    const baseVersion = material.versions[0].v;
+    const run = ctx.store.startTrackingRun(tracking.id, { trigger: "manual", baseVersion });
+    const folderAbs = path.join(ctx.root, ".tracking", tracking.id, run.id);
+    const resultAbs = path.join(folderAbs, "result.json");
+    const inventoryPath = path.relative(ctx.root, path.join(folderAbs, "disclosure-inventory.json"));
+    try {
+      await fsp.mkdir(folderAbs, { recursive: true });
+      await fsp.writeFile(path.join(ctx.root, inventoryPath), JSON.stringify(inventory));
+      const modelChanges = audit.rows.filter(row => row.mode !== "check" && (!row.matched ||
+        (row.mode === "actual" && String(previousFormulas[row.ref]).startsWith("="))))
+        .map(row => ({ sheet: row.sheet, cell: row.cell, metric: row.metric, value: row.formula ?? row.expected, note: row.source }));
+      modelChanges.push(...edits.map(e => ({...e, metric:e.note})));
+      await fsp.writeFile(resultAbs, JSON.stringify({ status: modelChanges.length ? "needs_review" : "no_change",
+        modelChanges, modelOutputs: outputs, sources: [{ label: inventory.source }] }));
+      await settleTrackingRun({ ctx, trackingId: tracking.id, runId: run.id, run, targetId: material.id,
+        baseVersion, resultAbs, stateRel, threadId, disclosure: { book: workingFile, inventoryPath, inventory, mapping } });
+    } catch (error) {
+      ctx.store.finishTrackingRun(tracking.id, run.id, { status: "failed", message: error.message });
+      throw error;
+    }
+    const settled = ctx.store.getTrackingRun(run.id);
+    if (settled.status === "failed") throw new Error(settled.message);
+    return { trackingId: tracking.id, runId: run.id, result: JSON.parse(settled.result_json) };
+  } finally { preparingUpdates.delete(lock); }
 }
 
 async function runTracking(ctx, trackingId, {
@@ -839,6 +1022,7 @@ async function runTracking(ctx, trackingId, {
   if (!target) throw Object.assign(new Error("target file not found"), { status: 400 });
 
   const stateInfo = await readTrackingState(ctx, current);
+  if(stateInfo.deliveryBlocked)throw Object.assign(new Error(stateInfo.error),{status:409});
   const stateMaterial = stateInfo.relPath ? store.findMaterialByPath(stateInfo.relPath) : null;
   const stateBaseVersion = stateMaterial?.versions?.[0]?.v ?? null;
 
@@ -873,10 +1057,31 @@ async function runTracking(ctx, trackingId, {
   const template = templateFor(row.template_id);
   let backupRel = null;
   let entry;
+  let disclosure;
   try {
     await fsp.mkdir(path.dirname(resultAbs), { recursive: true });
     if (template.writeMode === "in_place") {
       backupRel = await backupTrackingTarget(ctx, target, run.id);
+    }
+    if (template.id === "model" && !monitorMode) {
+      const inventory = await disclosureInventory(ctx, stateInfo.state?.model?.disclosure_file);
+      if (stateInfo.state?.model?.period) {
+        inventory.facts = inventory.facts.filter(f => f.period === stateInfo.state.model.period);
+        inventory.sourceGaps = (inventory.sourceGaps || []).filter(f => f.period === stateInfo.state.model.period);
+      }
+      const folder = path.posix.join(".tracking", trackingId, run.id);
+      const inventoryPath = path.posix.join(folder, "disclosure-inventory.json");
+      await fsp.mkdir(path.join(ctx.root, folder), { recursive: true });
+      await fsp.writeFile(path.join(ctx.root, inventoryPath), JSON.stringify(inventory, null, 2));
+      const book = stateInfo.state?.model?.working_file || stateInfo.state?.subject?.model_file || target.relPath;
+      const confirmed = stateInfo.state?.model?.disclosure_sha256 === inventory.sha256 ? stateInfo.state.model.actuals : [];
+      const mapping = await mapDisclosure(ctx, inventory, book, confirmed, stateInfo.state?.subject?.model_file || book, stateInfo.state?.model?.reported_cells);
+      const baseline = await auditDisclosure(ctx, inventory, mapping, book, false);
+      const mappingPath = path.posix.join(folder, "disclosure-mapping.json");
+      const proposedInputs = baseline.rows.filter(row => row.mode !== "check" && (!row.matched || row.mode === "formula"))
+        .map(row => ({ sheet: row.sheet, cell: row.cell, metric: row.metric, value: row.formula ?? row.expected }));
+      await fsp.writeFile(path.join(ctx.root, mappingPath), JSON.stringify({ ...mapping, comparisons: baseline.rows, proposedInputs }, null, 2));
+      disclosure = { inventory, mapping, book, inventoryPath, mappingPath };
     }
     entry = await createEntry({ id: crypto.randomUUID(), ctx, automated: true });
   } catch (error) {
@@ -901,7 +1106,7 @@ async function runTracking(ctx, trackingId, {
     entry.monitorRun = { runId: run.id, trackingId };
   }
 
-  const prompt = buildTrackingPrompt({
+  let prompt = buildTrackingPrompt({
     trackingId,
     runId: run.id,
     targetPath: target.relPath,
@@ -917,6 +1122,11 @@ async function runTracking(ctx, trackingId, {
     monitorMode,
     events,
   });
+  if (disclosure) {
+    prompt += "\n映射文件中的 proposedInputs 是宿主依据已披露数值生成的候选输入。只允许提出其中已确认的单元格和值。未定位项留在缺口。mode=formula 使用清单中的原文公式。";
+    prompt += `\n服务端已先从公告提取清单 ${disclosure.inventoryPath}，然后定位模型并核对，见 ${disclosure.mappingPath}。分别读取。将所有已确认且有差异的 actual 输入列入 modelChanges（包括已披露期的旧预测公式），check 项留给重算核验。保留未定位项。请写本次正式跟踪结果 JSON。\n`;
+    if (stateInfo.state?.model?.disclosure_file) prompt += "本跟踪已选定所附公告，本次核对仅涵盖该公告的期间与披露范围。";
+  }
 
   let settled = false;
   let unsubscribe = null;
@@ -949,6 +1159,7 @@ async function runTracking(ctx, trackingId, {
       stateRel: stateInfo.relPath,
       stateMaterialId: stateMaterial?.id || null,
       stateBaseVersion,
+      disclosure,
     });
   };
 
@@ -963,8 +1174,27 @@ async function runTracking(ctx, trackingId, {
   }, Math.max(60_000, maxRuntimeMs));
   watchdog.unref?.();
 
-  unsubscribe = entry.session.subscribe((event) => {
-    if (event.type === "agent_settled") finish(null);
+  let repaired = false;
+  let inspectingResult = false;
+  unsubscribe = entry.session.subscribe(async (event) => {
+    if (event.type !== "agent_settled" || inspectingResult || settled) return;
+    inspectingResult = true;
+    try {
+      if (!repaired && disclosure?.mapping.actuals.length && stateInfo.state?.model?.disclosure_sha256) {
+        const candidate = await readTrackingResult(resultAbs);
+        const issues = Array.isArray(candidate?.modelChanges)
+          ? disclosureProposalIssues(candidate.modelChanges, disclosure.mapping.actuals, disclosure.mapping.edits) : [];
+        if (issues.length && !settled) {
+          repaired = true;
+          inspectingResult = false;
+          const review = `提交前核验发现：${issues.join("；")}。重新读取 ${disclosure.mappingPath} 的 proposedInputs，用已确认的映射更正本次结果 ${resultRel}；其他项记录缺口。`;
+          // A new turn is permitted once the SDK completes the preceding event.
+          setImmediate(() => { if (!settled) entry.session.prompt(review, {}).catch(finish); });
+          return;
+        }
+      }
+      finish(null);
+    } catch (error) { finish(error); }
   });
 
   try {
@@ -986,6 +1216,7 @@ async function runTracking(ctx, trackingId, {
     runTracking,
     settleTrackingRun,
     readTrackingState,
+    updateModel,
     writeTrackingState,
     syncSourceBindings,
     pollSourceBinding,

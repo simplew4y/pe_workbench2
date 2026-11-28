@@ -55,6 +55,47 @@ const activeSession = () => selectors.activeSession();
 const fileById = (id) => selectors.fileById(id);
 const taskById = (id) => selectors.taskById(id);
 const latest = (file) => selectors.latest(file);
+const effortLabels = { off:'关闭', minimal:'最低', low:'低', medium:'中', high:'高', xhigh:'很高', max:'最高' };
+const modelUpdates = new Set();
+
+function renderModelSettings() {
+  const session = activeSession();
+  const model = session?.model || state.modelId;
+  const level = session?.thinkingLevel || state.defaultThinkingLevel;
+  const models = state.models;
+  const levels = session?.thinkingLevels || models.find(item => item.id === model)?.thinkingLevels || [];
+  const disabled = !session || state.streaming || modelUpdates.has(session.id) ? ' disabled' : '';
+  const quickMode = $('#thinkingMode');
+  quickMode.hidden = !levels.includes('off') || levels.length < 2;
+  quickMode.disabled = Boolean(disabled);
+  const normal = quickMode.querySelector('[value="normal"]');
+  const deep = quickMode.querySelector('[value="deep"]');
+  normal.checked = level === 'off';
+  deep.checked = level !== 'off';
+  normal.dataset.thinkingLevel = 'off';
+  deep.dataset.thinkingLevel = levels.includes('high') ? 'high' : levels.at(-1);
+  $('#modelName').textContent = model;
+  $('#modelEffort').textContent = effortLabels[level] || level;
+  $('#modelBtn').title = `${model} · 推理：${effortLabels[level] || level}`;
+  const choice = (kind, value, label, selected, note = '') =>
+    `<button type="button" class="menu-item${selected ? ' is-on' : ''}" role="menuitemradio" aria-checked="${selected}" data-${kind}="${esc(value)}"${disabled}>${esc(label)}${note ? `<span class="menu-note">${esc(note)}</span>` : ''}</button>`;
+  const menu = $('#modelMenu');
+  const markup = `<div role="group" aria-label="模型"><div class="model-menu-label" aria-hidden="true">模型</div>${
+    models.map(item => choice('model',item.id,item.id,item.id === model,item.name === item.id ? '' : item.name)).join('')
+  }</div><div role="group" aria-label="推理档位"><div class="model-menu-label" aria-hidden="true">推理档位</div>${
+    levels.map(item => choice('thinking-level',item,effortLabels[item] || item,item === level,item)).join('')
+  }</div>`;
+  if (menu.dataset.markup !== markup) {
+    menu.dataset.markup = markup;
+    menu.innerHTML = markup;
+  }
+}
+
+function modelSettingsPatch(item) {
+  return item.model && item.thinkingLevel ? {
+    model:item.model, thinkingLevel:item.thinkingLevel, thinkingLevels:item.thinkingLevels,
+  } : {};
+}
 
 function renderSessions() {
   const groups = ['今天', '本周', '更早'];
@@ -94,6 +135,7 @@ function renderAllChrome() {
   $('#wsSub').textContent = state.project.note || '项目';
   document.title = `${title} · ${state.project.name} — Workbench`;
   renderProjectMenu();
+  renderModelSettings();
 }
 
 
@@ -159,6 +201,23 @@ function decorateSession(item) {
 /* Focus to restore when the project dialog closes. Declared here (not in
    materials.js) because open/closeProjectDialog own the focus lifecycle. */
 let projectLastFocus = null;
+
+function sessionFromLocation() {
+  return /^\/sessions\/([^/]+)\/?$/.exec(location.pathname)?.[1] || null;
+}
+
+function syncSessionUrl(id, mode) {
+  const url = new URL(location.href);
+  url.pathname = `/sessions/${encodeURIComponent(id)}`;
+  url.searchParams.set('project', state.project.id);
+  if (url.href === location.href) return;
+  if (mode === 'push') {
+    url.hash = '';
+    history.pushState(null, '', url);
+  } else {
+    history.replaceState(null, '', url);
+  }
+}
 
 async function loadProjects() {
   const items = await api('/api/projects');
@@ -258,7 +317,7 @@ async function switchProject(id) {
   void loadApprovals();
 
   try {
-    await loadSessions();
+    await loadSessions({ historyMode: 'push' });
     await loadFoundation();
     await window.Tracking?.reload?.();
     void window.Watch?.load?.();
@@ -328,7 +387,9 @@ async function boot() {
     const health = await api('/api/health');
     if (health.model) {
       state.modelId = health.model;
-      $('#modelName').textContent = health.model;
+      state.defaultThinkingLevel = health.defaultThinkingLevel || 'high';
+      state.models = health.models || [];
+      renderModelSettings();
     }
     await installPilotIfRequested(health);
   } catch {
@@ -344,7 +405,7 @@ async function boot() {
   void loadNotifications();
   void loadApprovals();
   try {
-    await loadSessions();
+    await loadSessions({ requestedId: sessionFromLocation() });
   } catch (error) {
     toast(error.message || '加载会话失败');
   }
@@ -353,41 +414,37 @@ async function boot() {
   initTraceHitl();
 }
 
-async function loadSessions() {
+async function loadSessions({ requestedId = null, historyMode = 'replace' } = {}) {
+  const projectId = state.project.id;
   const items = await api('/api/sessions');
+  if (state.project.id !== projectId) return;
   state.sessions = items.map(decorateSession);
+  const requested = state.sessions.find(item => item.id === requestedId);
+  if (requestedId && !requested) toast('该会话不存在或不属于当前项目');
   if (!state.sessions.length) {
-    await createSession();
+    await createSession({ historyMode });
     return;
   }
-  if (!state.sessions.some(s => s.id === state.activeSession)) state.activeSession = state.sessions[0].id;
-  renderSessions();
-  renderAllChrome();
-  renderThread();
-  connectSession(state.activeSession);
+  openSession(requested?.id || state.sessions[0].id, historyMode);
 }
 
-async function createSession() {
+async function createSession({ historyMode = 'push' } = {}) {
+  const projectId = state.project.id;
   const created = await api('/api/sessions', { method: 'POST' });
   const item = decorateSession({ ...created, updatedAt: created.updatedAt || new Date().toISOString() });
+  if (state.project.id !== projectId) return item;
   state.sessions.unshift(item);
-  state.activeSession = item.id;
-  state.messages = [];
-  state.pendingMerges = [];
-  state.streaming = false;
-  state.live = { text: '', tools: [], startedAt: 0 };
-  syncStop();
-  renderSessions();
-  renderAllChrome();
-  renderThread();
-  connectSession(item.id);
-  window.NextActions?.refresh?.();
+  openSession(item.id, historyMode);
   inputEl.focus();
-  win.classList.remove('side-open');
   return item;
 }
 
-function openSession(id) {
+function openSession(id, historyMode = 'push') {
+  syncSessionUrl(id, historyMode);
+  if (state.activeSession === id) {
+    win.classList.remove('side-open');
+    return;
+  }
   state.activeSession = id;
   state.messages = [];
   state.pendingMerges = [];
@@ -462,11 +519,8 @@ function handleServerEvent(ev) {
       updateSessionItem(ev.sessionId, {
         title: ev.title,
         updatedAt: new Date().toISOString(),
+        ...modelSettingsPatch(ev),
       });
-      if (ev.model) {
-        state.modelId = ev.model;
-        $('#modelName').textContent = ev.model;
-      }
       syncStop();
       renderSessions();
       renderAllChrome();
@@ -510,11 +564,13 @@ function handleServerEvent(ev) {
         tool.detail = ev.detail || tool.detail;
         tool.output = ev.output || '';
         if (Array.isArray(ev.citations)) tool.citations = ev.citations;
+        if (ev.validation) tool.validation = ev.validation;
         if (ev.presentation) tool.presentation = ev.presentation;
         if (ev.presentationError) tool.presentationError = ev.presentationError;
       } else {
         state.live.tools.push({
           id: ev.id, name: ev.name, detail: ev.detail, status: ev.status, output: ev.output || '',
+          ...(ev.validation ? { validation:ev.validation } : {}),
           ...(Array.isArray(ev.citations) && ev.citations.length ? { citations: ev.citations } : {}),
           ...(ev.presentation ? { presentation: ev.presentation } : {}),
           ...(ev.presentationError ? { presentationError: ev.presentationError } : {}),
@@ -544,6 +600,7 @@ function handleServerEvent(ev) {
       updateSessionItem(ev.id, {
         title: ev.title,
         updatedAt: ev.updatedAt || new Date().toISOString(),
+        ...modelSettingsPatch(ev),
       });
       renderSessions();
       renderAllChrome();
@@ -579,15 +636,14 @@ async function refreshSnapshot({
     if (!applyTurnSnapshot(state, snap, { forceStopped, preserveLive })) return null;
     state.pendingMerges = snap.pendingMerges || [];
     if (Array.isArray(snap.approvals)) {
-      const ids = new Set(snap.approvals.map((item) => item.id));
-      state.approvals = [...snap.approvals, ...state.approvals.filter((item) => !ids.has(item.id))];
+      for (const item of [...snap.approvals].reverse()) upsertApproval(item);
     }
     if (state.streaming && (watch || snap.activeTurnId)) scheduleSnapshotPoll(700);
     else {
       clearTimeout(snapshotPollTimer);
       snapshotPollTimer = null;
     }
-    updateSessionItem(id, { title: snap.title });
+    updateSessionItem(id, { title: snap.title, ...modelSettingsPatch(snap) });
     syncStop();
     renderSessions();
     renderAllChrome();
@@ -605,6 +661,7 @@ async function refreshSnapshot({
 
 function syncStop() {
   $('#stopBtn').hidden = !state.streaming;
+  renderModelSettings();
 }
 
 /* ---------- wiring ---------- */
@@ -623,6 +680,16 @@ async function init() {
     const btn = e.target.closest('[data-session]');
     if (!btn) return;
     openSession(btn.dataset.session);
+  });
+
+  window.addEventListener('popstate', () => {
+    const id = sessionFromLocation();
+    const projectId = new URLSearchParams(location.search).get('project');
+    if (!id || projectId !== state.project.id || !state.sessions.some(item => item.id === id)) {
+      location.reload();
+      return;
+    }
+    openSession(id, 'replace');
   });
 
   $('#newSession').addEventListener('click', () => {
@@ -811,23 +878,48 @@ async function init() {
   $('#modelBtn').addEventListener('click', e => {
     e.stopPropagation();
     toggleMenu($('#modelMenu'), $('#modelBtn'));
+    if (!$('#modelMenu').hidden) $('#modelMenu button[aria-checked="true"]:not(:disabled)')?.focus();
   });
-  $('#modelMenu').addEventListener('click', async e => {
-    const item = e.target.closest('[data-model]');
-    if (!item) return;
-    const requested = item.dataset.model;
-    if (state.activeSession) {
-      try {
-        await api(`/api/sessions/${state.activeSession}/model`, { method: 'POST', body: { model: requested } });
-      } catch (error) {
-        toast(error.message || '切换模型失败');
-        return;
+  $('#modelMenu').addEventListener('click', saveModelChoice);
+  $('#thinkingMode').addEventListener('change', saveModelChoice);
+  async function saveModelChoice(e) {
+    const fromMenu = e.currentTarget.id === 'modelMenu';
+    const item = e.target.closest('[data-model], [data-thinking-level]');
+    const id = state.activeSession;
+    const project = state.project.id;
+    if (!item || !id || state.streaming || modelUpdates.has(id)) return;
+    const body = item.dataset.model ? { model:item.dataset.model } : { thinkingLevel:item.dataset.thinkingLevel };
+    modelUpdates.add(id);
+    renderModelSettings();
+    try {
+      const saved = await api(`/api/sessions/${id}/model`, { method:'POST', body });
+      if (state.project.id === project) updateSessionItem(id, modelSettingsPatch(saved));
+      if (fromMenu && state.project.id === project && state.activeSession === id) {
+        toggleMenu($('#modelMenu'), $('#modelBtn'), false);
+        $('#modelBtn').focus();
       }
+    } catch (error) {
+      if (state.project.id === project && state.activeSession === id) toast(error.message || '会话设置保存失败');
+    } finally {
+      modelUpdates.delete(id);
+      renderModelSettings();
     }
-    state.modelId = requested;
-    $('#modelName').textContent = requested;
-    $$('#modelMenu .menu-item').forEach(b => b.classList.toggle('is-on', b === item));
-    toggleMenu($('#modelMenu'), $('#modelBtn'), false);
+  }
+  $('#modelMenu').addEventListener('keydown', e => {
+    if (!['ArrowDown','ArrowUp','Home','End','Escape'].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      toggleMenu($('#modelMenu'),$('#modelBtn'),false);
+      $('#modelBtn').focus();
+      return;
+    }
+    const items = $$('#modelMenu button:not(:disabled)');
+    if (!items.length) return;
+    const index = items.indexOf(document.activeElement);
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 :
+      (index + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    items[next]?.focus();
   });
 
   document.addEventListener('click', e => {

@@ -1,3 +1,5 @@
+import {restoreModelOverview} from '../../lib/model-overview-delivery.mjs';
+import { sessionModelSettings } from "./session-model-settings.mjs";
 /**
  * Conversation snapshot: Pi session messages -> the compact DTO the browser
  * renders. Tool presentations are joined from the host's durable table, never
@@ -5,10 +7,11 @@
  */
 
 import path from "node:path";
-import {toolDisplayOutput} from "../../lib/tool-display-output.mjs";
+import {toolDisplayOutput,toolValidation} from "../../lib/tool-display-output.mjs";
 import {applyPatch} from "diff";
 import {turnTimeline} from "./turn-delivery.mjs";
-import {adoptedCitations, joinContinuation} from "./answer-delivery.mjs";
+import {adoptedCitations, explicitTurns, joinContinuation} from "./answer-delivery.mjs";
+import { TRANSCRIPT_SEARCH_CONTEXT_CHARS } from "../../lib/transcript-search-tool.mjs";
 import {readLedgerSync, pendingMerges} from "../../lib/ledger.mjs";
 import {CONTEXT_BUDGET_FAILURE, isContextBudgetError} from "../../lib/context-budget.mjs";
 import {presentUserAnswer} from "../../ui/chat/user-facing-answer.js";
@@ -231,7 +234,7 @@ function legacyAnswer(turn, allowProcessFallback) {
 function answerMessage(turn, { allowProcessFallback = true } = {}) {
   const { start, delivery } = turn;
   if (!start) return legacyAnswer(turn, allowProcessFallback);
-  return {
+  const answer = {
     turnId: start.turnId,
     text: delivery?.text ?? "",
     citations: delivery?.citations ?? [],
@@ -239,6 +242,25 @@ function answerMessage(turn, { allowProcessFallback = true } = {}) {
     ...(delivery?.reason ? { reason: delivery.reason } : {}),
     ...(delivery ? { finishedAt: delivery.finishedAt } : {}),
   };
+  if (!delivery || delivery.deliveryBundle || delivery.reviewedReportHash) return answer;
+  return restoreModelOverview(answer,start.question,turn.messages);
+}
+
+// Only the answer actually shown on this branch can establish a prior position.
+export function referencedJudgments(session, question, beforeTurnId) {
+  if (!/保留|修订|修正|撤回|重写|更新.{0,8}(?:判断|命题|框架)/u.test(question)) return [];
+  const requested = explicitTurns(question);
+  const previous = /上一轮|上轮/u.test(question);
+  if (!requested.size && !previous) return [];
+  const turns = conversationTurns(session, { beforeTurnId }).filter(turn => turn.start || turn.user);
+  if (previous && turns.length) requested.add(turns.length);
+  const budget = Math.floor(TRANSCRIPT_SEARCH_CONTEXT_CHARS / (requested.size || 1));
+  return [...requested].sort((a, b) => a - b).map(number => {
+    const source = turns[number - 1];
+    const answer = source && answerMessage(source, { allowProcessFallback: false });
+    if (!answer?.text || answer.failure || ['failed', 'cancelled', 'pending'].includes(answer.status)) return { turn: number, text: null };
+    return { turn: number, text: answer.text.slice(0, budget), ...(answer.text.length > budget ? { truncated: true } : {}) };
+  });
 }
 
 function toolCitationIndex(ctx, threadId) {
@@ -403,7 +425,9 @@ export function snapshotMessages(session, ctx, entry = null) {
             payload: record.payload,
           }
         : null;
-      const presentationError = record?.corrupt
+      const legacyPlainRead = block.name === 'read' && result && !result.isError && !record?.corrupt &&
+        record?.schemaName === 'presentation.error' && record.payload?.error === 'tool result has no structured presentation';
+      const presentationError = legacyPlainRead ? '' : record?.corrupt
         ? "工具结果展示数据损坏"
         : record?.schemaName === "presentation.error"
           ? String(record.payload?.error || "工具结果展示数据不可用")
@@ -416,6 +440,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         detail: toolDetail(ctx, block.name, block.arguments || {}),
         status: result ? (result.isError ? "error" : "done") : !turn.start ? "done" : turn.delivery ? "error" : "running",
         output: result ? toolDisplayOutput(block.name, result, resultText(result)) : "",
+        ...(toolValidation(block.name,result)?{validation:toolValidation(block.name,result)}:{}),
         ...(citations.length ? { citations } : {}),
         ...(presentation ? { presentation } : {}),
         ...(presentationError ? { presentationError } : {}),
@@ -439,7 +464,7 @@ export function snapshotMessages(session, ctx, entry = null) {
         } : {}),
         ...(turn.revisions?.length || legacyCitations.length ? { citations: legacyCitations } : {}),
         time: hm(turn.delivery?.finishedAt ?? firstAssistant?.timestamp ?? user?.timestamp),
-        turnStartedAt: user?.timestamp ?? firstAssistant?.timestamp,
+        turnStartedAt: turn.start?.startedAt ?? user?.timestamp ?? firstAssistant?.timestamp,
       });
     }
   }
@@ -455,7 +480,7 @@ export function serializeSession(entry) {
     messages: snapshotMessages(entry.session, entry.ctx, entry),
     streaming: Boolean(entry.session.isStreaming || entry.postAnswerPending),
     activeTurnId: entry.activeTurn?.turnId ?? null,
-    model: entry.modelId,
+    ...sessionModelSettings(entry),
     projectId: entry.ctx.id,
     approvals: entry.ctx.store.listApprovalRequests({ threadId: entry.id, limit: 50 }),
   };
