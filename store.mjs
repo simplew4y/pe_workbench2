@@ -386,8 +386,8 @@ export class Store {
         brief_json text not null default '{}',
         interval_minutes integer not null default 15,
         deep_check_time text not null default '18:30',
-        enabled integer not null default 1,
-        status text not null default 'idle',
+        enabled integer not null default 0,
+        status text not null default 'paused',
         last_scan_at text,
         last_check_at text,
         last_deep_check_at text,
@@ -2402,6 +2402,7 @@ export class Store {
   }
 
   createWatch({
+    enabled = false,
     name = "",
     reportPath = "",
     statePath = "",
@@ -2419,12 +2420,12 @@ export class Store {
         id, workspace_id, name, report_path, state_path, model_path, brief_json,
         interval_minutes, deep_check_time, enabled, status, next_scan_at, next_deep_at,
         created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'idle', ?, ?, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id, this.projectId, name, reportPath, statePath, modelPath,
       JSON.stringify(brief || {}),
       Math.max(5, Math.min(240, Number(intervalMinutes) || 15)),
-      deepCheckTime,
+      deepCheckTime, enabled ? 1 : 0, enabled ? "watching" : "paused",
       nextScanAt, nextDeepAt, now, now,
     );
     return this.getWatch(id);

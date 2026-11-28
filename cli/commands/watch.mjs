@@ -108,7 +108,7 @@ export const watch = {
         { flags: "--deep-check-time <HH:MM>", desc: "每日深度复核时间" },
       ],
       async run({ client, options }) {
-        const body = {};
+        const body = { enabled: true };
         const interval = integerOpt(options, "interval-minutes", { min: 5, max: 240 });
         if (interval !== undefined) body.intervalMinutes = interval;
         const deep = opt(options, "deep-check-time");

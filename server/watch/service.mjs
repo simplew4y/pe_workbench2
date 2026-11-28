@@ -310,11 +310,13 @@ export function createWatchService({
   }
 
   async function createWatch(ctx, {
+    enabled = false,
     reportPath = "",
     intervalMinutes = DEFAULT_INTERVAL,
     deepCheckTime = DEFAULT_DEEP,
     name = "",
   } = {}) {
+    if (typeof enabled !== "boolean") throw Object.assign(new Error("enabled 必须为布尔值"), { status: 400 });
     const existing = ctx.store.getCurrentWatch();
     if (existing) {
       return { watch: existing, created: false };
@@ -326,7 +328,10 @@ export function createWatchService({
     const interval = Math.max(5, Math.min(240, Number(intervalMinutes) || DEFAULT_INTERVAL));
     const deepTime = String(deepCheckTime || DEFAULT_DEEP);
     const companyShort = String(inspected.company || "").split(/[（(]/)[0].trim() || inspected.company;
+    const concurrent = ctx.store.getCurrentWatch();
+    if (concurrent) return { watch: concurrent, created: false };
     const watch = ctx.store.createWatch({
+      enabled,
       name: name || `${companyShort} · 盯`,
       reportPath: brief.target.reportPath,
       statePath: brief.target.statePath,
@@ -334,8 +339,8 @@ export function createWatchService({
       brief,
       intervalMinutes: interval,
       deepCheckTime: deepTime,
-      nextScanAt: addMinutes(now, 0.2),
-      nextDeepAt: computeNextDeepCheck(deepTime, now),
+      nextScanAt: enabled ? addMinutes(now, 0.2) : null,
+      nextDeepAt: enabled ? computeNextDeepCheck(deepTime, now) : null,
     });
     const base = brief.valuation?.base;
     const focus = brief.topSensitivities.slice(0, 2)
@@ -344,11 +349,11 @@ export function createWatchService({
       watchId: watch.id,
       role: "watcher",
       kind: "system",
-      title: `开始盯住 ${companyShort}`,
+      title: enabled ? `开始盯住 ${companyShort}` : `${companyShort} · 自动盯盘已关闭`,
       body: [
         base ? `基准估值 ${base.value ?? "—"} ${base.unit || ""}。` : "",
         focus ? `最敏感的两个变量：${focus}。` : "",
-        "我会在后台定期扫一遍公告、财报和新闻，并在每天收盘后做一次深度复核。",
+        enabled ? "我会在后台定期扫一遍公告、财报和新闻，并在每天收盘后做一次深度复核。" : "开启自动盯盘后会定期扫描公告、财报和新闻。",
         "只读：不会改报告、状态文件或模型。没有重大发现就不打扰你。",
       ].filter(Boolean).join(""),
       related: {
@@ -364,6 +369,7 @@ export function createWatchService({
   async function updateWatch(ctx, watchId, patch = {}) {
     const watch = ctx.store.getWatch(watchId);
     if (!watch) return null;
+    if (patch.enabled !== undefined && typeof patch.enabled !== "boolean") throw Object.assign(new Error("enabled 必须为布尔值"), { status: 400 });
     const next = { ...patch };
     if (patch.intervalMinutes !== undefined) {
       next.nextScanAt = addMinutes(new Date(), patch.intervalMinutes);
@@ -371,10 +377,13 @@ export function createWatchService({
     if (patch.deepCheckTime !== undefined) {
       next.nextDeepAt = computeNextDeepCheck(patch.deepCheckTime, new Date());
     }
-    if (patch.enabled === true) {
+    if (patch.enabled === true && !watch.enabled) {
+      next.nextDeepAt = computeNextDeepCheck(patch.deepCheckTime || watch.deepCheckTime, new Date());
       next.status = "watching";
       next.nextScanAt = addMinutes(new Date(), 0.2);
-    } else if (patch.enabled === false) {
+    } else if (!(patch.enabled ?? watch.enabled)) {
+      next.nextScanAt = null;
+      next.nextDeepAt = null;
       next.status = "paused";
     }
     const updated = ctx.store.updateWatch(watchId, next);
